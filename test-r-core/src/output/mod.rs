@@ -25,10 +25,14 @@ pub trait TestRunnerOutput {
 }
 
 pub fn test_runner_output(args: &Arguments) -> Box<dyn TestRunnerOutput> {
-    match args.format.unwrap_or_default() {
-        FormatSetting::Pretty => Box::new(pretty::Pretty::new(args.color.unwrap_or_default())),
-        FormatSetting::Terse => Box::new(terse::Terse::new()),
-        FormatSetting::Json => Box::new(json::Json::new()),
-        FormatSetting::Junit => Box::new(junit::JUnit::new()),
+    if args.quiet {
+        Box::new(terse::Terse::new())
+    } else {
+        match args.format.unwrap_or_default() {
+            FormatSetting::Pretty => Box::new(pretty::Pretty::new(args.color.unwrap_or_default())),
+            FormatSetting::Terse => Box::new(terse::Terse::new()),
+            FormatSetting::Json => Box::new(json::Json::new()),
+            FormatSetting::Junit => Box::new(junit::JUnit::new()),
+        }
     }
 }

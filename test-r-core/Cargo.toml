@@ -6,6 +6,8 @@ edition = "2021"
 [lib]
 
 [dependencies]
+anstream = "0.6.14"
+anstyle = "1.0.7"
 clap = { version = "4.5.7", features = ["derive"] }
 escape8259 = "0.5.3"
 futures = "0.3.30"

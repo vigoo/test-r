@@ -4,8 +4,6 @@ https://github.com/LukasKalbertodt/libtest-mimic/
 https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 
 # Todo
-- Support quiet (same as `format==terse`)
-- Support color (with `anstream`)
 - Support test-threads setting
 - Shared, type based dependency injection
 - Sequential/parallel constraints on modules - generating static initializer registering info
