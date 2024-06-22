@@ -1,0 +1,18 @@
+[package]
+name = "test-r-example"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "test-r-example-bin"
+path = "src/main.rs"
+
+[lib]
+harness = false
+
+[[test]]
+name = "tests"
+harness = false
+
+[dependencies]
+test-r = { version = "0.1.0", path = "../test-r" }

@@ -1,0 +1,9 @@
+[package]
+name = "test-r-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+
+[dependencies]
+clap = { version = "4.5.7", features = ["derive"] }

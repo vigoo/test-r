@@ -1,0 +1,10 @@
+[package]
+name = "test-r"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+test-r-core = { version = "0.1.0", path = "../test-r-core" }
+test-r-macro = { version = "0.1.0", path = "../test-r-macro" }
+
+ctor = "0.2.8"
