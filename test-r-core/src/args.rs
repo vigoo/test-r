@@ -1,5 +1,3 @@
-// Originally from https://github.com/LukasKalbertodt/libtest-mimic
-
 use clap::{Parser, ValueEnum};
 
 /// Command line arguments.
@@ -7,133 +5,107 @@ use clap::{Parser, ValueEnum};
 /// This type represents everything the user can specify via CLI args. The main
 /// method is [`from_args`][Arguments::from_args] which reads the global
 /// `std::env::args()` and parses them into this type.
-///
-/// `libtest-mimic` supports a subset of all args/flags supported by the
-/// official test harness. There are also some other minor CLI differences, but
-/// the main use cases should work exactly like with the built-in harness.
 #[derive(Parser, Debug, Clone, Default)]
 #[command(
-    help_template = "USAGE: [OPTIONS] [FILTER]\n\n{all-args}\n\n\n{after-help}",
-    disable_version_flag = true,
-    after_help = "By default, all tests are run in parallel. This can be altered with the \n\
-        --test-threads flag when running tests (set it to 1).",
+    help_template = "USAGE: [OPTIONS] [FILTERS...]\n\n{all-args}\n",
+    disable_version_flag = true
 )]
 pub struct Arguments {
-    // ============== FLAGS ===================================================
-    /// Run ignored and non-ignored tests.
-    #[arg(long = "include-ignored", help = "Run ignored tests")]
+    /// Run ignored and not ignored tests
+    #[arg(long = "include-ignored")]
     pub include_ignored: bool,
 
-    /// Run only ignored tests.
-    #[arg(long = "ignored", help = "Run ignored tests")]
+    /// Run only ignored tests
+    #[arg(long = "ignored")]
     pub ignored: bool,
 
-    /// Run tests, but not benchmarks.
-    #[arg(
-        long = "test",
-        conflicts_with = "bench",
-        help = "Run tests and not benchmarks",
-    )]
+    /// Excludes tests marked as should_panic
+    #[arg(long = "exclude-should-panic")]
+    pub exclude_should_panic: bool,
+
+    /// Run tests and not benchmarks
+    #[arg(long = "test", conflicts_with = "bench")]
     pub test: bool,
 
-    /// Run benchmarks, but not tests.
-    #[arg(long = "bench", help = "Run benchmarks instead of tests")]
+    /// Run benchmarks instead of tests
+    #[arg(long = "bench")]
     pub bench: bool,
 
-    /// Only list all tests and benchmarks.
-    #[arg(long = "list", help = "List all tests and benchmarks")]
+    /// List all tests and benchmarks
+    #[arg(long = "list")]
     pub list: bool,
 
-    /// No-op, ignored (libtest-mimic always runs in no-capture mode)
-    #[arg(long = "nocapture", help = "No-op (libtest-mimic always runs in no-capture mode)")]
+    /// Write logs to the specified file
+    #[arg(long = "logfile", value_name = "PATH")]
+    pub logfile: Option<String>,
+
+    /// don't capture stdout/stderr of each task, allow printing directly
+    #[arg(long = "nocapture")]
     pub nocapture: bool,
 
-    /// No-op, ignored. libtest-mimic does not currently capture stdout.
+    /// Number of threads used for running tests in parallel
+    #[arg(long = "test-threads")]
+    pub test_threads: Option<usize>,
+
+    /// Skip tests whose names contains FILTER (this flag can be used multiple times)
+    #[arg(long = "skip", value_name = "FILTER")]
+    pub skip: Vec<String>,
+
+    /// Display one character per test instead of one line.
+    /// Alias to `--format=terse`
+    #[arg(short = 'q', long = "quiet", conflicts_with = "format")]
+    pub quiet: bool,
+
+    /// Exactly match filters rather than by substring
+    #[arg(long = "exact")]
+    pub exact: bool,
+
+    /// Configure coloring of output
+    #[arg(long = "color", value_enum, value_name = "auto|always|never")]
+    pub color: Option<ColorSetting>,
+
+    /// Configure formatting of output
+    #[arg(long = "format", value_enum, value_name = "pretty|terse|json|junit")]
+    pub format: Option<FormatSetting>,
+
+    /// Show captured stdout of successful tests
     #[arg(long = "show-output")]
     pub show_output: bool,
 
-    /// No-op, ignored. Flag only exists for CLI compatibility with libtest.
+    /// Enable nightly-only flags
     #[arg(short = 'Z')]
     pub unstable_flags: Option<UnstableFlags>,
 
-    /// If set, filters are matched exactly rather than by substring.
-    #[arg(
-        long = "exact",
-        help = "Exactly match filters rather than by substring",
-    )]
-    pub exact: bool,
+    /// Show execution time of each test.
+    /// Threshold values for colorized output can be configured via `RUST_TEST_TIME_UNIT`,
+    /// `RUST_TEST_TIME_INTEGRATION` and `RUST_TEST_TIME_DOCTEST` environment variables.
+    /// Expected format of the environment variables is `VARIABLE=WARN_TIME,CRITICAL_TIME`.
+    /// Durations must be specified in milliseconds, e.g. `500,2000` means that the warn time is 0.5
+    /// seconds, and the critical time is 2 seconds.
+    /// Not available for `--format=terse`.
+    #[arg(long = "report-time")]
+    pub report_time: bool,
 
-    /// If set, display only one character per test instead of one line.
-    /// Especially useful for huge test suites.
-    ///
-    /// This is an alias for `--format=terse`. If this is set, `format` is
-    /// `None`.
-    #[arg(
-        short = 'q',
-        long = "quiet",
-        conflicts_with = "format",
-        help = "Display one character per test instead of one line. Alias to --format=terse",
-    )]
-    pub quiet: bool,
+    /// Treat excess of the test execution time limit as error.
+    /// Threshold values for this option can be configured via `RUST_TEST_TIME_UNIT`,
+    /// `RUST_TEST_TIME_INTEGRATION` and `RUST_TEST_TIME_DOCTEST` environment variables.
+    /// Expected format of the environment variables is `VARIABLE=WARN_TIME,CRITICAL_TIME`.
+    /// `CRITICAL_TIME` here means the limit that should not be exceeded by test.
+    #[arg(long = "ensure-time")]
+    pub ensure_time: bool,
 
-    // ============== OPTIONS =================================================
-    /// Number of threads used for parallel testing.
-    #[arg(
-        long = "test-threads",
-        help = "Number of threads used for running tests in parallel. If set to 1, \n\
-            all tests are run in the main thread.",
-    )]
-    pub test_threads: Option<usize>,
+    /// Run tests in random order
+    #[arg(long = "shuffle", conflicts_with = "shuffle_seed")]
+    pub shuffle: bool,
 
-    /// Path of the logfile. If specified, everything will be written into the
-    /// file instead of stdout.
-    #[arg(
-        long = "logfile",
-        value_name = "PATH",
-        help = "Write logs to the specified file instead of stdout",
-    )]
-    pub logfile: Option<String>,
+    /// Run tests in random order; seed the random number generator with SEED
+    #[arg(long = "shuffle-seed", value_name = "SEED", conflicts_with = "shuffle")]
+    pub shuffle_seed: Option<u64>,
 
-    /// A list of filters. Tests whose names contain parts of any of these
-    /// filters are skipped.
-    #[arg(
-        long = "skip",
-        value_name = "FILTER",
-        help = "Skip tests whose names contain FILTER (this flag can be used multiple times)",
-    )]
-    pub skip: Vec<String>,
-
-    /// Specifies whether or not to color the output.
-    #[arg(
-        long = "color",
-        value_enum,
-        value_name = "auto|always|never",
-        help = "Configure coloring of output: \n\
-            - auto = colorize if stdout is a tty and tests are run on serially (default)\n\
-            - always = always colorize output\n\
-            - never = never colorize output\n",
-    )]
-    pub color: Option<ColorSetting>,
-
-    /// Specifies the format of the output.
-    #[arg(
-        long = "format",
-        value_enum,
-        value_name = "pretty|terse|json",
-        help = "Configure formatting of output: \n\
-            - pretty = Print verbose output\n\
-            - terse = Display one character per test\n\
-            - json = Print json events\n",
-    )]
-    pub format: Option<FormatSetting>,
-
-    // ============== POSITIONAL VALUES =======================================
-    /// Filter string. Only tests which contain this string are run.
-    #[arg(
-        value_name = "FILTER",
-        help = "The FILTER string is tested against the name of all tests, and only those tests \
-                whose names contain the filter are run.",
-    )]
+    /// The FILTER string is tested against the name of all tests, and only those
+    /// tests whose names contain the filter are run. Multiple filter strings may
+    /// be passed, which will run all tests matching any of the filters.
+    #[arg(value_name = "FILTER")]
     pub filter: Option<String>,
 }
 
@@ -162,14 +134,13 @@ impl Arguments {
 /// Possible values for the `--color` option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ColorSetting {
-    /// Colorize output if stdout is a tty and tests are run on serially
-    /// (default).
+    /// Colorize if stdout is a tty and tests are run on serially (default)
     Auto,
 
-    /// Always colorize output.
+    /// Always colorize output
     Always,
 
-    /// Never colorize output.
+    /// Never colorize output
     Never,
 }
 
@@ -182,20 +153,24 @@ impl Default for ColorSetting {
 /// Possible values for the `-Z` option
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum UnstableFlags {
+    /// Allow use of experimental features
     UnstableOptions,
 }
 
 /// Possible values for the `--format` option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FormatSetting {
-    /// One line per test. Output for humans. (default)
+    /// Print verbose output
     Pretty,
 
-    /// One character per test. Usefull for test suites with many tests.
+    /// Display one character per test
     Terse,
 
-    /// Json output
+    /// Output a json document
     Json,
+
+    /// Output a JUnit document
+    Junit,
 }
 
 impl Default for FormatSetting {

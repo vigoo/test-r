@@ -1,17 +1,15 @@
-use clap::CommandFactory;
-
 pub mod args;
 pub mod internal;
 
-pub fn test_runner() {
-    let args = args::Arguments::from_args();
-    println!("Args: {args:?}");
+#[allow(dead_code)]
+mod sync;
 
-    let registered_tests = internal::REGISTERED_TESTS.lock().unwrap();
-    for registered_test in registered_tests.iter() {
-        println!("Registered test: {}::{}", registered_test.module_path, registered_test.name);
-        // TODO: filter
+#[cfg(not(feature = "tokio"))]
+pub use sync::test_runner;
 
-        (registered_test.run)();
-    }
-}
+mod output;
+#[cfg(feature = "tokio")]
+mod tokio;
+
+#[cfg(feature = "tokio")]
+pub use tokio::test_runner;

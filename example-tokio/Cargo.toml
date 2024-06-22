@@ -1,5 +1,5 @@
 [package]
-name = "test-r-example"
+name = "test-r-example-tokio"
 version = "0.1.0"
 edition = "2021"
 
@@ -15,4 +15,5 @@ name = "tests"
 harness = false
 
 [dependencies]
-test-r = { version = "0.1.0", path = "../test-r", default-features = false }
+test-r = { version = "0.1.0", path = "../test-r" }
+tokio = { version = "1.38.0", features = ["full"] }
