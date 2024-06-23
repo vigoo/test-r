@@ -54,3 +54,91 @@ mod inner {
         }
     }
 }
+
+mod deps {
+    struct Dep1 {
+        value: i32,
+    }
+
+    impl Dep1 {
+        pub fn new(value: i32) -> Self {
+            println!("Creating Dep1 {value}");
+            Self { value }
+        }
+    }
+
+    impl Drop for Dep1 {
+        fn drop(&mut self) {
+            println!("Dropping Dep1 {}", self.value);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use crate::deps::Dep1;
+        use std::sync::Arc;
+        use test_r::{test, test_dep};
+        
+
+        #[test_dep]
+        fn create_dep1() -> Dep1 {
+            Dep1::new(10)
+        }
+
+        #[test_dep]
+        async fn create_dep2() -> Dep2 {
+            Dep2::new(20).await
+        }
+
+        struct Dep2 {
+            value: i32,
+        }
+
+        impl Dep2 {
+            pub async fn new(value: i32) -> Self {
+                println!("Creating Dep2 {value}");
+                Self { value }
+            }
+        }
+
+        impl Drop for Dep2 {
+            fn drop(&mut self) {
+                println!("Dropping Dep2 {}", self.value);
+            }
+        }
+
+        #[test]
+        async fn dep_test_works(dep1: &Dep1, dep2: &Dep2) {
+            println!("Print from dep test");
+            assert_eq!(dep1.value, 10);
+            assert_eq!(dep2.value, 20);
+        }
+
+        mod inner {
+            use crate::deps::tests::Dep2;
+            use crate::deps::Dep1;
+            use std::sync::Arc;
+            use test_r::{inherit_test_dep, test, test_dep};
+
+            inherit_test_dep!(Dep1);
+
+            #[test_dep]
+            async fn create_inner_dep2() -> Dep2 {
+                println!("Creating inner Dep2");
+                Dep2::new(200).await
+            }
+
+            #[test]
+            async fn dep_test_inner_works_1(dep1: &Dep1) {
+                println!("Print from dep test inner 1");
+                assert_eq!(dep1.value, 10);
+            }
+
+            #[test]
+            async fn dep_test_inner_works_2(dep2: &Dep2) {
+                println!("Print from dep test inner 2");
+                assert_eq!(dep2.value, 200);
+            }
+        }
+    }
+}

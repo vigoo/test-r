@@ -133,8 +133,10 @@ impl Arguments {
 
 /// Possible values for the `--color` option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Default)]
 pub enum ColorSetting {
     /// Colorize if stdout is a tty and tests are run on serially (default)
+    #[default]
     Auto,
 
     /// Always colorize output
@@ -144,11 +146,6 @@ pub enum ColorSetting {
     Never,
 }
 
-impl Default for ColorSetting {
-    fn default() -> Self {
-        ColorSetting::Auto
-    }
-}
 
 /// Possible values for the `-Z` option
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -159,8 +156,10 @@ pub enum UnstableFlags {
 
 /// Possible values for the `--format` option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Default)]
 pub enum FormatSetting {
     /// Print verbose output
+    #[default]
     Pretty,
 
     /// Display one character per test
@@ -173,11 +172,6 @@ pub enum FormatSetting {
     Junit,
 }
 
-impl Default for FormatSetting {
-    fn default() -> Self {
-        FormatSetting::Pretty
-    }
-}
 
 #[cfg(test)]
 mod tests {

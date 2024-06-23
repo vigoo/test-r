@@ -7,6 +7,7 @@ mod sync;
 #[cfg(not(feature = "tokio"))]
 pub use sync::test_runner;
 
+mod execution;
 mod output;
 #[cfg(feature = "tokio")]
 mod tokio;

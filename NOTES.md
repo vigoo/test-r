@@ -4,8 +4,10 @@ https://github.com/LukasKalbertodt/libtest-mimic/
 https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 
 # Todo
-- Support test-threads setting
 - Shared, type based dependency injection
+- Dependency chaining (parameters for dependency constructors)
+- Reduce redundancy in macro code
+- Support test-threads setting
 - Sequential/parallel constraints on modules - generating static initializer registering info
 - Try to capture output and support no-capture (`--nocapture`, `--show-output`)
    - we need to fork child processes for this

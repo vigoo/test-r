@@ -7,8 +7,17 @@ use std::time::Duration;
 
 #[derive(Clone)]
 pub enum TestFunction {
-    Sync(Arc<dyn Fn() + Send + Sync + 'static>),
-    Async(Arc<dyn (Fn() -> Pin<Box<dyn Future<Output = ()> + Send>>) + Send + Sync + 'static>),
+    Sync(Arc<dyn Fn(Box<dyn DependencyView + Send + Sync>) + Send + Sync + 'static>),
+    Async(
+        Arc<
+            dyn (Fn(
+                    Box<dyn DependencyView + Send + Sync>,
+                ) -> Pin<Box<dyn Future<Output = ()> + Send>>)
+                + Send
+                + Sync
+                + 'static,
+        >,
+    ),
 }
 
 pub struct RegisteredTest {
@@ -59,6 +68,40 @@ impl Debug for RegisteredTest {
 
 pub static REGISTERED_TESTS: Mutex<Vec<RegisteredTest>> = Mutex::new(Vec::new());
 
+#[derive(Clone)]
+pub enum DependencyConstructor {
+    Sync(Arc<dyn (Fn() -> Arc<dyn std::any::Any + Send + Sync + 'static>) + Send + Sync + 'static>),
+    Async(
+        Arc<
+            dyn (Fn() -> Pin<Box<dyn Future<Output = Arc<dyn std::any::Any + Send + Sync>> + Send>>)
+                + Send
+                + Sync
+                + 'static,
+        >,
+    ),
+}
+
+pub struct RegisteredDependency {
+    pub name: String, // TODO: Should we use TypeId here?
+    pub crate_name: String,
+    pub module_path: String,
+    pub constructor: DependencyConstructor,
+}
+
+impl RegisteredDependency {
+    pub fn crate_and_module(&self) -> String {
+        [&self.crate_name, &self.module_path]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect::<Vec<String>>()
+            .join("::")
+    }
+}
+
+pub static REGISTERED_DEPENDENCY_CONSTRUCTORS: Mutex<Vec<RegisteredDependency>> =
+    Mutex::new(Vec::new());
+
 pub(crate) fn filter_test(test: &RegisteredTest, filter: &str, exact: bool) -> bool {
     if exact {
         test.filterable_name() == filter
@@ -69,7 +112,7 @@ pub(crate) fn filter_test(test: &RegisteredTest, filter: &str, exact: bool) -> b
 
 pub(crate) fn filter_registered_tests<'a>(
     args: &Arguments,
-    registered_tests: &'a Vec<RegisteredTest>,
+    registered_tests: &'a [RegisteredTest],
 ) -> Vec<&'a RegisteredTest> {
     registered_tests
         .iter()
@@ -110,7 +153,7 @@ impl TestResult {
             TestResult::Failed { panic } => panic
                 .downcast_ref::<String>()
                 .map(|s| s.as_str())
-                .or(panic.downcast_ref::<&str>().map(|s| *s)),
+                .or(panic.downcast_ref::<&str>().copied()),
             _ => None,
         }
     }
@@ -152,5 +195,15 @@ impl SuiteResult {
             filtered_out,
             exec_time: Duration::new(0, 0),
         }
+    }
+}
+
+pub trait DependencyView {
+    fn get(&self, name: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
+}
+
+impl DependencyView for Box<dyn DependencyView + Send + Sync> {
+    fn get(&self, name: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        self.as_ref().get(name)
     }
 }
