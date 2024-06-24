@@ -142,7 +142,6 @@ pub fn inherit_test_dep(item: TokenStream) -> TokenStream {
 pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let ast: syn::ItemFn = syn::parse(item).expect("test ast");
     let ctor_name = ast.sig.ident.clone();
-    let ctor_name_str = ctor_name.to_string();
 
     let dep_type = match &ast.sig.output {
         ReturnType::Default => {

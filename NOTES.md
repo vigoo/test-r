@@ -4,7 +4,6 @@ https://github.com/LukasKalbertodt/libtest-mimic/
 https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 
 # Todo
-- Shared, type based dependency injection
 - Dependency chaining (parameters for dependency constructors)
 - Reduce redundancy in macro code
 - Support test-threads setting
