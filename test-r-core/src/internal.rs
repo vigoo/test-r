@@ -70,10 +70,22 @@ pub static REGISTERED_TESTS: Mutex<Vec<RegisteredTest>> = Mutex::new(Vec::new())
 
 #[derive(Clone)]
 pub enum DependencyConstructor {
-    Sync(Arc<dyn (Fn() -> Arc<dyn std::any::Any + Send + Sync + 'static>) + Send + Sync + 'static>),
+    Sync(
+        Arc<
+            dyn (Fn(
+                    Box<dyn DependencyView + Send + Sync>,
+                ) -> Arc<dyn std::any::Any + Send + Sync + 'static>)
+                + Send
+                + Sync
+                + 'static,
+        >,
+    ),
     Async(
         Arc<
-            dyn (Fn() -> Pin<Box<dyn Future<Output = Arc<dyn std::any::Any + Send + Sync>> + Send>>)
+            dyn (Fn(
+                    Box<dyn DependencyView + Send + Sync>,
+                )
+                    -> Pin<Box<dyn Future<Output = Arc<dyn std::any::Any + Send + Sync>> + Send>>)
                 + Send
                 + Sync
                 + 'static,

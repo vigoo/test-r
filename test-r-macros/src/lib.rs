@@ -2,7 +2,7 @@ use proc_macro::TokenStream;
 
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
-use syn::{FnArg, ReturnType, Type};
+use syn::{FnArg, ItemFn, ReturnType, Type};
 
 #[proc_macro_attribute]
 pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -18,7 +18,42 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     );
 
     let is_async = ast.sig.asyncness.is_some();
+    let dep_getters = get_dependency_params(&ast);
 
+    let register_call = if is_async {
+        quote! {
+              test_r::core::register_test(
+                  #test_name_str,
+                  module_path!(),
+                  #is_ignored,
+                  test_r::core::TestFunction::Async(std::sync::Arc::new(|deps| Box::pin(async move { #test_name(#(#dep_getters),*).await })))
+              );
+        }
+    } else {
+        quote! {
+            test_r::core::register_test(
+                #test_name_str,
+                module_path!(),
+                #is_ignored,
+                test_r::core::TestFunction::Sync(std::sync::Arc::new(|deps| #test_name(#(#dep_getters),*)))
+            );
+        }
+    };
+
+    let result = quote! {
+        #[cfg(test)]
+        #[test_r::ctor::ctor]
+        fn #register_ident() {
+             #register_call
+        }
+
+        #ast
+    };
+
+    result.into()
+}
+
+fn get_dependency_params(ast: &ItemFn) -> Vec<proc_macro2::TokenStream> {
     let mut dep_getters = Vec::new();
     for param in &ast.sig.inputs {
         let dep_type = match param {
@@ -60,38 +95,7 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
             &#getter_ident(&deps)
         });
     }
-
-    let register_call = if is_async {
-        quote! {
-              test_r::core::register_test(
-                  #test_name_str,
-                  module_path!(),
-                  #is_ignored,
-                  test_r::core::TestFunction::Async(std::sync::Arc::new(|deps| Box::pin(async move { #test_name(#(#dep_getters),*).await })))
-              );
-        }
-    } else {
-        quote! {
-            test_r::core::register_test(
-                #test_name_str,
-                module_path!(),
-                #is_ignored,
-                test_r::core::TestFunction::Sync(std::sync::Arc::new(|deps| #test_name(#(#dep_getters),*)))
-            );
-        }
-    };
-
-    let result = quote! {
-        #[cfg(test)]
-        #[test_r::ctor::ctor]
-        fn #register_ident() {
-             #register_call
-        }
-
-        #ast
-    };
-
-    result.into()
+    dep_getters
 }
 
 #[proc_macro]
@@ -170,6 +174,7 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
     );
 
     let is_async = ast.sig.asyncness.is_some();
+    let dep_getters = get_dependency_params(&ast);
 
     let register_call = if is_async {
         quote! {
@@ -177,7 +182,7 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
                   #dep_name_str,
                   module_path!(),
                   test_r::core::DependencyConstructor::Async(std::sync::Arc::new(|| Box::pin(async {
-                    let result: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(#ctor_name().await);
+                    let result: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(#ctor_name(#(#dep_getters),*).await);
                     result
                   })))
               );
@@ -187,7 +192,7 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
             test_r::core::register_dependency_constructor(
                 #dep_name_str,
                 module_path!(),
-                test_r::core::DependencyConstructor::Sync(std::sync::Arc::new(|| std::sync::Arc::new(#ctor_name())))
+                test_r::core::DependencyConstructor::Sync(std::sync::Arc::new(|| std::sync::Arc::new(#ctor_name(#(#dep_getters),*))))
             );
         }
     };
@@ -212,6 +217,7 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
              #register_call
         }
 
+        #[cfg(test)]
         fn #getter_ident<'a>(dependency_view: &'a impl test_r::core::DependencyView) -> Arc<#dep_type> {
             #getter_body
         }

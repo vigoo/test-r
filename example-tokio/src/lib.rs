@@ -123,9 +123,9 @@ mod deps {
             inherit_test_dep!(Dep1);
 
             #[test_dep]
-            async fn create_inner_dep2() -> Dep2 {
-                println!("Creating inner Dep2");
-                Dep2::new(200).await
+            async fn create_inner_dep2(dep1: &Dep1) -> Dep2 {
+                println!("Creating inner Dep2 based on {}", dep1.value);
+                Dep2::new(200 + dep1.value).await
             }
 
             #[test]
