@@ -28,6 +28,7 @@ pub mod core {
         name: &str,
         module_path: &str,
         cons: DependencyConstructor,
+        dependencies: Vec<String>,
     ) {
         let (crate_name, module_path) = split_module_path(module_path);
 
@@ -39,6 +40,7 @@ pub mod core {
                 crate_name,
                 module_path,
                 constructor: cons,
+                dependencies,
             });
     }
 

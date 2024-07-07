@@ -78,7 +78,6 @@ mod deps {
         use crate::deps::Dep1;
         use std::sync::Arc;
         use test_r::{test, test_dep};
-        
 
         #[test_dep]
         fn create_dep1() -> Dep1 {
@@ -122,6 +121,18 @@ mod deps {
 
             inherit_test_dep!(Dep1);
 
+            struct Dep3 {
+                value: i32,
+            }
+
+            #[test_dep]
+            fn create_dep3(dep2: &Dep2) -> Dep3 {
+                println!("Creating Dep3 based on {}", dep2.value);
+                Dep3 {
+                    value: 30 + dep2.value,
+                }
+            }
+
             #[test_dep]
             async fn create_inner_dep2(dep1: &Dep1) -> Dep2 {
                 println!("Creating inner Dep2 based on {}", dep1.value);
@@ -137,7 +148,13 @@ mod deps {
             #[test]
             async fn dep_test_inner_works_2(dep2: &Dep2) {
                 println!("Print from dep test inner 2");
-                assert_eq!(dep2.value, 200);
+                assert_eq!(dep2.value, 210);
+            }
+
+            #[test]
+            async fn dep_test_inner_works_3(dep3: &Dep3) {
+                println!("Print from dep test inner 3");
+                assert_eq!(dep3.value, 240);
             }
         }
     }

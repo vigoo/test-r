@@ -4,10 +4,10 @@ https://github.com/LukasKalbertodt/libtest-mimic/
 https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 
 # Todo
-- Dependency chaining (parameters for dependency constructors)
 - Reduce redundancy in macro code
 - Support test-threads setting
 - Sequential/parallel constraints on modules - generating static initializer registering info
+- Dynamic test generation (annotation for generator function)
 - Try to capture output and support no-capture (`--nocapture`, `--show-output`)
    - we need to fork child processes for this
    - must respect thread-count setting
@@ -22,8 +22,9 @@ https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 - Support `#[timeout(duration)]`
 - Support `-shuffle`
 - Support `--shuffle-seed`
-- Support property based testing
+- Support property based testing (with an existing library)
 - Provide a nicer assertion macro
 - Flaky/non-flaky attributes
 - Capture/no-capture controlled by attributes
 - Prettier pretty output
+- Support tests returning `Result<>` 

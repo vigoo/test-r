@@ -18,7 +18,7 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     );
 
     let is_async = ast.sig.asyncness.is_some();
-    let dep_getters = get_dependency_params(&ast);
+    let (dep_getters, _dep_names) = get_dependency_params(&ast);
 
     let register_call = if is_async {
         quote! {
@@ -53,8 +53,11 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     result.into()
 }
 
-fn get_dependency_params(ast: &ItemFn) -> Vec<proc_macro2::TokenStream> {
+fn get_dependency_params(
+    ast: &ItemFn,
+) -> (Vec<proc_macro2::TokenStream>, Vec<proc_macro2::TokenStream>) {
     let mut dep_getters = Vec::new();
+    let mut dep_names = Vec::new();
     for param in &ast.sig.inputs {
         let dep_type = match param {
             FnArg::Receiver(_) => {
@@ -94,8 +97,11 @@ fn get_dependency_params(ast: &ItemFn) -> Vec<proc_macro2::TokenStream> {
         dep_getters.push(quote! {
             &#getter_ident(&deps)
         });
+        dep_names.push(quote! {
+            #dep_name_str.to_string()
+        });
     }
-    dep_getters
+    (dep_getters, dep_names)
 }
 
 #[proc_macro]
@@ -174,17 +180,18 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
     );
 
     let is_async = ast.sig.asyncness.is_some();
-    let dep_getters = get_dependency_params(&ast);
+    let (dep_getters, dep_names) = get_dependency_params(&ast);
 
     let register_call = if is_async {
         quote! {
               test_r::core::register_dependency_constructor(
                   #dep_name_str,
                   module_path!(),
-                  test_r::core::DependencyConstructor::Async(std::sync::Arc::new(|| Box::pin(async {
+                  test_r::core::DependencyConstructor::Async(std::sync::Arc::new(|deps| Box::pin(async move {
                     let result: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(#ctor_name(#(#dep_getters),*).await);
                     result
-                  })))
+                  }))),
+                 vec![#(#dep_names),*]
               );
         }
     } else {
@@ -192,7 +199,8 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
             test_r::core::register_dependency_constructor(
                 #dep_name_str,
                 module_path!(),
-                test_r::core::DependencyConstructor::Sync(std::sync::Arc::new(|| std::sync::Arc::new(#ctor_name(#(#dep_getters),*))))
+                test_r::core::DependencyConstructor::Sync(std::sync::Arc::new(|deps| std::sync::Arc::new(#ctor_name(#(#dep_getters),*)))),
+                vec![#(#dep_names),*]
             );
         }
     };

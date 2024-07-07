@@ -1,6 +1,7 @@
 use crate::args::Arguments;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
+use std::hash::Hash;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -98,6 +99,31 @@ pub struct RegisteredDependency {
     pub crate_name: String,
     pub module_path: String,
     pub constructor: DependencyConstructor,
+    pub dependencies: Vec<String>,
+}
+
+impl Debug for RegisteredDependency {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisteredDependency")
+            .field("name", &self.name)
+            .field("crate_name", &self.crate_name)
+            .field("module_path", &self.module_path)
+            .finish()
+    }
+}
+
+impl PartialEq for RegisteredDependency {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for RegisteredDependency {}
+
+impl Hash for RegisteredDependency {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
 }
 
 impl RegisteredDependency {

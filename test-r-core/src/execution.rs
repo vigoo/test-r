@@ -1,20 +1,20 @@
-use std::any::Any;
-use std::collections::HashMap;
-use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
-
 use crate::args::Arguments;
 use crate::internal::{
     filter_registered_tests, DependencyConstructor, DependencyView, RegisteredDependency,
     RegisteredTest,
 };
+use std::any::Any;
+use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
+use std::sync::Arc;
+use topological_sort::TopologicalSort;
 
 pub(crate) struct TestSuiteExecution<'a> {
     crate_and_module: String,
     dependencies: Vec<&'a RegisteredDependency>,
     tests: Vec<&'a RegisteredTest>,
     inner: Vec<TestSuiteExecution<'a>>,
-    materialized_dependencies: Vec<Arc<dyn Any + Send + Sync>>,
+    materialized_dependencies: HashMap<String, Arc<dyn Any + Send + Sync>>,
     remaining_count: usize,
 }
 
@@ -53,27 +53,32 @@ impl<'a> TestSuiteExecution<'a> {
         self.remaining_count
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.tests.is_empty() && self.inner.is_empty()
+    }
+
     #[cfg(feature = "tokio")]
     pub async fn pick_next(
         &mut self,
     ) -> Option<(&'a RegisteredTest, Box<dyn DependencyView + Send + Sync>)> {
-        match self.pick_next_internal().await {
-            Some((test, mut deps)) => {
-                self.update_dep_map_with_missing(&mut deps).await;
-                Some((test, Box::new(deps)))
+        if self.is_empty() {
+            None
+        } else {
+            match self
+                .pick_next_internal(&self.create_dependency_map(&HashMap::new()))
+                .await
+            {
+                Some((test, deps)) => Some((test, Box::new(deps))),
+                None => None,
             }
-            None => None,
         }
     }
 
     pub fn pick_next_sync(
         &mut self,
     ) -> Option<(&'a RegisteredTest, Box<dyn DependencyView + Send + Sync>)> {
-        match self.pick_next_internal_sync() {
-            Some((test, mut deps)) => {
-                self.update_dep_map_with_missing_sync(&mut deps);
-                Some((test, Box::new(deps)))
-            }
+        match self.pick_next_internal_sync(&HashMap::new()) {
+            Some((test, deps)) => Some((test, Box::new(deps))),
             None => None,
         }
     }
@@ -81,97 +86,102 @@ impl<'a> TestSuiteExecution<'a> {
     #[cfg(feature = "tokio")]
     async fn pick_next_internal(
         &mut self,
+        materialized_parent_deps: &HashMap<String, Arc<dyn Any + Send + Sync>>,
     ) -> Option<(
         &'a RegisteredTest,
         HashMap<String, Arc<dyn Any + Send + Sync>>,
     )> {
-        let result = if self.tests.is_empty() {
-            let current = self.inner.iter_mut();
-            let mut result = None;
-            for inner in current {
-                if let Some((test, mut deps)) = Box::pin(inner.pick_next_internal()).await {
-                    self.update_dep_map_with_missing(&mut deps).await;
-                    result = Some((test, deps));
-                    break;
+        if self.is_empty() {
+            None
+        } else {
+            let dependency_map = if !self.is_materialized() {
+                self.materialize_deps(materialized_parent_deps).await
+            } else {
+                self.create_dependency_map(materialized_parent_deps)
+            };
+
+            let result = if self.tests.is_empty() {
+                let current = self.inner.iter_mut();
+                let mut result = None;
+                for inner in current {
+                    if let Some((test, deps)) =
+                        Box::pin(inner.pick_next_internal(&dependency_map)).await
+                    {
+                        result = Some((test, deps));
+                        break;
+                    }
                 }
+                self.inner.retain(|inner| !inner.is_empty());
+
+                result
+            } else if let Some(test) = self.tests.pop() {
+                Some((test, dependency_map))
+            } else {
+                None
+            };
+            if result.is_none() && self.is_materialized() {
+                self.drop_deps();
+            }
+            if result.is_some() {
+                self.remaining_count -= 1;
             }
             result
-        } else if let Some(test) = self.tests.pop() {
-            let mut deps = HashMap::new();
-            self.update_dep_map_with_missing(&mut deps).await;
-            Some((test, deps))
-        } else {
-            None
-        };
-        if result.is_none() && self.is_materialized() {
-            self.drop_deps();
         }
-        if result.is_some() {
-            self.remaining_count -= 1;
-        }
-        result
     }
 
     fn pick_next_internal_sync(
         &mut self,
+        materialized_parent_deps: &HashMap<String, Arc<dyn Any + Send + Sync>>,
     ) -> Option<(
         &'a RegisteredTest,
         HashMap<String, Arc<dyn Any + Send + Sync>>,
     )> {
-        let result = if self.tests.is_empty() {
-            let current = self.inner.iter_mut();
-            let mut result = None;
-            for inner in current {
-                if let Some((test, mut deps)) = inner.pick_next_internal_sync() {
-                    self.update_dep_map_with_missing_sync(&mut deps);
-                    result = Some((test, deps));
-                    break;
+        if self.is_empty() {
+            None
+        } else {
+            let dependency_map = if !self.is_materialized() {
+                self.materialize_deps_sync(materialized_parent_deps)
+            } else {
+                self.create_dependency_map(materialized_parent_deps)
+            };
+
+            let result = if self.tests.is_empty() {
+                let current = self.inner.iter_mut();
+                let mut result = None;
+                for inner in current {
+                    if let Some((test, deps)) = inner.pick_next_internal_sync(&dependency_map) {
+                        result = Some((test, deps));
+                        break;
+                    }
                 }
+
+                self.inner.retain(|inner| !inner.is_empty());
+                result
+            } else if let Some(test) = self.tests.pop() {
+                let deps = HashMap::new();
+                Some((test, deps))
+            } else {
+                None
+            };
+            if result.is_none() && self.is_materialized() {
+                self.drop_deps();
+            }
+            if result.is_some() {
+                self.remaining_count -= 1;
             }
             result
-        } else if let Some(test) = self.tests.pop() {
-            let mut deps = HashMap::new();
-            self.update_dep_map_with_missing_sync(&mut deps);
-            Some((test, deps))
-        } else {
-            None
-        };
-        if result.is_none() && self.is_materialized() {
-            self.drop_deps();
         }
-        if result.is_some() {
-            self.remaining_count -= 1;
+    }
+
+    fn create_dependency_map(
+        &self,
+        parent_map: &HashMap<String, Arc<dyn Any + Send + Sync>>,
+    ) -> HashMap<String, Arc<dyn Any + Send + Sync>> {
+        let mut result = parent_map.clone();
+        for (key, dep) in &self.materialized_dependencies {
+            result.insert(key.clone(), dep.clone());
         }
         result
-    }
-
-    #[cfg(feature = "tokio")]
-    async fn update_dep_map_with_missing(
-        &mut self,
-        dep_map: &mut HashMap<String, Arc<dyn Any + Send + Sync>>,
-    ) {
-        if !self.is_materialized() {
-            self.materialize_deps().await;
-        }
-        for (idx, dep) in self.materialized_dependencies.iter().enumerate() {
-            let key = self.dependencies[idx].name.clone();
-            let dep = dep.clone();
-            dep_map.entry(key).or_insert(dep);
-        }
-    }
-
-    fn update_dep_map_with_missing_sync(
-        &mut self,
-        dep_map: &mut HashMap<String, Arc<dyn Any + Send + Sync>>,
-    ) {
-        if !self.is_materialized() {
-            self.materialize_deps_sync();
-        }
-        for (idx, dep) in self.materialized_dependencies.iter().enumerate() {
-            let key = self.dependencies[idx].name.clone();
-            let dep = dep.clone();
-            dep_map.entry(key).or_insert(dep);
-        }
     }
 
     fn root(deps: Vec<&'a RegisteredDependency>, tests: Vec<&'a RegisteredTest>) -> Self {
@@ -181,7 +191,7 @@ impl<'a> TestSuiteExecution<'a> {
             dependencies: deps,
             tests,
             inner: Vec::new(),
-            materialized_dependencies: Vec::new(),
+            materialized_dependencies: HashMap::new(),
             remaining_count: total_count,
         }
     }
@@ -205,7 +215,7 @@ impl<'a> TestSuiteExecution<'a> {
                     dependencies: vec![],
                     tests: vec![],
                     inner: vec![],
-                    materialized_dependencies: vec![],
+                    materialized_dependencies: HashMap::new(),
                     remaining_count: 0,
                 };
                 inner.add_dependency(dep);
@@ -233,7 +243,7 @@ impl<'a> TestSuiteExecution<'a> {
                     dependencies: vec![],
                     tests: vec![],
                     inner: vec![],
-                    materialized_dependencies: vec![],
+                    materialized_dependencies: HashMap::new(),
                     remaining_count: 0,
                 };
                 inner.add_test(test);
@@ -248,34 +258,73 @@ impl<'a> TestSuiteExecution<'a> {
     }
 
     #[cfg(feature = "tokio")]
-    async fn materialize_deps(&mut self) {
-        let mut deps = Vec::with_capacity(self.dependencies.len());
-        for dep in &self.dependencies {
-            match &dep.constructor {
-                DependencyConstructor::Sync(cons) => {
-                    deps.push(cons());
-                }
-                DependencyConstructor::Async(cons) => {
-                    deps.push(cons().await);
-                }
-            }
+    async fn materialize_deps(
+        &mut self,
+        parent_map: &HashMap<String, Arc<dyn Any + Send + Sync>>,
+    ) -> HashMap<String, Arc<dyn Any + Send + Sync>> {
+        let mut deps = HashMap::with_capacity(self.dependencies.len());
+        let mut dependency_map = parent_map.clone();
+
+        let sorted_dependencies = self.sorted_dependencies();
+        for dep in &sorted_dependencies {
+            let materialized_dep = match &dep.constructor {
+                DependencyConstructor::Sync(cons) => cons(Box::new(dependency_map.clone())),
+                DependencyConstructor::Async(cons) => cons(Box::new(dependency_map.clone())).await,
+            };
+            deps.insert(dep.name.clone(), materialized_dep.clone());
+            dependency_map.insert(dep.name.clone(), materialized_dep);
         }
         self.materialized_dependencies = deps;
+        dependency_map
     }
 
-    fn materialize_deps_sync(&mut self) {
-        let mut deps = Vec::with_capacity(self.dependencies.len());
-        for dep in &self.dependencies {
-            match &dep.constructor {
-                DependencyConstructor::Sync(cons) => {
-                    deps.push(cons());
-                }
+    fn materialize_deps_sync(
+        &mut self,
+        parent_map: &HashMap<String, Arc<dyn Any + Send + Sync>>,
+    ) -> HashMap<String, Arc<dyn Any + Send + Sync>> {
+        let mut deps = HashMap::with_capacity(self.dependencies.len());
+        let mut dependency_map = parent_map.clone();
+
+        let sorted_dependencies = self.sorted_dependencies();
+        for dep in &sorted_dependencies {
+            let materialized_dep = match &dep.constructor {
+                DependencyConstructor::Sync(cons) => cons(Box::new(dependency_map.clone())),
                 DependencyConstructor::Async(_cons) => {
                     panic!("Async dependencies are not supported in sync mode")
                 }
-            }
+            };
+            deps.insert(dep.name.clone(), materialized_dep.clone());
+            dependency_map.insert(dep.name.clone(), materialized_dep);
         }
         self.materialized_dependencies = deps;
+        dependency_map
+    }
+
+    fn sorted_dependencies(&self) -> Vec<&'a RegisteredDependency> {
+        let mut ts: TopologicalSort<&RegisteredDependency> = TopologicalSort::new();
+        for dep in &self.dependencies {
+            let mut added = false;
+            for dep_dep_name in &dep.dependencies {
+                if let Some(dep_dep) = self.dependencies.iter().find(|d| &d.name == dep_dep_name) {
+                    ts.add_dependency(*dep_dep, *dep);
+                    added = true;
+                } else {
+                    // otherwise it is expected to come from the parent level
+                }
+            }
+            if !added {
+                ts.insert(*dep);
+            }
+        }
+        let mut result = Vec::with_capacity(self.dependencies.len());
+        loop {
+            let chunk = ts.pop_all();
+            if chunk.is_empty() {
+                break;
+            }
+            result.extend(chunk);
+        }
+        result
     }
 
     fn drop_deps(&mut self) {
@@ -325,7 +374,7 @@ impl<'a> Debug for TestSuiteExecution<'a> {
 }
 
 impl DependencyView for HashMap<String, Arc<dyn Any + Send + Sync>> {
-    fn get(&self, name: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+    fn get(&self, name: &str) -> Option<Arc<dyn Any + Send + Sync>> {
         self.get(name).cloned()
     }
 }

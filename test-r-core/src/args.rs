@@ -132,8 +132,7 @@ impl Arguments {
 }
 
 /// Possible values for the `--color` option.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
 pub enum ColorSetting {
     /// Colorize if stdout is a tty and tests are run on serially (default)
     #[default]
@@ -146,7 +145,6 @@ pub enum ColorSetting {
     Never,
 }
 
-
 /// Possible values for the `-Z` option
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum UnstableFlags {
@@ -155,8 +153,7 @@ pub enum UnstableFlags {
 }
 
 /// Possible values for the `--format` option.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
 pub enum FormatSetting {
     /// Print verbose output
     #[default]
@@ -171,7 +168,6 @@ pub enum FormatSetting {
     /// Output a JUnit document
     Junit,
 }
-
 
 #[cfg(test)]
 mod tests {

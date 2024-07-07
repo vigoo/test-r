@@ -11,8 +11,9 @@ anstyle = "1.0.7"
 clap = { version = "4.5.7", features = ["derive"] }
 escape8259 = "0.5.3"
 futures = "0.3.30"
-quick-xml = "0.33.0"
+quick-xml = "0.35.0"
 tokio = { version = "1.38.0", features = ["rt-multi-thread"], optional = true }
+topological-sort = "0.2.2"
 
 [features]
 default = ["tokio"]
