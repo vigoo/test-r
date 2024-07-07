@@ -2,11 +2,11 @@ use proc_macro::TokenStream;
 
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
-use syn::{FnArg, ItemFn, ReturnType, Type};
+use syn::{FnArg, ItemFn, ReturnType, Type, TypePath};
 
 #[proc_macro_attribute]
 pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let ast: syn::ItemFn = syn::parse(item).expect("test ast");
+    let ast: ItemFn = syn::parse(item).expect("test ast");
     let test_name = ast.sig.ident.clone();
     let test_name_str = test_name.to_string();
 
@@ -79,15 +79,7 @@ fn get_dependency_params(
                 }
             },
         };
-        let merged_ident = dep_type
-            .path
-            .segments
-            .iter()
-            .map(|segment| segment.ident.to_string())
-            .collect::<Vec<_>>()
-            .join("_");
-        let dep_name = Ident::new(&merged_ident, Span::call_site());
-        let dep_name_str = dep_name.to_string().to_lowercase();
+        let dep_name_str = merge_type_path(&dep_type);
 
         let getter_ident = Ident::new(
             &format!("test_r_get_dep_{}", dep_name_str),
@@ -125,15 +117,7 @@ pub fn inherit_test_dep(item: TokenStream) -> TokenStream {
             panic!("Dependency constructor must return a single concrete type")
         }
     };
-    let merged_ident = dep_type
-        .path
-        .segments
-        .iter()
-        .map(|segment| segment.ident.to_string())
-        .collect::<Vec<_>>()
-        .join("_");
-    let dep_name = Ident::new(&merged_ident, Span::call_site());
-    let dep_name_str = dep_name.to_string().to_lowercase();
+    let dep_name_str = merge_type_path(&dep_type);
     let getter_ident = Ident::new(
         &format!("test_r_get_dep_{}", dep_name_str),
         Span::call_site(),
@@ -150,7 +134,7 @@ pub fn inherit_test_dep(item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let ast: syn::ItemFn = syn::parse(item).expect("test ast");
+    let ast: ItemFn = syn::parse(item).expect("test ast");
     let ctor_name = ast.sig.ident.clone();
 
     let dep_type = match &ast.sig.output {
@@ -164,16 +148,7 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         },
     };
-    let merged_ident = dep_type
-        .path
-        .segments
-        .iter()
-        .map(|segment| segment.ident.to_string())
-        .collect::<Vec<_>>()
-        .join("_");
-    let dep_name = Ident::new(&merged_ident, Span::call_site());
-    let dep_name_str = dep_name.to_string().to_lowercase();
-
+    let dep_name_str = merge_type_path(&dep_type);
     let register_ident = Ident::new(
         &format!("test_r_register_{}", dep_name_str),
         Span::call_site(),
@@ -234,4 +209,16 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     result.into()
+}
+
+fn merge_type_path(dep_type: &TypePath) -> String {
+    let merged_ident = dep_type
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("_");
+    let dep_name = Ident::new(&merged_ident, Span::call_site());
+    dep_name.to_string().to_lowercase()
 }

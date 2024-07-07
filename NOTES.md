@@ -4,7 +4,6 @@ https://github.com/LukasKalbertodt/libtest-mimic/
 https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 
 # Todo
-- Reduce redundancy in macro code
 - Support test-threads setting
 - Sequential/parallel constraints on modules - generating static initializer registering info
 - Dynamic test generation (annotation for generator function)
