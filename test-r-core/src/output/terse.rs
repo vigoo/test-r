@@ -16,14 +16,14 @@ impl Terse {
 }
 
 impl TestRunnerOutput for Terse {
-    fn start_suite(&mut self, count: usize) {
+    fn start_suite(&self, count: usize) {
         self.pretty.start_suite(count)
     }
 
-    fn start_running_test(&mut self, _test: &RegisteredTest, _idx: usize, _count: usize) {}
+    fn start_running_test(&self, _test: &RegisteredTest, _idx: usize, _count: usize) {}
 
     fn finished_running_test(
-        &mut self,
+        &self,
         _test: &RegisteredTest,
         _idx: usize,
         _count: usize,
@@ -37,14 +37,14 @@ impl TestRunnerOutput for Terse {
     }
 
     fn finished_suite(
-        &mut self,
+        &self,
         registered_tests: &[RegisteredTest],
-        results: &[(&RegisteredTest, TestResult)],
+        results: &[(RegisteredTest, TestResult)],
     ) {
         self.pretty.finished_suite(registered_tests, results)
     }
 
-    fn test_list(&mut self, registered_tests: &[RegisteredTest]) {
+    fn test_list(&self, registered_tests: &[RegisteredTest]) {
         self.pretty.test_list(registered_tests)
     }
 }

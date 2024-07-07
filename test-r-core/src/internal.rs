@@ -21,6 +21,7 @@ pub enum TestFunction {
     ),
 }
 
+#[derive(Clone)]
 pub struct RegisteredTest {
     pub name: String,
     pub crate_name: String,
@@ -209,7 +210,7 @@ pub struct SuiteResult {
 impl SuiteResult {
     pub fn from_test_results(
         registered_tests: &[RegisteredTest],
-        results: &[(&RegisteredTest, TestResult)],
+        results: &[(RegisteredTest, TestResult)],
     ) -> Self {
         let passed = results
             .iter()

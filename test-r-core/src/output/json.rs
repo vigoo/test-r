@@ -10,11 +10,11 @@ impl Json {
 }
 
 impl TestRunnerOutput for Json {
-    fn start_suite(&mut self, count: usize) {
+    fn start_suite(&self, count: usize) {
         println!(r#"{{ "type": "suite", "event": "started", "test_count": {count} }}"#)
     }
 
-    fn start_running_test(&mut self, test: &RegisteredTest, _idx: usize, _count: usize) {
+    fn start_running_test(&self, test: &RegisteredTest, _idx: usize, _count: usize) {
         println!(
             r#"{{ "type": "test", "event": "started", "name": "{}" }}"#,
             escape8259::escape(test.fully_qualified_name())
@@ -22,7 +22,7 @@ impl TestRunnerOutput for Json {
     }
 
     fn finished_running_test(
-        &mut self,
+        &self,
         test: &RegisteredTest,
         _idx: usize,
         _count: usize,
@@ -44,9 +44,9 @@ impl TestRunnerOutput for Json {
     }
 
     fn finished_suite(
-        &mut self,
+        &self,
         registered_tests: &[RegisteredTest],
-        results: &[(&RegisteredTest, TestResult)],
+        results: &[(RegisteredTest, TestResult)],
     ) {
         let result = SuiteResult::from_test_results(registered_tests, results);
         let event = if result.failed == 0 { "ok" } else { "failed" };
@@ -62,7 +62,7 @@ impl TestRunnerOutput for Json {
         )
     }
 
-    fn test_list(&mut self, registered_tests: &[RegisteredTest]) {
+    fn test_list(&self, registered_tests: &[RegisteredTest]) {
         println!(r#"["#);
         for test in registered_tests {
             println!(r#""{}","#, escape8259::escape(test.fully_qualified_name()));

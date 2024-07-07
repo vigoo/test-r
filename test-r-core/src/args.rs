@@ -1,4 +1,5 @@
 use clap::{Parser, ValueEnum};
+use std::num::NonZero;
 
 /// Command line arguments.
 ///
@@ -128,6 +129,13 @@ impl Arguments {
         I::Item: Into<std::ffi::OsString> + Clone,
     {
         Parser::parse_from(iter)
+    }
+
+    pub(crate) fn test_threads(&self) -> NonZero<usize> {
+        self.test_threads
+            .and_then(|t| NonZero::new(t))
+            .or_else(|| std::thread::available_parallelism().ok())
+            .unwrap_or(NonZero::new(1).unwrap())
     }
 }
 

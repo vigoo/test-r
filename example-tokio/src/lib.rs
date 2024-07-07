@@ -52,6 +52,28 @@ mod inner {
             let result = 2 + 2;
             assert_eq!(result, 5);
         }
+
+        #[test]
+        async fn sleeping_test_1() {
+            let _ = tokio::io::stdout()
+                .write(b"Print from sleeping test 1\n")
+                .await
+                .unwrap();
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            let result = 2 + 2;
+            assert_eq!(result, 4);
+        }
+
+        #[test]
+        async fn sleeping_test_2() {
+            let _ = tokio::io::stdout()
+                .write(b"Print from sleeping test 2\n")
+                .await
+                .unwrap();
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            let result = 2 + 2;
+            assert_eq!(result, 4);
+        }
     }
 }
 

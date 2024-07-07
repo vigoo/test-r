@@ -39,4 +39,51 @@ mod inner {
             assert_eq!(result, 5);
         }
     }
+
+    mod slow {
+        #[cfg(test)]
+        mod tests {
+            use test_r::test;
+
+            #[test]
+            fn sleeping_test_1() {
+                println!("Print from sleeping test 1");
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                let result = 2 + 2;
+                assert_eq!(result, 4);
+            }
+
+            #[test]
+            fn sleeping_test_2() {
+                println!("Print from sleeping test 2");
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                let result = 2 + 2;
+                assert_eq!(result, 4);
+            }
+
+            #[test]
+            fn sleeping_test_3() {
+                println!("Print from sleeping test 3");
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                let result = 2 + 2;
+                assert_eq!(result, 4);
+            }
+
+            #[test]
+            fn sleeping_test_4() {
+                println!("Print from sleeping test 4");
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let result = 2 + 2;
+                assert_eq!(result, 4);
+            }
+
+            #[test]
+            fn sleeping_test_5() {
+                println!("Print from sleeping test 5");
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let result = 2 + 2;
+                assert_eq!(result, 4);
+            }
+        }
+    }
 }

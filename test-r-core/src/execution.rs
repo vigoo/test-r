@@ -16,6 +16,7 @@ pub(crate) struct TestSuiteExecution<'a> {
     inner: Vec<TestSuiteExecution<'a>>,
     materialized_dependencies: HashMap<String, Arc<dyn Any + Send + Sync>>,
     remaining_count: usize,
+    idx: usize,
 }
 
 impl<'a> TestSuiteExecution<'a> {
@@ -60,7 +61,11 @@ impl<'a> TestSuiteExecution<'a> {
     #[cfg(feature = "tokio")]
     pub async fn pick_next(
         &mut self,
-    ) -> Option<(&'a RegisteredTest, Box<dyn DependencyView + Send + Sync>)> {
+    ) -> Option<(
+        &'a RegisteredTest,
+        Box<dyn DependencyView + Send + Sync>,
+        usize,
+    )> {
         if self.is_empty() {
             None
         } else {
@@ -68,7 +73,11 @@ impl<'a> TestSuiteExecution<'a> {
                 .pick_next_internal(&self.create_dependency_map(&HashMap::new()))
                 .await
             {
-                Some((test, deps)) => Some((test, Box::new(deps))),
+                Some((test, deps)) => {
+                    let idx = self.idx;
+                    self.idx += 1;
+                    Some((test, Box::new(deps), idx))
+                }
                 None => None,
             }
         }
@@ -76,9 +85,17 @@ impl<'a> TestSuiteExecution<'a> {
 
     pub fn pick_next_sync(
         &mut self,
-    ) -> Option<(&'a RegisteredTest, Box<dyn DependencyView + Send + Sync>)> {
+    ) -> Option<(
+        &'a RegisteredTest,
+        Box<dyn DependencyView + Send + Sync>,
+        usize,
+    )> {
         match self.pick_next_internal_sync(&HashMap::new()) {
-            Some((test, deps)) => Some((test, Box::new(deps))),
+            Some((test, deps)) => {
+                let idx = self.idx;
+                self.idx += 1;
+                Some((test, Box::new(deps), idx))
+            }
             None => None,
         }
     }
@@ -193,6 +210,7 @@ impl<'a> TestSuiteExecution<'a> {
             inner: Vec::new(),
             materialized_dependencies: HashMap::new(),
             remaining_count: total_count,
+            idx: 0,
         }
     }
 
@@ -217,6 +235,7 @@ impl<'a> TestSuiteExecution<'a> {
                     inner: vec![],
                     materialized_dependencies: HashMap::new(),
                     remaining_count: 0,
+                    idx: 0,
                 };
                 inner.add_dependency(dep);
                 self.inner.push(inner);
@@ -245,6 +264,7 @@ impl<'a> TestSuiteExecution<'a> {
                     inner: vec![],
                     materialized_dependencies: HashMap::new(),
                     remaining_count: 0,
+                    idx: 0,
                 };
                 inner.add_test(test);
                 self.inner.push(inner);

@@ -4,29 +4,32 @@ use quick_xml::events::BytesDecl;
 use quick_xml::events::Event::Decl;
 use quick_xml::Writer;
 use std::io::Stdout;
+use std::sync::Mutex;
 
 pub(crate) struct JUnit {
-    writer: Writer<Stdout>,
+    writer: Mutex<Writer<Stdout>>,
 }
 
 impl JUnit {
     pub fn new() -> Self {
         let stdout = std::io::stdout();
         let writer = Writer::new_with_indent(stdout, b' ', 4);
-        Self { writer }
+        Self {
+            writer: Mutex::new(writer),
+        }
     }
 }
 
 impl TestRunnerOutput for JUnit {
-    fn start_suite(&mut self, _count: usize) {
+    fn start_suite(&self, _count: usize) {
         let decl = Decl(BytesDecl::new("1.0", Some("UTF-8"), None));
-        self.writer.write_event(decl).unwrap();
+        self.writer.lock().unwrap().write_event(decl).unwrap();
     }
 
-    fn start_running_test(&mut self, _test: &RegisteredTest, _idx: usize, _count: usize) {}
+    fn start_running_test(&self, _test: &RegisteredTest, _idx: usize, _count: usize) {}
 
     fn finished_running_test(
-        &mut self,
+        &self,
         _test: &RegisteredTest,
         _idx: usize,
         _count: usize,
@@ -35,12 +38,14 @@ impl TestRunnerOutput for JUnit {
     }
 
     fn finished_suite(
-        &mut self,
+        &self,
         registered_tests: &[RegisteredTest],
-        results: &[(&RegisteredTest, TestResult)],
+        results: &[(RegisteredTest, TestResult)],
     ) {
         let result = SuiteResult::from_test_results(registered_tests, results);
         self.writer
+            .lock()
+            .unwrap()
             .create_element("testsuites")
             .write_inner_content(|writer| {
                 writer
@@ -90,10 +95,11 @@ impl TestRunnerOutput for JUnit {
             .unwrap();
     }
 
-    fn test_list(&mut self, registered_tests: &[RegisteredTest]) {
+    fn test_list(&self, registered_tests: &[RegisteredTest]) {
         let decl = Decl(BytesDecl::new("1.0", Some("UTF-8"), None));
-        self.writer.write_event(decl).unwrap();
-        self.writer
+        let mut writer = self.writer.lock().unwrap();
+        writer.write_event(decl).unwrap();
+        writer
             .create_element("testsuites")
             .write_inner_content(|writer| {
                 writer

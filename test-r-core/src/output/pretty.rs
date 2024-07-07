@@ -1,33 +1,37 @@
-use anstyle::{AnsiColor, Style};
-use std::io::Write;
-
 use crate::args::ColorSetting;
 use crate::internal::{RegisteredTest, SuiteResult, TestResult};
 use crate::output::TestRunnerOutput;
+use anstyle::{AnsiColor, Style};
+use std::io::Write;
+use std::sync::Mutex;
 
 pub(crate) struct Pretty {
-    color: ColorSetting,
     style_ok: Style,
     style_failed: Style,
     style_ignored: Style,
     style_progress: Style,
+    lock: Mutex<PrettyImpl>,
+}
+
+struct PrettyImpl {
+    color: ColorSetting,
 }
 
 impl Pretty {
     pub fn new(color: ColorSetting) -> Self {
         Self {
-            color,
             style_ok: Style::new().fg_color(Some(AnsiColor::Green.into())),
             style_failed: Style::new().bold().fg_color(Some(AnsiColor::Red.into())),
             style_ignored: Style::new().dimmed().fg_color(Some(AnsiColor::Cyan.into())),
             style_progress: Style::new()
                 .bold()
                 .fg_color(Some(AnsiColor::BrightWhite.into())),
+            lock: Mutex::new(PrettyImpl { color }),
         }
     }
 }
 
-impl Write for Pretty {
+impl Write for PrettyImpl {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let stdout = std::io::stdout().lock();
         let mut stdout = anstream::AutoStream::new(
@@ -47,21 +51,23 @@ impl Write for Pretty {
 }
 
 impl TestRunnerOutput for Pretty {
-    fn start_suite(&mut self, count: usize) {
+    fn start_suite(&self, count: usize) {
+        let mut out = self.lock.lock().unwrap();
         writeln!(
-            self,
+            out,
             "{}Running {} tests{}",
             self.style_progress.render(),
             count,
             self.style_progress.render_reset(),
         )
         .unwrap();
-        writeln!(self).unwrap();
+        writeln!(out).unwrap();
     }
 
-    fn start_running_test(&mut self, test: &RegisteredTest, idx: usize, count: usize) {
+    fn start_running_test(&self, test: &RegisteredTest, idx: usize, count: usize) {
+        let mut out = self.lock.lock().unwrap();
         writeln!(
-            self,
+            out,
             "{}[{}/{}]{} Running test: {}",
             self.style_progress.render(),
             idx + 1,
@@ -73,12 +79,14 @@ impl TestRunnerOutput for Pretty {
     }
 
     fn finished_running_test(
-        &mut self,
+        &self,
         test: &RegisteredTest,
         idx: usize,
         count: usize,
         result: &TestResult,
     ) {
+        let mut out = self.lock.lock().unwrap();
+
         let result = match result {
             TestResult::Passed => format!(
                 "{}PASSED{}",
@@ -97,7 +105,7 @@ impl TestRunnerOutput for Pretty {
             ),
         };
         writeln!(
-            self,
+            out,
             "{}[{}/{}]{} Finished test: {} [{result}]",
             self.style_progress.render(),
             idx + 1,
@@ -109,10 +117,12 @@ impl TestRunnerOutput for Pretty {
     }
 
     fn finished_suite(
-        &mut self,
+        &self,
         registered_tests: &[RegisteredTest],
-        results: &[(&RegisteredTest, TestResult)],
+        results: &[(RegisteredTest, TestResult)],
     ) {
+        let mut out = self.lock.lock().unwrap();
+
         let result = SuiteResult::from_test_results(registered_tests, results);
 
         let overall = if result.failed == 0 {
@@ -129,19 +139,19 @@ impl TestRunnerOutput for Pretty {
             )
         };
 
-        writeln!(self).unwrap();
+        writeln!(out).unwrap();
         writeln!(
-            self,
+            out,
             "test result: {}; {} passed; {} failed; {} ignored; {} filtered out;",
             overall, result.passed, result.failed, result.ignored, result.filtered_out,
         )
         .unwrap();
-        writeln!(self).unwrap();
+        writeln!(out).unwrap();
         if result.failed > 0 {
-            writeln!(self, "Failed tests:").unwrap();
+            writeln!(out, "Failed tests:").unwrap();
             for failed in results.iter().filter(|(_, result)| result.is_failed()) {
                 writeln!(
-                    self,
+                    out,
                     " - {} {}({}){}",
                     failed.0.fully_qualified_name(),
                     self.style_ignored.render(),
@@ -150,15 +160,17 @@ impl TestRunnerOutput for Pretty {
                 )
                 .unwrap();
             }
-            writeln!(self).unwrap();
+            writeln!(out).unwrap();
         }
     }
 
-    fn test_list(&mut self, registered_tests: &[RegisteredTest]) {
+    fn test_list(&self, registered_tests: &[RegisteredTest]) {
+        let mut out = self.lock.lock().unwrap();
+
         for test in registered_tests {
-            writeln!(self, "{}", test.fully_qualified_name()).unwrap();
+            writeln!(out, "{}", test.fully_qualified_name()).unwrap();
         }
-        writeln!(self).unwrap();
-        writeln!(self, "{} tests", registered_tests.len()).unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "{} tests", registered_tests.len()).unwrap();
     }
 }
