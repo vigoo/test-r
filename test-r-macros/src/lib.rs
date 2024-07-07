@@ -2,7 +2,7 @@ use proc_macro::TokenStream;
 
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
-use syn::{FnArg, ItemFn, ReturnType, Type, TypePath};
+use syn::{FnArg, ItemFn, ItemMod, ReturnType, Type, TypePath};
 
 #[proc_macro_attribute]
 pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -203,6 +203,36 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #[cfg(test)]
         fn #getter_ident<'a>(dependency_view: &'a impl test_r::core::DependencyView) -> Arc<#dep_type> {
             #getter_body
+        }
+
+        #ast
+    };
+
+    result.into()
+}
+
+#[proc_macro_attribute]
+pub fn sequential(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let ast: ItemMod = syn::parse(item).expect("#[sequential] must be applied to a module");
+
+    let register_ident = Ident::new(
+        &format!("test_r_register_mod_{}_props", ast.ident.to_string()),
+        Span::call_site(),
+    );
+
+    let mod_name_str = ast.ident.to_string();
+    let register_call = quote! {
+          test_r::core::register_suite_sequential(
+              #mod_name_str,
+              module_path!(),
+          );
+    };
+
+    let result = quote! {
+        #[cfg(test)]
+        #[test_r::ctor::ctor]
+        fn #register_ident() {
+             #register_call
         }
 
         #ast

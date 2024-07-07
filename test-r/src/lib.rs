@@ -1,6 +1,7 @@
 extern crate alloc;
 
 pub use test_r_macro::inherit_test_dep;
+pub use test_r_macro::sequential;
 pub use test_r_macro::test;
 pub use test_r_macro::test_dep;
 pub use test_r_macro::uses_test_r as enable;
@@ -42,6 +43,18 @@ pub mod core {
                 constructor: cons,
                 dependencies,
             });
+    }
+
+    pub fn register_suite_sequential(name: &str, module_path: &str) {
+        let (crate_name, module_path) = split_module_path(module_path);
+
+        internal::REGISTERED_TESTSUITE_PROPS.lock().unwrap().push(
+            internal::RegisteredTestSuiteProperty::Sequential {
+                name: name.to_string(),
+                crate_name,
+                module_path,
+            },
+        );
     }
 
     fn split_module_path(module_path: &str) -> (String, String) {

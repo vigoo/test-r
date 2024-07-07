@@ -99,7 +99,7 @@ mod deps {
     mod tests {
         use crate::deps::Dep1;
         use std::sync::Arc;
-        use test_r::{test, test_dep};
+        use test_r::{sequential, test, test_dep};
 
         #[test_dep]
         fn create_dep1() -> Dep1 {
@@ -135,6 +135,7 @@ mod deps {
             assert_eq!(dep2.value, 20);
         }
 
+        #[sequential]
         mod inner {
             use crate::deps::tests::Dep2;
             use crate::deps::Dep1;

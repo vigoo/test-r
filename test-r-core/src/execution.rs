@@ -1,7 +1,7 @@
 use crate::args::Arguments;
 use crate::internal::{
     filter_registered_tests, DependencyConstructor, DependencyView, RegisteredDependency,
-    RegisteredTest,
+    RegisteredTest, RegisteredTestSuiteProperty,
 };
 use std::any::Any;
 use std::collections::HashMap;
@@ -13,6 +13,7 @@ pub(crate) struct TestSuiteExecution<'a> {
     crate_and_module: String,
     dependencies: Vec<&'a RegisteredDependency>,
     tests: Vec<&'a RegisteredTest>,
+    props: Vec<&'a RegisteredTestSuiteProperty>,
     inner: Vec<TestSuiteExecution<'a>>,
     materialized_dependencies: HashMap<String, Arc<dyn Any + Send + Sync>>,
     remaining_count: usize,
@@ -24,6 +25,7 @@ impl<'a> TestSuiteExecution<'a> {
         arguments: &Arguments,
         dependencies: &'a [RegisteredDependency],
         tests: &'a [RegisteredTest],
+        props: &'a [RegisteredTestSuiteProperty],
     ) -> Self {
         let filtered_tests = filter_registered_tests(arguments, tests);
 
@@ -34,15 +36,23 @@ impl<'a> TestSuiteExecution<'a> {
                     .filter(|dep| dep.crate_name.is_empty() && dep.module_path.is_empty())
                     .collect::<Vec<_>>(),
                 Vec::new(),
+                props
+                    .iter()
+                    .filter(|dep| dep.crate_name().is_empty() && dep.module_path().is_empty())
+                    .collect::<Vec<_>>(),
             )
         } else {
-            let mut root = Self::root(Vec::new(), Vec::new());
+            let mut root = Self::root(Vec::new(), Vec::new(), Vec::new());
+
+            for prop in props {
+                root.add_prop(prop);
+            }
 
             for dep in dependencies {
                 root.add_dependency(dep);
             }
 
-            for test in tests {
+            for test in filtered_tests {
                 root.add_test(test);
             }
 
@@ -201,12 +211,17 @@ impl<'a> TestSuiteExecution<'a> {
         result
     }
 
-    fn root(deps: Vec<&'a RegisteredDependency>, tests: Vec<&'a RegisteredTest>) -> Self {
+    fn root(
+        deps: Vec<&'a RegisteredDependency>,
+        tests: Vec<&'a RegisteredTest>,
+        props: Vec<&'a RegisteredTestSuiteProperty>,
+    ) -> Self {
         let total_count = tests.len();
         Self {
             crate_and_module: String::new(),
             dependencies: deps,
             tests,
+            props,
             inner: Vec::new(),
             materialized_dependencies: HashMap::new(),
             remaining_count: total_count,
@@ -233,6 +248,7 @@ impl<'a> TestSuiteExecution<'a> {
                     dependencies: vec![],
                     tests: vec![],
                     inner: vec![],
+                    props: vec![],
                     materialized_dependencies: HashMap::new(),
                     remaining_count: 0,
                     idx: 0,
@@ -262,6 +278,7 @@ impl<'a> TestSuiteExecution<'a> {
                     dependencies: vec![],
                     tests: vec![],
                     inner: vec![],
+                    props: vec![],
                     materialized_dependencies: HashMap::new(),
                     remaining_count: 0,
                     idx: 0,
@@ -271,6 +288,36 @@ impl<'a> TestSuiteExecution<'a> {
             }
         }
         self.remaining_count += 1;
+    }
+
+    fn add_prop(&mut self, prop: &'a RegisteredTestSuiteProperty) {
+        let crate_and_module = prop.crate_and_module();
+        if self.crate_and_module == crate_and_module {
+            self.props.push(prop);
+        } else {
+            let mut found = false;
+            for inner in &mut self.inner {
+                if Self::is_prefix_of(&inner.crate_and_module, &crate_and_module) {
+                    inner.add_prop(prop);
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                let mut inner = Self {
+                    crate_and_module: Self::next_level(&self.crate_and_module, &crate_and_module),
+                    dependencies: vec![],
+                    tests: vec![],
+                    inner: vec![],
+                    props: vec![],
+                    materialized_dependencies: HashMap::new(),
+                    remaining_count: 0,
+                    idx: 0,
+                };
+                inner.add_prop(prop);
+                self.inner.push(inner);
+            }
+        }
     }
 
     fn is_materialized(&self) -> bool {
@@ -374,7 +421,16 @@ impl<'a> TestSuiteExecution<'a> {
 
 impl<'a> Debug for TestSuiteExecution<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "'{}'", self.crate_and_module)?;
+        writeln!(
+            f,
+            "'{}' {}",
+            self.crate_and_module,
+            self.props
+                .iter()
+                .map(|x| format!("{x:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
         writeln!(f, "  deps:")?;
         for dep in &self.dependencies {
             writeln!(f, "    '{}'", dep.name)?;

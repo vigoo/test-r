@@ -14,6 +14,7 @@ pub fn test_runner() {
     let registered_tests = internal::REGISTERED_TESTS.lock().unwrap();
     let registered_dependency_constructors =
         internal::REGISTERED_DEPENDENCY_CONSTRUCTORS.lock().unwrap();
+    let registered_testsuite_props = internal::REGISTERED_TESTSUITE_PROPS.lock().unwrap();
 
     if args.list {
         output.test_list(&registered_tests);
@@ -22,6 +23,7 @@ pub fn test_runner() {
             &args,
             registered_dependency_constructors.as_slice(),
             registered_tests.as_slice(),
+            registered_testsuite_props.as_slice(),
         );
         // println!("Execution plan: {execution:?}");
 
