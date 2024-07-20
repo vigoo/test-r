@@ -5,8 +5,8 @@ use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
 use crate::args::Arguments;
-use crate::execution::TestSuiteExecution;
-use crate::internal::{DependencyView, RegisteredTest, TestFunction, TestResult};
+use crate::execution::{TestExecution, TestSuiteExecution};
+use crate::internal::{RegisteredTest, TestFunction, TestResult};
 use crate::output::{test_runner_output, TestRunnerOutput};
 use crate::{args, internal};
 
@@ -75,22 +75,25 @@ async fn test_thread<'a>(
     count: usize,
     results: Arc<Mutex<Vec<(RegisteredTest, TestResult)>>>,
 ) {
-    while let Some((registered_test, deps, idx)) = pick_next(&execution).await {
-        output.start_running_test(registered_test, idx, count);
-        let result = run_test(args.include_ignored, deps, registered_test).await;
-        output.finished_running_test(registered_test, idx, count, &result);
+    while !is_done(&execution).await {
+        if let Some(next) = pick_next(&execution).await {
+            output.start_running_test(next.test, next.index, count);
+            let result = run_test(args.include_ignored, next.deps, next.test).await;
+            output.finished_running_test(next.test, next.index, count, &result);
 
-        results.lock().await.push((registered_test.clone(), result));
+            results.lock().await.push((next.test.clone(), result));
+        }
     }
+}
+
+async fn is_done<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> bool {
+    let execution = execution.lock().await;
+    execution.is_done()
 }
 
 async fn pick_next<'a>(
     execution: &Arc<Mutex<TestSuiteExecution<'a>>>,
-) -> Option<(
-    &'a RegisteredTest,
-    Box<dyn DependencyView + Send + Sync>,
-    usize,
-)> {
+) -> Option<TestExecution<'a>> {
     let mut execution = execution.lock().await;
     execution.pick_next().await
 }

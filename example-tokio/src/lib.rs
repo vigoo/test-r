@@ -27,6 +27,8 @@ mod tests {
 }
 
 mod inner {
+    use test_r::sequential;
+
     #[cfg(test)]
     mod tests {
         use test_r::test;
@@ -78,6 +80,8 @@ mod inner {
 }
 
 mod deps {
+    use test_r::{sequential, test, test_dep};
+
     struct Dep1 {
         value: i32,
     }
@@ -96,10 +100,12 @@ mod deps {
     }
 
     #[cfg(test)]
+    #[sequential]
     mod tests {
         use crate::deps::Dep1;
         use std::sync::Arc;
         use test_r::{sequential, test, test_dep};
+        use tokio::io::AsyncWriteExt;
 
         #[test_dep]
         fn create_dep1() -> Dep1 {
@@ -129,13 +135,23 @@ mod deps {
         }
 
         #[test]
+        async fn sleeping_test_3() {
+            let _ = tokio::io::stdout()
+                .write(b"Print from sleeping test 3\n")
+                .await
+                .unwrap();
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            let result = 2 + 2;
+            assert_eq!(result, 4);
+        }
+
+        #[test]
         async fn dep_test_works(dep1: &Dep1, dep2: &Dep2) {
             println!("Print from dep test");
             assert_eq!(dep1.value, 10);
             assert_eq!(dep2.value, 20);
         }
 
-        #[sequential]
         mod inner {
             use crate::deps::tests::Dep2;
             use crate::deps::Dep1;

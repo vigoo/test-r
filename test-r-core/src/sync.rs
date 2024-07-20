@@ -1,8 +1,8 @@
 use crate::args;
 use crate::args::Arguments;
-use crate::execution::TestSuiteExecution;
+use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
-use crate::internal::{DependencyView, RegisteredTest, TestFunction, TestResult};
+use crate::internal::{RegisteredTest, TestFunction, TestResult};
 use crate::output::{test_runner_output, TestRunnerOutput};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
@@ -61,23 +61,24 @@ fn test_thread(
     count: usize,
 ) -> Vec<(RegisteredTest, TestResult)> {
     let mut results = Vec::with_capacity(count);
-    while let Some((registered_test, deps, idx)) = pick_next(&execution) {
-        output.start_running_test(&registered_test, idx, count);
-        let result = run_test(args.include_ignored, deps, &registered_test);
-        output.finished_running_test(&registered_test, idx, count, &result);
+    while !is_done(&execution) {
+        if let Some(next) = pick_next(&execution) {
+            output.start_running_test(&next.test, next.index, count);
+            let result = run_test(args.include_ignored, next.deps, &next.test);
+            output.finished_running_test(&next.test, next.index, count, &result);
 
-        results.push((registered_test.clone(), result));
+            results.push((next.test.clone(), result));
+        }
     }
     results
 }
 
-fn pick_next<'a>(
-    execution: &Arc<Mutex<TestSuiteExecution<'a>>>,
-) -> Option<(
-    &'a RegisteredTest,
-    Box<dyn DependencyView + Send + Sync>,
-    usize,
-)> {
+fn is_done<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> bool {
+    let execution = execution.lock().unwrap();
+    execution.is_done()
+}
+
+fn pick_next<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> Option<TestExecution<'a>> {
     let mut execution = execution.lock().unwrap();
     execution.pick_next_sync()
 }

@@ -1,13 +1,16 @@
+use std::any::Any;
+use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
+use std::sync::Arc;
+
+use tokio::sync::{Mutex, OwnedMutexGuard};
+use topological_sort::TopologicalSort;
+
 use crate::args::Arguments;
 use crate::internal::{
     filter_registered_tests, DependencyConstructor, DependencyView, RegisteredDependency,
     RegisteredTest, RegisteredTestSuiteProperty,
 };
-use std::any::Any;
-use std::collections::HashMap;
-use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
-use topological_sort::TopologicalSort;
 
 pub(crate) struct TestSuiteExecution<'a> {
     crate_and_module: String,
@@ -16,8 +19,10 @@ pub(crate) struct TestSuiteExecution<'a> {
     props: Vec<&'a RegisteredTestSuiteProperty>,
     inner: Vec<TestSuiteExecution<'a>>,
     materialized_dependencies: HashMap<String, Arc<dyn Any + Send + Sync>>,
+    sequential_lock: SequentialExecutionLock,
     remaining_count: usize,
     idx: usize,
+    is_sequential: bool,
 }
 
 impl<'a> TestSuiteExecution<'a> {
@@ -68,14 +73,12 @@ impl<'a> TestSuiteExecution<'a> {
         self.tests.is_empty() && self.inner.is_empty()
     }
 
+    pub fn is_done(&self) -> bool {
+        self.remaining_count == 0
+    }
+
     #[cfg(feature = "tokio")]
-    pub async fn pick_next(
-        &mut self,
-    ) -> Option<(
-        &'a RegisteredTest,
-        Box<dyn DependencyView + Send + Sync>,
-        usize,
-    )> {
+    pub async fn pick_next(&mut self) -> Option<TestExecution<'a>> {
         if self.is_empty() {
             None
         } else {
@@ -83,28 +86,32 @@ impl<'a> TestSuiteExecution<'a> {
                 .pick_next_internal(&self.create_dependency_map(&HashMap::new()))
                 .await
             {
-                Some((test, deps)) => {
-                    let idx = self.idx;
+                Some((test, deps, seq_lock)) => {
+                    let index = self.idx;
                     self.idx += 1;
-                    Some((test, Box::new(deps), idx))
+                    Some(TestExecution {
+                        test,
+                        deps: Box::new(deps),
+                        index,
+                        _seq_lock: seq_lock,
+                    })
                 }
                 None => None,
             }
         }
     }
 
-    pub fn pick_next_sync(
-        &mut self,
-    ) -> Option<(
-        &'a RegisteredTest,
-        Box<dyn DependencyView + Send + Sync>,
-        usize,
-    )> {
+    pub fn pick_next_sync(&mut self) -> Option<TestExecution<'a>> {
         match self.pick_next_internal_sync(&HashMap::new()) {
-            Some((test, deps)) => {
-                let idx = self.idx;
+            Some((test, deps, seq_lock)) => {
+                let index = self.idx;
                 self.idx += 1;
-                Some((test, Box::new(deps), idx))
+                Some(TestExecution {
+                    test,
+                    deps: Box::new(deps),
+                    index,
+                    _seq_lock: seq_lock,
+                })
             }
             None => None,
         }
@@ -117,6 +124,7 @@ impl<'a> TestSuiteExecution<'a> {
     ) -> Option<(
         &'a RegisteredTest,
         HashMap<String, Arc<dyn Any + Send + Sync>>,
+        SequentialExecutionLockGuard,
     )> {
         if self.is_empty() {
             None
@@ -127,26 +135,30 @@ impl<'a> TestSuiteExecution<'a> {
                 self.create_dependency_map(materialized_parent_deps)
             };
 
-            let result = if self.tests.is_empty() {
+            let locked = self.sequential_lock.is_locked().await;
+            let result = if self.tests.is_empty() || locked {
                 let current = self.inner.iter_mut();
                 let mut result = None;
                 for inner in current {
-                    if let Some((test, deps)) =
+                    if let Some((test, deps, seq_lock)) =
                         Box::pin(inner.pick_next_internal(&dependency_map)).await
                     {
-                        result = Some((test, deps));
+                        result = Some((test, deps, seq_lock));
                         break;
                     }
                 }
                 self.inner.retain(|inner| !inner.is_empty());
 
                 result
-            } else if let Some(test) = self.tests.pop() {
-                Some((test, dependency_map))
             } else {
-                None
+                let guard = self.sequential_lock.lock(self.is_sequential).await;
+                if let Some(test) = self.tests.pop() {
+                    Some((test, dependency_map, guard))
+                } else {
+                    None
+                }
             };
-            if result.is_none() && self.is_materialized() {
+            if result.is_none() && self.is_materialized() && !locked {
                 self.drop_deps();
             }
             if result.is_some() {
@@ -162,6 +174,7 @@ impl<'a> TestSuiteExecution<'a> {
     ) -> Option<(
         &'a RegisteredTest,
         HashMap<String, Arc<dyn Any + Send + Sync>>,
+        SequentialExecutionLockGuard,
     )> {
         if self.is_empty() {
             None
@@ -172,25 +185,31 @@ impl<'a> TestSuiteExecution<'a> {
                 self.create_dependency_map(materialized_parent_deps)
             };
 
-            let result = if self.tests.is_empty() {
+            let locked = self.sequential_lock.is_locked_sync();
+            let result = if self.tests.is_empty() || locked {
                 let current = self.inner.iter_mut();
                 let mut result = None;
                 for inner in current {
-                    if let Some((test, deps)) = inner.pick_next_internal_sync(&dependency_map) {
-                        result = Some((test, deps));
+                    if let Some((test, deps, seq_lock)) =
+                        inner.pick_next_internal_sync(&dependency_map)
+                    {
+                        result = Some((test, deps, seq_lock));
                         break;
                     }
                 }
 
                 self.inner.retain(|inner| !inner.is_empty());
                 result
-            } else if let Some(test) = self.tests.pop() {
-                let deps = HashMap::new();
-                Some((test, deps))
             } else {
-                None
+                let guard = self.sequential_lock.lock_sync(self.is_sequential);
+                if let Some(test) = self.tests.pop() {
+                    let deps = HashMap::new();
+                    Some((test, deps, guard))
+                } else {
+                    None
+                }
             };
-            if result.is_none() && self.is_materialized() {
+            if result.is_none() && self.is_materialized() && !locked {
                 self.drop_deps();
             }
             if result.is_some() {
@@ -217,6 +236,9 @@ impl<'a> TestSuiteExecution<'a> {
         props: Vec<&'a RegisteredTestSuiteProperty>,
     ) -> Self {
         let total_count = tests.len();
+        let is_sequential = props
+            .iter()
+            .any(|prop| matches!(prop, RegisteredTestSuiteProperty::Sequential { .. }));
         Self {
             crate_and_module: String::new(),
             dependencies: deps,
@@ -226,6 +248,8 @@ impl<'a> TestSuiteExecution<'a> {
             materialized_dependencies: HashMap::new(),
             remaining_count: total_count,
             idx: 0,
+            sequential_lock: SequentialExecutionLock::new(),
+            is_sequential,
         }
     }
 
@@ -252,6 +276,8 @@ impl<'a> TestSuiteExecution<'a> {
                     materialized_dependencies: HashMap::new(),
                     remaining_count: 0,
                     idx: 0,
+                    is_sequential: false,
+                    sequential_lock: SequentialExecutionLock::new(),
                 };
                 inner.add_dependency(dep);
                 self.inner.push(inner);
@@ -282,6 +308,8 @@ impl<'a> TestSuiteExecution<'a> {
                     materialized_dependencies: HashMap::new(),
                     remaining_count: 0,
                     idx: 0,
+                    is_sequential: false,
+                    sequential_lock: SequentialExecutionLock::new(),
                 };
                 inner.add_test(test);
                 self.inner.push(inner);
@@ -293,6 +321,9 @@ impl<'a> TestSuiteExecution<'a> {
     fn add_prop(&mut self, prop: &'a RegisteredTestSuiteProperty) {
         let crate_and_module = prop.crate_and_module();
         if self.crate_and_module == crate_and_module {
+            if matches!(prop, RegisteredTestSuiteProperty::Sequential { .. }) {
+                self.is_sequential = true;
+            }
             self.props.push(prop);
         } else {
             let mut found = false;
@@ -313,6 +344,8 @@ impl<'a> TestSuiteExecution<'a> {
                     materialized_dependencies: HashMap::new(),
                     remaining_count: 0,
                     idx: 0,
+                    is_sequential: false,
+                    sequential_lock: SequentialExecutionLock::new(),
                 };
                 inner.add_prop(prop);
                 self.inner.push(inner);
@@ -452,5 +485,81 @@ impl<'a> Debug for TestSuiteExecution<'a> {
 impl DependencyView for HashMap<String, Arc<dyn Any + Send + Sync>> {
     fn get(&self, name: &str) -> Option<Arc<dyn Any + Send + Sync>> {
         self.get(name).cloned()
+    }
+}
+
+pub struct TestExecution<'a> {
+    pub test: &'a RegisteredTest,
+    pub deps: Box<dyn DependencyView + Send + Sync>,
+    pub index: usize,
+    _seq_lock: SequentialExecutionLockGuard,
+}
+
+#[allow(dead_code)]
+enum SequentialExecutionLockGuard {
+    None,
+    Async(OwnedMutexGuard<()>),
+    Sync(parking_lot::ArcMutexGuard<parking_lot::RawMutex, ()>),
+}
+
+impl Drop for SequentialExecutionLockGuard {
+    fn drop(&mut self) {
+        println!("Dropping lock guard");
+    }
+}
+
+struct SequentialExecutionLock {
+    async_mutex: Option<Arc<Mutex<()>>>,
+    sync_mutex: Option<Arc<parking_lot::Mutex<()>>>,
+}
+
+impl SequentialExecutionLock {
+    pub fn new() -> Self {
+        Self {
+            async_mutex: None,
+            sync_mutex: None,
+        }
+    }
+
+    pub async fn is_locked(&self) -> bool {
+        if let Some(mutex) = &self.async_mutex {
+            matches!(mutex.try_lock(), Err(_))
+        } else {
+            false
+        }
+    }
+
+    pub fn is_locked_sync(&self) -> bool {
+        if let Some(mutex) = &self.sync_mutex {
+            mutex.try_lock().is_some()
+        } else {
+            false
+        }
+    }
+
+    pub async fn lock(&mut self, is_sequential: bool) -> SequentialExecutionLockGuard {
+        if is_sequential {
+            if self.async_mutex.is_none() {
+                self.async_mutex = Some(Arc::new(Mutex::new(())));
+            }
+
+            let permit = Mutex::lock_owned(self.async_mutex.as_ref().unwrap().clone()).await;
+            SequentialExecutionLockGuard::Async(permit)
+        } else {
+            SequentialExecutionLockGuard::None
+        }
+    }
+
+    pub fn lock_sync(&mut self, is_sequential: bool) -> SequentialExecutionLockGuard {
+        if is_sequential {
+            if self.sync_mutex.is_none() {
+                self.sync_mutex = Some(Arc::new(parking_lot::Mutex::new(())));
+            }
+
+            let permit = parking_lot::Mutex::lock_arc(&self.sync_mutex.as_ref().unwrap().clone());
+            SequentialExecutionLockGuard::Sync(permit)
+        } else {
+            SequentialExecutionLockGuard::None
+        }
     }
 }

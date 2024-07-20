@@ -163,8 +163,14 @@ impl RegisteredTestSuiteProperty {
         }
     }
 
+    pub fn name(&self) -> &String {
+        match self {
+            RegisteredTestSuiteProperty::Sequential { name, .. } => name,
+        }
+    }
+
     pub fn crate_and_module(&self) -> String {
-        [self.crate_name(), self.module_path()]
+        [self.crate_name(), self.module_path(), self.name()]
             .into_iter()
             .filter(|s| !s.is_empty())
             .cloned()
