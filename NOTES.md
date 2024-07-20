@@ -26,3 +26,6 @@ https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 - Capture/no-capture controlled by attributes
 - Prettier pretty output
 - Support tests returning `Result<>` 
+- Make sure `#[tracing::instrument]` works
+- Tags
+- 
