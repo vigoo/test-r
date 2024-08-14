@@ -182,6 +182,42 @@ impl RegisteredTestSuiteProperty {
 pub static REGISTERED_TESTSUITE_PROPS: Mutex<Vec<RegisteredTestSuiteProperty>> =
     Mutex::new(Vec::new());
 
+#[derive(Clone)]
+pub enum TestGeneratorFunction {
+    Sync(Arc<dyn Fn() -> Vec<TestFunction> + Send + Sync + 'static>),
+    Async(
+        Arc<
+            dyn (Fn() -> Pin<Box<dyn Future<Output = Vec<TestFunction>> + Send>>)
+                + Send
+                + Sync
+                + 'static,
+        >,
+    ),
+}
+
+#[derive(Clone)]
+pub struct RegisteredTestGenerator {
+    pub name: String,
+    pub crate_name: String,
+    pub module_path: String,
+    pub run: TestGeneratorFunction,
+}
+
+impl RegisteredTestGenerator {
+    pub fn crate_and_module(&self) -> String {
+        [&self.crate_name, &self.module_path]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect::<Vec<String>>()
+            .join("::")
+    }
+}
+
+pub static REGISTERED_TEST_GENERATORS: Mutex<Vec<RegisteredTestGenerator>> =
+    Mutex::new(Vec::new());
+
+
 pub(crate) fn filter_test(test: &RegisteredTest, filter: &str, exact: bool) -> bool {
     if exact {
         test.filterable_name() == filter
