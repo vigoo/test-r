@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, OwnedMutexGuard};
 use topological_sort::TopologicalSort;
 
 use crate::args::Arguments;
@@ -595,7 +594,8 @@ pub struct TestExecution {
 #[allow(dead_code)]
 enum SequentialExecutionLockGuard {
     None,
-    Async(OwnedMutexGuard<()>),
+    #[cfg(feature = "tokio")]
+    Async(tokio::sync::OwnedMutexGuard<()>),
     Sync(parking_lot::ArcMutexGuard<parking_lot::RawMutex, ()>),
 }
 
@@ -606,18 +606,21 @@ impl Drop for SequentialExecutionLockGuard {
 }
 
 struct SequentialExecutionLock {
-    async_mutex: Option<Arc<Mutex<()>>>,
+    #[cfg(feature = "tokio")]
+    async_mutex: Option<Arc<tokio::sync::Mutex<()>>>,
     sync_mutex: Option<Arc<parking_lot::Mutex<()>>>,
 }
 
 impl SequentialExecutionLock {
     pub fn new() -> Self {
         Self {
+            #[cfg(feature = "tokio")]
             async_mutex: None,
             sync_mutex: None,
         }
     }
 
+    #[cfg(feature = "tokio")]
     pub async fn is_locked(&self) -> bool {
         if let Some(mutex) = &self.async_mutex {
             mutex.try_lock().is_err()
@@ -634,13 +637,14 @@ impl SequentialExecutionLock {
         }
     }
 
+    #[cfg(feature = "tokio")]
     pub async fn lock(&mut self, is_sequential: bool) -> SequentialExecutionLockGuard {
         if is_sequential {
             if self.async_mutex.is_none() {
-                self.async_mutex = Some(Arc::new(Mutex::new(())));
+                self.async_mutex = Some(Arc::new(tokio::sync::Mutex::new(())));
             }
 
-            let permit = Mutex::lock_owned(self.async_mutex.as_ref().unwrap().clone()).await;
+            let permit = tokio::sync::Mutex::lock_owned(self.async_mutex.as_ref().unwrap().clone()).await;
             SequentialExecutionLockGuard::Async(permit)
         } else {
             SequentialExecutionLockGuard::None
