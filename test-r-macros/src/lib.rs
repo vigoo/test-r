@@ -212,6 +212,74 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
+pub fn test_gen(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let ast: ItemFn = syn::parse(item).expect("test generator ast");
+    let generator_name = ast.sig.ident.clone();
+    let generator_name_str = generator_name.to_string();
+
+    let is_ignored = ast.attrs.iter().any(|attr| attr.path().is_ident("ignore"));
+
+    let register_ident = Ident::new(
+        &format!("test_r_register_generator_{}", generator_name_str),
+        generator_name.span(),
+    );
+
+    let is_async = ast.sig.asyncness.is_some();
+
+    let register_call = if is_async {
+        quote! {
+              test_r::core::register_test_generator(
+                  #generator_name_str,
+                  module_path!(),
+                  #is_ignored,
+                  test_r::core::TestGeneratorFunction::Async(std::sync::Arc::new(|| Box::pin(async move { #generator_name().await })))
+              );
+        }
+    } else {
+        quote! {
+            test_r::core::register_test_generator(
+                #generator_name_str,
+                module_path!(),
+                #is_ignored,
+                test_r::core::TestGeneratorFunction::Sync(std::sync::Arc::new(|| #generator_name()))
+            );
+        }
+    };
+
+    let wrapped_ast = if is_async {
+        quote! {
+            async fn #generator_name() -> Vec<test_r::core::GeneratedTest> {
+                let mut tests = DynamicTestRegistration::new();
+                #ast
+                #generator_name(&mut tests).await;
+                tests.to_vec()
+            }
+        }
+    } else {
+        quote! {
+            fn #generator_name() -> Vec<test_r::core::GeneratedTest> {
+                let mut tests = DynamicTestRegistration::new();
+                #ast
+                #generator_name(&mut tests);
+                tests.to_vec()
+            }
+        }
+    };
+
+    let result = quote! {
+        #[cfg(test)]
+        #[test_r::ctor::ctor]
+        fn #register_ident() {
+             #register_call
+        }
+
+        #wrapped_ast
+    };
+
+    result.into()
+}
+
+#[proc_macro_attribute]
 pub fn sequential(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let ast: ItemMod = syn::parse(item).expect("#[sequential] must be applied to a module");
 

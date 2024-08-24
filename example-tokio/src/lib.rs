@@ -28,7 +28,6 @@ mod tests {
 
 mod inner {
 
-
     #[cfg(test)]
     mod tests {
         use test_r::test;
@@ -104,7 +103,7 @@ mod deps {
     mod tests {
         use crate::deps::Dep1;
         use std::sync::Arc;
-        use test_r::{sequential, test, test_dep};
+        use test_r::{test, test_dep};
         use tokio::io::AsyncWriteExt;
 
         #[test_dep]
@@ -195,6 +194,39 @@ mod deps {
                 println!("Print from dep test inner 3");
                 assert_eq!(dep3.value, 240);
             }
+        }
+    }
+}
+
+mod generated {
+    use test_r::core::DynamicTestRegistration;
+    use test_r::test_gen;
+
+    #[test_gen]
+    fn generate_tests_1(r: &mut DynamicTestRegistration) {
+        println!("Generating some tests in a sync generator");
+        for i in 0..10 {
+            r.add_sync_test(format!("test_{i}"), move |_| {
+                println!("Running test {}", i);
+                let s = i.to_string();
+                let i2 = s.parse::<i32>().unwrap();
+                assert_eq!(i, i2);
+            });
+        }
+    }
+
+    #[test_gen]
+    async fn generate_tests_2(r: &mut DynamicTestRegistration) {
+        println!("Generating some tests in an async generator");
+        for i in 0..10 {
+            r.add_async_test(format!("test_{i}"), move |_| {
+                Box::pin(async move {
+                    println!("Running test {}", i);
+                    let s = i.to_string();
+                    let i2 = s.parse::<i32>().unwrap();
+                    assert_eq!(i, i2);
+                })
+            });
         }
     }
 }

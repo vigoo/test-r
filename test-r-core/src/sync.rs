@@ -51,6 +51,7 @@ pub fn test_runner() {
                 results.extend(handle.join().unwrap());
             }
 
+            // TODO: need to pass all_tests here
             output.finished_suite(&registered_tests, &results);
         });
     }

@@ -67,6 +67,7 @@ async fn async_test_runner() {
             }
         });
 
+        // TODO: need to pass all_tests here
         output.finished_suite(&registered_tests, &results.lock().await);
     }
 }

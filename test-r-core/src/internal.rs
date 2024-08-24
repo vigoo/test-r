@@ -195,6 +195,46 @@ pub enum TestGeneratorFunction {
     ),
 }
 
+pub struct DynamicTestRegistration {
+    tests: Vec<GeneratedTest>,
+}
+
+impl DynamicTestRegistration {
+    pub fn new() -> Self {
+        Self { tests: Vec::new() }
+    }
+
+    pub fn to_vec(self) -> Vec<GeneratedTest> {
+        self.tests
+    }
+
+    pub fn add_sync_test(
+        &mut self,
+        name: impl AsRef<str>,
+        run: impl Fn(Box<dyn DependencyView + Send + Sync>) + Send + Sync + 'static,
+    ) {
+        self.tests.push(GeneratedTest {
+            name: name.as_ref().to_string(),
+            run: TestFunction::Sync(Arc::new(run)),
+        });
+    }
+
+    #[cfg(feature = "tokio")]
+    pub fn add_async_test(
+        &mut self,
+        name: impl AsRef<str>,
+        run: impl (Fn(Box<dyn DependencyView + Send + Sync>) -> Pin<Box<dyn Future<Output = ()> + Send>>)
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        self.tests.push(GeneratedTest {
+            name: name.as_ref().to_string(),
+            run: TestFunction::Async(Arc::new(run)),
+        });
+    }
+}
+
 #[derive(Clone)]
 pub struct GeneratedTest {
     pub name: String,
@@ -207,6 +247,7 @@ pub struct RegisteredTestGenerator {
     pub crate_name: String,
     pub module_path: String,
     pub run: TestGeneratorFunction,
+    pub is_ignored: bool,
 }
 
 impl RegisteredTestGenerator {

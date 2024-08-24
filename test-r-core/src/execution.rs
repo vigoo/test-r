@@ -505,10 +505,10 @@ impl<'a> TestSuiteExecution<'a> {
         generated: Vec<GeneratedTest>,
     ) {
         target.extend(generated.into_iter().map(|test| RegisteredTest {
-            name: test.name,
+            name: format!("{}::{}", generator.name, test.name),
             crate_name: generator.crate_name.clone(),
             module_path: generator.module_path.clone(),
-            is_ignored: false,
+            is_ignored: generator.is_ignored,
             run: test.run,
         }));
     }
@@ -644,7 +644,8 @@ impl SequentialExecutionLock {
                 self.async_mutex = Some(Arc::new(tokio::sync::Mutex::new(())));
             }
 
-            let permit = tokio::sync::Mutex::lock_owned(self.async_mutex.as_ref().unwrap().clone()).await;
+            let permit =
+                tokio::sync::Mutex::lock_owned(self.async_mutex.as_ref().unwrap().clone()).await;
             SequentialExecutionLockGuard::Async(permit)
         } else {
             SequentialExecutionLockGuard::None
