@@ -184,15 +184,21 @@ pub static REGISTERED_TESTSUITE_PROPS: Mutex<Vec<RegisteredTestSuiteProperty>> =
 
 #[derive(Clone)]
 pub enum TestGeneratorFunction {
-    Sync(Arc<dyn Fn() -> Vec<TestFunction> + Send + Sync + 'static>),
+    Sync(Arc<dyn Fn() -> Vec<GeneratedTest> + Send + Sync + 'static>),
     Async(
         Arc<
-            dyn (Fn() -> Pin<Box<dyn Future<Output = Vec<TestFunction>> + Send>>)
+            dyn (Fn() -> Pin<Box<dyn Future<Output = Vec<GeneratedTest>> + Send>>)
                 + Send
                 + Sync
                 + 'static,
         >,
     ),
+}
+
+#[derive(Clone)]
+pub struct GeneratedTest {
+    pub name: String,
+    pub run: TestFunction,
 }
 
 #[derive(Clone)]
@@ -214,9 +220,7 @@ impl RegisteredTestGenerator {
     }
 }
 
-pub static REGISTERED_TEST_GENERATORS: Mutex<Vec<RegisteredTestGenerator>> =
-    Mutex::new(Vec::new());
-
+pub static REGISTERED_TEST_GENERATORS: Mutex<Vec<RegisteredTestGenerator>> = Mutex::new(Vec::new());
 
 pub(crate) fn filter_test(test: &RegisteredTest, filter: &str, exact: bool) -> bool {
     if exact {
@@ -228,10 +232,10 @@ pub(crate) fn filter_test(test: &RegisteredTest, filter: &str, exact: bool) -> b
 
 pub(crate) fn filter_registered_tests<'a>(
     args: &Arguments,
-    registered_tests: &'a [RegisteredTest],
-) -> Vec<&'a RegisteredTest> {
+    registered_tests: Vec<RegisteredTest>,
+) -> Vec<RegisteredTest> {
     registered_tests
-        .iter()
+        .into_iter()
         .filter(|registered_test| {
             args.filter.as_ref().is_none()
                 || args

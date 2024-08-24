@@ -15,15 +15,17 @@ pub fn test_runner() {
     let registered_dependency_constructors =
         internal::REGISTERED_DEPENDENCY_CONSTRUCTORS.lock().unwrap();
     let registered_testsuite_props = internal::REGISTERED_TESTSUITE_PROPS.lock().unwrap();
+    let registered_test_generators = internal::REGISTERED_TEST_GENERATORS.lock().unwrap();
 
     if args.list {
         output.test_list(&registered_tests);
     } else {
-        let execution = TestSuiteExecution::construct(
+        let execution = TestSuiteExecution::construct_sync(
             &args,
             registered_dependency_constructors.as_slice(),
             registered_tests.as_slice(),
             registered_testsuite_props.as_slice(),
+            registered_test_generators.as_slice(),
         );
         // println!("Execution plan: {execution:?}");
 
@@ -73,12 +75,12 @@ fn test_thread(
     results
 }
 
-fn is_done<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> bool {
+fn is_done(execution: &Arc<Mutex<TestSuiteExecution<'_>>>) -> bool {
     let execution = execution.lock().unwrap();
     execution.is_done()
 }
 
-fn pick_next<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> Option<TestExecution<'a>> {
+fn pick_next(execution: &Arc<Mutex<TestSuiteExecution<'_>>>) -> Option<TestExecution> {
     let mut execution = execution.lock().unwrap();
     execution.pick_next_sync()
 }

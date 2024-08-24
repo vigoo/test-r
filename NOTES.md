@@ -20,11 +20,11 @@ https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 - Support `-shuffle`
 - Support `--shuffle-seed`
 - Support property based testing (with an existing library)
-- Provide a nicer assertion macro
 - Flaky/non-flaky attributes
 - Capture/no-capture controlled by attributes
-- Prettier pretty output
 - Support tests returning `Result<>` 
-- Make sure `#[tracing::instrument]` works
 - Tags
-- 
+- Make sure `#[tracing::instrument]` works
+- Provide a nicer assertion macro (or at least recommend a 3rd party that works well)
+- Make sure some 3rd party golden testing framework works, or add our own
+- Prettier pretty output

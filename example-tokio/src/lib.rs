@@ -27,7 +27,7 @@ mod tests {
 }
 
 mod inner {
-    use test_r::sequential;
+
 
     #[cfg(test)]
     mod tests {
@@ -80,7 +80,7 @@ mod inner {
 }
 
 mod deps {
-    use test_r::{sequential, test, test_dep};
+    use test_r::sequential;
 
     struct Dep1 {
         value: i32,

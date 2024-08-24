@@ -7,7 +7,9 @@ pub use test_r_macro::test_dep;
 pub use test_r_macro::uses_test_r as enable;
 
 pub mod core {
-    pub use test_r_core::internal::{DependencyConstructor, DependencyView, TestFunction, TestGeneratorFunction};
+    pub use test_r_core::internal::{
+        DependencyConstructor, DependencyView, TestFunction, TestGeneratorFunction,
+    };
     pub use test_r_core::*;
 
     pub fn register_test(name: &str, module_path: &str, is_ignored: bool, run: TestFunction) {
@@ -60,15 +62,14 @@ pub mod core {
     pub fn register_test_generator(name: &str, module_path: &str, run: TestGeneratorFunction) {
         let (crate_name, module_path) = split_module_path(module_path);
 
-        internal::REGISTERED_TEST_GENERATORS
-            .lock()
-            .unwrap()
-            .push(internal::RegisteredTestGenerator {
+        internal::REGISTERED_TEST_GENERATORS.lock().unwrap().push(
+            internal::RegisteredTestGenerator {
                 name: name.to_string(),
                 crate_name,
                 module_path,
                 run,
-            });
+            },
+        );
     }
 
     fn split_module_path(module_path: &str) -> (String, String) {

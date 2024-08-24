@@ -133,7 +133,7 @@ impl Arguments {
 
     pub(crate) fn test_threads(&self) -> NonZero<usize> {
         self.test_threads
-            .and_then(|t| NonZero::new(t))
+            .and_then(NonZero::new)
             .or_else(|| std::thread::available_parallelism().ok())
             .unwrap_or(NonZero::new(1).unwrap())
     }

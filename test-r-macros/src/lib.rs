@@ -216,7 +216,7 @@ pub fn sequential(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let ast: ItemMod = syn::parse(item).expect("#[sequential] must be applied to a module");
 
     let register_ident = Ident::new(
-        &format!("test_r_register_mod_{}_props", ast.ident.to_string()),
+        &format!("test_r_register_mod_{}_props", ast.ident),
         Span::call_site(),
     );
 

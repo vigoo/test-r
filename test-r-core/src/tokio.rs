@@ -26,6 +26,7 @@ async fn async_test_runner() {
     let registered_dependency_constructors =
         internal::REGISTERED_DEPENDENCY_CONSTRUCTORS.lock().unwrap();
     let registered_testsuite_props = internal::REGISTERED_TESTSUITE_PROPS.lock().unwrap();
+    let registered_test_generators = internal::REGISTERED_TEST_GENERATORS.lock().unwrap();
 
     if args.list {
         output.test_list(&registered_tests);
@@ -35,7 +36,9 @@ async fn async_test_runner() {
             registered_dependency_constructors.as_slice(),
             registered_tests.as_slice(),
             registered_testsuite_props.as_slice(),
-        );
+            registered_test_generators.as_slice(),
+        )
+        .await;
         // println!("Execution plan: {execution:?}");
 
         let count = execution.remaining();
@@ -77,9 +80,9 @@ async fn test_thread<'a>(
 ) {
     while !is_done(&execution).await {
         if let Some(next) = pick_next(&execution).await {
-            output.start_running_test(next.test, next.index, count);
-            let result = run_test(args.include_ignored, next.deps, next.test).await;
-            output.finished_running_test(next.test, next.index, count, &result);
+            output.start_running_test(&next.test, next.index, count);
+            let result = run_test(args.include_ignored, next.deps, &next.test).await;
+            output.finished_running_test(&next.test, next.index, count, &result);
 
             results.lock().await.push((next.test.clone(), result));
         }
@@ -91,9 +94,7 @@ async fn is_done<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> bool {
     execution.is_done()
 }
 
-async fn pick_next<'a>(
-    execution: &Arc<Mutex<TestSuiteExecution<'a>>>,
-) -> Option<TestExecution<'a>> {
+async fn pick_next<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> Option<TestExecution> {
     let mut execution = execution.lock().await;
     execution.pick_next().await
 }
