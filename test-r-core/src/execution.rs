@@ -7,15 +7,14 @@ use topological_sort::TopologicalSort;
 
 use crate::args::Arguments;
 use crate::internal::{
-    filter_registered_tests, DependencyConstructor, DependencyView, GeneratedTest,
-    RegisteredDependency, RegisteredTest, RegisteredTestGenerator, RegisteredTestSuiteProperty,
-    TestGeneratorFunction,
+    filter_registered_tests, DependencyConstructor, DependencyView, RegisteredDependency,
+    RegisteredTest, RegisteredTestSuiteProperty,
 };
 
 pub(crate) struct TestSuiteExecution<'a> {
     crate_and_module: String,
     dependencies: Vec<&'a RegisteredDependency>,
-    tests: Vec<RegisteredTest>,
+    tests: Vec<&'a RegisteredTest>,
     props: Vec<&'a RegisteredTestSuiteProperty>,
     inner: Vec<TestSuiteExecution<'a>>,
     materialized_dependencies: HashMap<String, Arc<dyn Any + Send + Sync>>,
@@ -26,65 +25,13 @@ pub(crate) struct TestSuiteExecution<'a> {
 }
 
 impl<'a> TestSuiteExecution<'a> {
-    #[cfg(feature = "tokio")]
-    pub async fn construct(
+    pub fn construct(
         arguments: &Arguments,
         dependencies: &'a [RegisteredDependency],
-        tests: &'a [RegisteredTest],
+        tests: &'a [&'a RegisteredTest],
         props: &'a [RegisteredTestSuiteProperty],
-        generators: &'a [RegisteredTestGenerator],
     ) -> Self {
-        let all_tests = tests
-            .iter()
-            .cloned()
-            .chain(Self::generate_tests(generators).await)
-            .collect::<Vec<_>>();
-        let filtered_tests = filter_registered_tests(arguments, all_tests);
-
-        if filtered_tests.is_empty() {
-            Self::root(
-                dependencies
-                    .iter()
-                    .filter(|dep| dep.crate_name.is_empty() && dep.module_path.is_empty())
-                    .collect::<Vec<_>>(),
-                Vec::new(),
-                props
-                    .iter()
-                    .filter(|dep| dep.crate_name().is_empty() && dep.module_path().is_empty())
-                    .collect::<Vec<_>>(),
-            )
-        } else {
-            let mut root = Self::root(Vec::new(), Vec::new(), Vec::new());
-
-            for prop in props {
-                root.add_prop(prop);
-            }
-
-            for dep in dependencies {
-                root.add_dependency(dep);
-            }
-
-            for test in filtered_tests {
-                root.add_test(test);
-            }
-
-            root
-        }
-    }
-
-    pub fn construct_sync(
-        arguments: &Arguments,
-        dependencies: &'a [RegisteredDependency],
-        tests: &'a [RegisteredTest],
-        props: &'a [RegisteredTestSuiteProperty],
-        generators: &'a [RegisteredTestGenerator],
-    ) -> Self {
-        let all_tests = tests
-            .iter()
-            .cloned()
-            .chain(Self::generate_tests_sync(generators))
-            .collect::<Vec<_>>();
-        let filtered_tests = filter_registered_tests(arguments, all_tests);
+        let filtered_tests = filter_registered_tests(arguments, tests);
 
         if filtered_tests.is_empty() {
             Self::root(
@@ -130,7 +77,7 @@ impl<'a> TestSuiteExecution<'a> {
     }
 
     #[cfg(feature = "tokio")]
-    pub async fn pick_next(&mut self) -> Option<TestExecution> {
+    pub async fn pick_next(&mut self) -> Option<TestExecution<'a>> {
         if self.is_empty() {
             None
         } else {
@@ -153,7 +100,7 @@ impl<'a> TestSuiteExecution<'a> {
         }
     }
 
-    pub fn pick_next_sync(&mut self) -> Option<TestExecution> {
+    pub fn pick_next_sync(&mut self) -> Option<TestExecution<'a>> {
         match self.pick_next_internal_sync(&HashMap::new()) {
             Some((test, deps, seq_lock)) => {
                 let index = self.idx;
@@ -174,7 +121,7 @@ impl<'a> TestSuiteExecution<'a> {
         &mut self,
         materialized_parent_deps: &HashMap<String, Arc<dyn Any + Send + Sync>>,
     ) -> Option<(
-        RegisteredTest,
+        &'a RegisteredTest,
         HashMap<String, Arc<dyn Any + Send + Sync>>,
         SequentialExecutionLockGuard,
     )> {
@@ -220,7 +167,7 @@ impl<'a> TestSuiteExecution<'a> {
         &mut self,
         materialized_parent_deps: &HashMap<String, Arc<dyn Any + Send + Sync>>,
     ) -> Option<(
-        RegisteredTest,
+        &'a RegisteredTest,
         HashMap<String, Arc<dyn Any + Send + Sync>>,
         SequentialExecutionLockGuard,
     )> {
@@ -280,7 +227,7 @@ impl<'a> TestSuiteExecution<'a> {
 
     fn root(
         deps: Vec<&'a RegisteredDependency>,
-        tests: Vec<RegisteredTest>,
+        tests: Vec<&'a RegisteredTest>,
         props: Vec<&'a RegisteredTestSuiteProperty>,
     ) -> Self {
         let total_count = tests.len();
@@ -333,7 +280,7 @@ impl<'a> TestSuiteExecution<'a> {
         }
     }
 
-    fn add_test(&mut self, test: RegisteredTest) {
+    fn add_test(&mut self, test: &'a RegisteredTest) {
         let crate_and_module = test.crate_and_module();
         if self.crate_and_module == crate_and_module {
             self.tests.push(test);
@@ -341,7 +288,7 @@ impl<'a> TestSuiteExecution<'a> {
             let mut found = false;
             for inner in &mut self.inner {
                 if Self::is_prefix_of(&inner.crate_and_module, &crate_and_module) {
-                    inner.add_test(test.clone());
+                    inner.add_test(test);
                     found = true;
                     break;
                 }
@@ -498,54 +445,6 @@ impl<'a> TestSuiteExecution<'a> {
         };
         result.trim_start_matches("::").to_string()
     }
-
-    fn add_generated_tests(
-        target: &mut Vec<RegisteredTest>,
-        generator: &RegisteredTestGenerator,
-        generated: Vec<GeneratedTest>,
-    ) {
-        target.extend(generated.into_iter().map(|test| RegisteredTest {
-            name: format!("{}::{}", generator.name, test.name),
-            crate_name: generator.crate_name.clone(),
-            module_path: generator.module_path.clone(),
-            is_ignored: generator.is_ignored,
-            run: test.run,
-        }));
-    }
-
-    #[cfg(feature = "tokio")]
-    async fn generate_tests(generators: &'a [RegisteredTestGenerator]) -> Vec<RegisteredTest> {
-        let mut result = Vec::new();
-        for generator in generators {
-            match &generator.run {
-                TestGeneratorFunction::Sync(generator_fn) => {
-                    let tests = (generator_fn)();
-                    Self::add_generated_tests(&mut result, generator, tests);
-                }
-                TestGeneratorFunction::Async(generator_fn) => {
-                    let tests = (generator_fn)().await;
-                    Self::add_generated_tests(&mut result, generator, tests);
-                }
-            }
-        }
-        result
-    }
-
-    fn generate_tests_sync(generators: &'a [RegisteredTestGenerator]) -> Vec<RegisteredTest> {
-        let mut result = Vec::new();
-        for generator in generators {
-            match &generator.run {
-                TestGeneratorFunction::Sync(generator_fn) => {
-                    let tests = (generator_fn)();
-                    Self::add_generated_tests(&mut result, generator, tests);
-                }
-                TestGeneratorFunction::Async(_) => {
-                    panic!("Async test generators are not supported in sync mode")
-                }
-            }
-        }
-        result
-    }
 }
 
 impl<'a> Debug for TestSuiteExecution<'a> {
@@ -584,8 +483,8 @@ impl DependencyView for HashMap<String, Arc<dyn Any + Send + Sync>> {
     }
 }
 
-pub struct TestExecution {
-    pub test: RegisteredTest,
+pub struct TestExecution<'a> {
+    pub test: &'a RegisteredTest,
     pub deps: Box<dyn DependencyView + Send + Sync>,
     pub index: usize,
     _seq_lock: SequentialExecutionLockGuard,

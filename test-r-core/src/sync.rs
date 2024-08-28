@@ -2,7 +2,7 @@ use crate::args;
 use crate::args::Arguments;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
-use crate::internal::{RegisteredTest, TestFunction, TestResult};
+use crate::internal::{generate_tests_sync, RegisteredTest, TestFunction, TestResult};
 use crate::output::{test_runner_output, TestRunnerOutput};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
@@ -17,15 +17,25 @@ pub fn test_runner() {
     let registered_testsuite_props = internal::REGISTERED_TESTSUITE_PROPS.lock().unwrap();
     let registered_test_generators = internal::REGISTERED_TEST_GENERATORS.lock().unwrap();
 
+    let generated_tests = registered_tests
+        .iter()
+        .cloned()
+        .chain(generate_tests_sync(&registered_test_generators))
+        .collect::<Vec<_>>();
+
+    let all_tests: Vec<&RegisteredTest> = registered_tests
+        .iter()
+        .chain(generated_tests.as_slice())
+        .collect();
+
     if args.list {
-        output.test_list(&registered_tests);
+        output.test_list(&all_tests);
     } else {
-        let execution = TestSuiteExecution::construct_sync(
+        let execution = TestSuiteExecution::construct(
             &args,
             registered_dependency_constructors.as_slice(),
-            registered_tests.as_slice(),
+            &all_tests,
             registered_testsuite_props.as_slice(),
-            registered_test_generators.as_slice(),
         );
         // println!("Execution plan: {execution:?}");
 
@@ -51,8 +61,7 @@ pub fn test_runner() {
                 results.extend(handle.join().unwrap());
             }
 
-            // TODO: need to pass all_tests here
-            output.finished_suite(&registered_tests, &results);
+            output.finished_suite(&all_tests, &results);
         });
     }
 }
@@ -81,7 +90,7 @@ fn is_done(execution: &Arc<Mutex<TestSuiteExecution<'_>>>) -> bool {
     execution.is_done()
 }
 
-fn pick_next(execution: &Arc<Mutex<TestSuiteExecution<'_>>>) -> Option<TestExecution> {
+fn pick_next<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> Option<TestExecution<'a>> {
     let mut execution = execution.lock().unwrap();
     execution.pick_next_sync()
 }

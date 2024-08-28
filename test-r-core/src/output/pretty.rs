@@ -118,7 +118,7 @@ impl TestRunnerOutput for Pretty {
 
     fn finished_suite(
         &self,
-        registered_tests: &[RegisteredTest],
+        registered_tests: &[&RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
     ) {
         let mut out = self.lock.lock().unwrap();
@@ -164,7 +164,7 @@ impl TestRunnerOutput for Pretty {
         }
     }
 
-    fn test_list(&self, registered_tests: &[RegisteredTest]) {
+    fn test_list(&self, registered_tests: &[&RegisteredTest]) {
         let mut out = self.lock.lock().unwrap();
 
         for test in registered_tests {

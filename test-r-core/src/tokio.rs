@@ -6,7 +6,7 @@ use tokio::task::spawn_blocking;
 
 use crate::args::Arguments;
 use crate::execution::{TestExecution, TestSuiteExecution};
-use crate::internal::{RegisteredTest, TestFunction, TestResult};
+use crate::internal::{generate_tests, RegisteredTest, TestFunction, TestResult};
 use crate::output::{test_runner_output, TestRunnerOutput};
 use crate::{args, internal};
 
@@ -28,17 +28,26 @@ async fn async_test_runner() {
     let registered_testsuite_props = internal::REGISTERED_TESTSUITE_PROPS.lock().unwrap();
     let registered_test_generators = internal::REGISTERED_TEST_GENERATORS.lock().unwrap();
 
+    let generated_tests = registered_tests
+        .iter()
+        .cloned()
+        .chain(generate_tests(&registered_test_generators).await)
+        .collect::<Vec<_>>();
+
+    let all_tests: Vec<&RegisteredTest> = registered_tests
+        .iter()
+        .chain(generated_tests.as_slice())
+        .collect();
+
     if args.list {
-        output.test_list(&registered_tests);
+        output.test_list(&all_tests);
     } else {
         let execution = TestSuiteExecution::construct(
             &args,
             registered_dependency_constructors.as_slice(),
-            registered_tests.as_slice(),
+            &all_tests,
             registered_testsuite_props.as_slice(),
-            registered_test_generators.as_slice(),
-        )
-        .await;
+        );
         // println!("Execution plan: {execution:?}");
 
         let count = execution.remaining();
@@ -67,8 +76,7 @@ async fn async_test_runner() {
             }
         });
 
-        // TODO: need to pass all_tests here
-        output.finished_suite(&registered_tests, &results.lock().await);
+        output.finished_suite(&all_tests, &results.lock().await);
     }
 }
 
@@ -95,7 +103,9 @@ async fn is_done<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> bool {
     execution.is_done()
 }
 
-async fn pick_next<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> Option<TestExecution> {
+async fn pick_next<'a>(
+    execution: &Arc<Mutex<TestSuiteExecution<'a>>>,
+) -> Option<TestExecution<'a>> {
     let mut execution = execution.lock().await;
     execution.pick_next().await
 }

@@ -19,10 +19,10 @@ pub trait TestRunnerOutput: Send + Sync {
     );
     fn finished_suite(
         &self,
-        registered_tests: &[RegisteredTest],
+        registered_tests: &[&RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
     );
-    fn test_list(&self, registered_tests: &[RegisteredTest]);
+    fn test_list(&self, registered_tests: &[&RegisteredTest]);
 }
 
 pub fn test_runner_output(args: &Arguments) -> Arc<dyn TestRunnerOutput> {

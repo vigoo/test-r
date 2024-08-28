@@ -45,7 +45,7 @@ impl TestRunnerOutput for Json {
 
     fn finished_suite(
         &self,
-        registered_tests: &[RegisteredTest],
+        registered_tests: &[&RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
     ) {
         let result = SuiteResult::from_test_results(registered_tests, results);
@@ -62,7 +62,7 @@ impl TestRunnerOutput for Json {
         )
     }
 
-    fn test_list(&self, registered_tests: &[RegisteredTest]) {
+    fn test_list(&self, registered_tests: &[&RegisteredTest]) {
         println!(r#"["#);
         for test in registered_tests {
             println!(r#""{}","#, escape8259::escape(test.fully_qualified_name()));

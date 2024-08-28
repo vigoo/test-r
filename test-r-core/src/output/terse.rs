@@ -38,13 +38,13 @@ impl TestRunnerOutput for Terse {
 
     fn finished_suite(
         &self,
-        registered_tests: &[RegisteredTest],
+        registered_tests: &[&RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
     ) {
         self.pretty.finished_suite(registered_tests, results)
     }
 
-    fn test_list(&self, registered_tests: &[RegisteredTest]) {
+    fn test_list(&self, registered_tests: &[&RegisteredTest]) {
         self.pretty.test_list(registered_tests)
     }
 }

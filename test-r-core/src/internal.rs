@@ -273,8 +273,8 @@ pub(crate) fn filter_test(test: &RegisteredTest, filter: &str, exact: bool) -> b
 
 pub(crate) fn filter_registered_tests<'a>(
     args: &Arguments,
-    registered_tests: Vec<RegisteredTest>,
-) -> Vec<RegisteredTest> {
+    registered_tests: &'a [&'a RegisteredTest],
+) -> Vec<&'a RegisteredTest> {
     registered_tests
         .into_iter()
         .filter(|registered_test| {
@@ -285,7 +285,56 @@ pub(crate) fn filter_registered_tests<'a>(
                     .map(|filter| filter_test(registered_test, filter, args.exact))
                     .unwrap_or(false)
         })
+        .map(|&test| test)
         .collect::<Vec<_>>()
+}
+
+fn add_generated_tests(
+    target: &mut Vec<RegisteredTest>,
+    generator: &RegisteredTestGenerator,
+    generated: Vec<GeneratedTest>,
+) {
+    target.extend(generated.into_iter().map(|test| RegisteredTest {
+        name: format!("{}::{}", generator.name, test.name),
+        crate_name: generator.crate_name.clone(),
+        module_path: generator.module_path.clone(),
+        is_ignored: generator.is_ignored,
+        run: test.run,
+    }));
+}
+
+#[cfg(feature = "tokio")]
+pub(crate) async fn generate_tests(generators: &[RegisteredTestGenerator]) -> Vec<RegisteredTest> {
+    let mut result = Vec::new();
+    for generator in generators {
+        match &generator.run {
+            TestGeneratorFunction::Sync(generator_fn) => {
+                let tests = (generator_fn)();
+                add_generated_tests(&mut result, generator, tests);
+            }
+            TestGeneratorFunction::Async(generator_fn) => {
+                let tests = (generator_fn)().await;
+                add_generated_tests(&mut result, generator, tests);
+            }
+        }
+    }
+    result
+}
+
+pub(crate) fn generate_tests_sync(generators: &[RegisteredTestGenerator]) -> Vec<RegisteredTest> {
+    let mut result = Vec::new();
+    for generator in generators {
+        match &generator.run {
+            TestGeneratorFunction::Sync(generator_fn) => {
+                let tests = (generator_fn)();
+                add_generated_tests(&mut result, generator, tests);
+            }
+            TestGeneratorFunction::Async(_) => {
+                panic!("Async test generators are not supported in sync mode")
+            }
+        }
+    }
+    result
 }
 
 pub enum TestResult {
@@ -331,7 +380,7 @@ pub struct SuiteResult {
 
 impl SuiteResult {
     pub fn from_test_results(
-        registered_tests: &[RegisteredTest],
+        registered_tests: &[&RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
     ) -> Self {
         let passed = results
