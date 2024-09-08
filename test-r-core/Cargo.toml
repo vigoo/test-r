@@ -2,18 +2,19 @@
 name = "test-r-core"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
 
 [lib]
 
 [dependencies]
-anstream = "0.6.14"
-anstyle = "1.0.7"
-clap = { version = "4.5.7", features = ["derive"] }
+anstream = "0.6.15"
+anstyle = "1.0.8"
+clap = { version = "4.5.17", features = ["derive"] }
 escape8259 = "0.5.3"
 futures = "0.3.30"
 parking_lot = { version = "0.12.3", features = ["arc_lock", "send_guard"] }
-quick-xml = "0.36.0"
-tokio = { version = "1.38.0", features = ["rt-multi-thread"], optional = true }
+quick-xml = "0.36.1"
+tokio = { version = "1.40.0", features = ["rt-multi-thread"], optional = true }
 tokio-scoped = { version = "0.2.0", optional = true }
 topological-sort = "0.2.2"
 

@@ -1,5 +1,6 @@
 extern crate alloc;
 
+pub use test_r_macro::add_test;
 pub use test_r_macro::inherit_test_dep;
 pub use test_r_macro::sequential;
 pub use test_r_macro::test;

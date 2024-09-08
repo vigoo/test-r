@@ -78,11 +78,11 @@ mod inner {
     }
 }
 
-mod deps {
+pub mod deps {
     use test_r::sequential;
 
-    struct Dep1 {
-        value: i32,
+    pub struct Dep1 {
+        pub value: i32,
     }
 
     impl Dep1 {
@@ -100,9 +100,8 @@ mod deps {
 
     #[cfg(test)]
     #[sequential]
-    mod tests {
+    pub mod tests {
         use crate::deps::Dep1;
-        use std::sync::Arc;
         use test_r::{test, test_dep};
         use tokio::io::AsyncWriteExt;
 
@@ -116,8 +115,8 @@ mod deps {
             Dep2::new(20).await
         }
 
-        struct Dep2 {
-            value: i32,
+        pub struct Dep2 {
+            pub value: i32,
         }
 
         impl Dep2 {
@@ -198,9 +197,12 @@ mod deps {
     }
 }
 
+#[cfg(test)]
 mod generated {
+    use crate::deps::tests::Dep2;
+    use crate::deps::Dep1;
     use test_r::core::DynamicTestRegistration;
-    use test_r::test_gen;
+    use test_r::{add_test, test_dep, test_gen};
 
     #[test_gen]
     fn generate_tests_1(r: &mut DynamicTestRegistration) {
@@ -227,6 +229,46 @@ mod generated {
                     assert_eq!(i, i2);
                 })
             });
+        }
+    }
+
+    #[test_dep]
+    fn create_dep1() -> Dep1 {
+        Dep1::new(10)
+    }
+
+    #[test_dep]
+    async fn create_dep2() -> Dep2 {
+        Dep2::new(10).await
+    }
+
+    #[test_gen]
+    fn generate_tests_3(r: &mut DynamicTestRegistration) {
+        println!("Generating some tests with dependencies in a sync generator");
+        for i in 0..10 {
+            add_test!(r, format!("test_{i}"), move |dep1: &Dep1| {
+                println!("Running test {} using dep {}", i, dep1.value);
+                let s = i.to_string();
+                let i2 = s.parse::<i32>().unwrap();
+                assert_eq!(i, i2);
+            });
+        }
+    }
+
+    #[test_gen]
+    async fn generate_tests_4(r: &mut DynamicTestRegistration) {
+        println!("Generating some async tests with dependencies in a sync generator");
+        for i in 0..10 {
+            add_test!(
+                r,
+                format!("test_{i}"),
+                move |dep1: &Dep1, d2: &Dep2| async {
+                    println!("Running test {} using deps {} {}", i, dep1.value, d2.value);
+                    let s = i.to_string();
+                    let i2 = s.parse::<i32>().unwrap();
+                    assert_eq!(i, i2);
+                }
+            );
         }
     }
 }

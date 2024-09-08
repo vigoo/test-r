@@ -2,7 +2,11 @@ use proc_macro::TokenStream;
 
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
-use syn::{FnArg, ItemFn, ItemMod, ReturnType, Type, TypePath};
+use syn::punctuated::Punctuated;
+use syn::{
+    parse2, parse_macro_input, Expr, ExprClosure, FnArg, ItemFn, ItemMod, Pat, PatType, ReturnType,
+    Token, Type, TypePath,
+};
 
 #[proc_macro_attribute]
 pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -51,49 +55,6 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     result.into()
-}
-
-fn get_dependency_params(
-    ast: &ItemFn,
-) -> (Vec<proc_macro2::TokenStream>, Vec<proc_macro2::TokenStream>) {
-    let mut dep_getters = Vec::new();
-    let mut dep_names = Vec::new();
-    for param in &ast.sig.inputs {
-        let dep_type = match param {
-            FnArg::Receiver(_) => {
-                panic!("Test functions cannot have a self parameter")
-            }
-            FnArg::Typed(typ) => match &*typ.ty {
-                Type::Reference(reference) => {
-                    match &*reference.elem {
-                        Type::Path(path) => path.clone(),
-                        _ => {
-                            panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", reference.elem.to_token_stream())
-                            // TODO: nicer error report
-                        }
-                    }
-                }
-                _ => {
-                    panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", typ.ty.to_token_stream())
-                    // TODO: nicer error report
-                }
-            },
-        };
-        let dep_name_str = merge_type_path(&dep_type);
-
-        let getter_ident = Ident::new(
-            &format!("test_r_get_dep_{}", dep_name_str),
-            Span::call_site(),
-        );
-
-        dep_getters.push(quote! {
-            &#getter_ident(&deps)
-        });
-        dep_names.push(quote! {
-            #dep_name_str.to_string()
-        });
-    }
-    (dep_getters, dep_names)
 }
 
 #[proc_macro]
@@ -201,7 +162,7 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         #[cfg(test)]
-        fn #getter_ident<'a>(dependency_view: &'a impl test_r::core::DependencyView) -> Arc<#dep_type> {
+        fn #getter_ident<'a>(dependency_view: &'a impl test_r::core::DependencyView) -> std::sync::Arc<#dep_type> {
             #getter_body
         }
 
@@ -309,6 +270,60 @@ pub fn sequential(_attr: TokenStream, item: TokenStream) -> TokenStream {
     result.into()
 }
 
+#[proc_macro]
+pub fn add_test(input: TokenStream) -> TokenStream {
+    let params = parse_macro_input!(input with Punctuated::<Expr, Token![,]>::parse_terminated);
+
+    if params.len() != 3 {
+        panic!("add_test! expects exactly 3 parameters");
+    }
+
+    let dtr_expr = &params[0];
+    let name_expr = &params[1];
+
+    let function_expr = &params[2];
+
+    let function_closure: ExprClosure = parse2(function_expr.to_token_stream())
+        .expect("the third parameter of add_test! must be a closure");
+
+    let (dep_getters, _dep_names, bindings) =
+        get_dependency_params_for_closure(function_closure.inputs.iter());
+    let is_async = match &*function_closure.body {
+        Expr::Async(_) => true,
+        _ => false,
+    };
+
+    let result = if is_async {
+        let mut lets = Vec::new();
+        for (getter, ident) in dep_getters.iter().zip(bindings) {
+            lets.push(quote! {
+                let #ident = #getter;
+            });
+        }
+        let body = match &*function_closure.body {
+            Expr::Async(inner) => inner.block.clone(),
+            _ => panic!("Expected async block"),
+        };
+        quote! {
+            #dtr_expr.add_async_test(#name_expr, move |deps| {
+                Box::pin(async move {
+                    #(#lets)*
+                    #body
+                })
+            });
+        }
+    } else {
+        quote! {
+            #dtr_expr.add_sync_test(#name_expr, move |deps| {
+                let gen = #function_closure;
+                gen(#(#dep_getters),*)
+            });
+        }
+    };
+
+    result.into()
+}
+
 fn merge_type_path(dep_type: &TypePath) -> String {
     let merged_ident = dep_type
         .path
@@ -319,4 +334,100 @@ fn merge_type_path(dep_type: &TypePath) -> String {
         .join("_");
     let dep_name = Ident::new(&merged_ident, Span::call_site());
     dep_name.to_string().to_lowercase()
+}
+
+fn get_dependency_params(
+    ast: &ItemFn,
+) -> (Vec<proc_macro2::TokenStream>, Vec<proc_macro2::TokenStream>) {
+    let mut dep_getters = Vec::new();
+    let mut dep_names = Vec::new();
+    for param in &ast.sig.inputs {
+        let dep_type = match param {
+            FnArg::Receiver(_) => {
+                panic!("Test functions cannot have a self parameter")
+            }
+            FnArg::Typed(typ) => get_dependency_param_from_pat_type(typ),
+        };
+        let dep_name_str = merge_type_path(&dep_type);
+
+        let getter_ident = Ident::new(
+            &format!("test_r_get_dep_{}", dep_name_str),
+            Span::call_site(),
+        );
+
+        dep_getters.push(quote! {
+            &#getter_ident(&deps)
+        });
+        dep_names.push(quote! {
+            #dep_name_str.to_string()
+        });
+    }
+    (dep_getters, dep_names)
+}
+
+fn get_dependency_params_for_closure<'a>(
+    ast: impl Iterator<Item = &'a Pat>,
+) -> (
+    Vec<proc_macro2::TokenStream>,
+    Vec<proc_macro2::TokenStream>,
+    Vec<proc_macro2::Ident>,
+) {
+    let mut dep_getters = Vec::new();
+    let mut dep_names = Vec::new();
+    let mut bindings = Vec::new();
+    for pat in ast {
+        let dep_type = match pat {
+            Pat::Type(typ) => get_dependency_param_from_pat_type(&typ),
+            _ => {
+                panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", pat.to_token_stream())
+                // TODO: nicer error report
+            }
+        };
+        let dep_name_str = merge_type_path(&dep_type);
+        let binding = match pat {
+            Pat::Type(typ) => match &*typ.pat {
+                Pat::Ident(ident) => ident.ident.clone(),
+                _ => {
+                    panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", typ.pat.to_token_stream())
+                    // TODO: nicer error report
+                }
+            },
+            _ => {
+                panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", pat.to_token_stream())
+                // TODO: nicer error report
+            }
+        };
+
+        let getter_ident = Ident::new(
+            &format!("test_r_get_dep_{}", dep_name_str),
+            Span::call_site(),
+        );
+
+        dep_getters.push(quote! {
+            &#getter_ident(&deps)
+        });
+        dep_names.push(quote! {
+            #dep_name_str.to_string()
+        });
+        bindings.push(binding);
+    }
+    (dep_getters, dep_names, bindings)
+}
+
+fn get_dependency_param_from_pat_type(typ: &PatType) -> TypePath {
+    match &*typ.ty {
+        Type::Reference(reference) => {
+            match &*reference.elem {
+                Type::Path(path) => path.clone(),
+                _ => {
+                    panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", reference.elem.to_token_stream())
+                    // TODO: nicer error report
+                }
+            }
+        }
+        _ => {
+            panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", typ.ty.to_token_stream())
+            // TODO: nicer error report
+        }
+    }
 }
