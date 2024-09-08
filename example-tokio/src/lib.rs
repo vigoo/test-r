@@ -79,6 +79,7 @@ mod inner {
 }
 
 pub mod deps {
+    #[cfg(test)]
     use test_r::sequential;
 
     pub struct Dep1 {

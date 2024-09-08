@@ -1,5 +1,3 @@
-extern crate alloc;
-
 pub use test_r_macro::add_test;
 pub use test_r_macro::inherit_test_dep;
 pub use test_r_macro::sequential;
@@ -16,7 +14,7 @@ pub mod core {
     pub use test_r_core::*;
 
     pub fn register_test(name: &str, module_path: &str, is_ignored: bool, run: TestFunction) {
-        let (crate_name, module_path) = crate::core::split_module_path(module_path);
+        let (crate_name, module_path) = split_module_path(module_path);
 
         internal::REGISTERED_TESTS
             .lock()

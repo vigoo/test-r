@@ -1,3 +1,4 @@
+mod ipc;
 mod json;
 mod junit;
 mod pretty;
@@ -26,7 +27,9 @@ pub trait TestRunnerOutput: Send + Sync {
 }
 
 pub fn test_runner_output(args: &Arguments) -> Arc<dyn TestRunnerOutput> {
-    if args.quiet {
+    if args.ipc.is_some() {
+        Arc::new(ipc::IpcWorkerOutput::new())
+    } else if args.quiet {
         Arc::new(terse::Terse::new())
     } else {
         match args.format.unwrap_or_default() {

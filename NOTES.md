@@ -4,7 +4,6 @@ https://github.com/LukasKalbertodt/libtest-mimic/
 https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 
 # Todo
-- Dynamic test generation (annotation for generator function)
 - Try to capture output and support no-capture (`--nocapture`, `--show-output`)
    - we need to fork child processes for this
    - must respect thread-count setting

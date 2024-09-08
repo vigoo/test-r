@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub enum TestFunction {
     Sync(Arc<dyn Fn(Box<dyn DependencyView + Send + Sync>) + Send + Sync + 'static>),
     Async(
@@ -71,6 +72,7 @@ impl Debug for RegisteredTest {
 pub static REGISTERED_TESTS: Mutex<Vec<RegisteredTest>> = Mutex::new(Vec::new());
 
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub enum DependencyConstructor {
     Sync(
         Arc<
@@ -183,6 +185,7 @@ pub static REGISTERED_TESTSUITE_PROPS: Mutex<Vec<RegisteredTestSuiteProperty>> =
     Mutex::new(Vec::new());
 
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub enum TestGeneratorFunction {
     Sync(Arc<dyn Fn() -> Vec<GeneratedTest> + Send + Sync + 'static>),
     Async(
@@ -197,6 +200,12 @@ pub enum TestGeneratorFunction {
 
 pub struct DynamicTestRegistration {
     tests: Vec<GeneratedTest>,
+}
+
+impl Default for DynamicTestRegistration {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DynamicTestRegistration {
@@ -285,7 +294,7 @@ pub(crate) fn filter_registered_tests<'a>(
                     .map(|filter| filter_test(registered_test, filter, args.exact))
                     .unwrap_or(false)
         })
-        .map(|&test| test)
+        .copied()
         .collect::<Vec<_>>()
 }
 

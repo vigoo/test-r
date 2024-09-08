@@ -108,6 +108,11 @@ pub struct Arguments {
     /// be passed, which will run all tests matching any of the filters.
     #[arg(value_name = "FILTER")]
     pub filter: Option<String>,
+
+    /// Run the test suite in worker IPC mode - listening on the given local socket waiting
+    /// for the test runner to connect and send test execution requests. The only stdout/stderr
+    /// output will be the one emitted by the actual test runs so the test runner can capture them.
+    pub ipc: Option<String>,
 }
 
 impl Arguments {
@@ -120,22 +125,22 @@ impl Arguments {
         Parser::parse()
     }
 
-    /// Like `from_args()`, but operates on an explicit iterator and not the
-    /// global arguments. Note that the first element is the executable name!
-    pub fn from_iter<I>(iter: I) -> Self
-    where
-        Self: Sized,
-        I: IntoIterator,
-        I::Item: Into<std::ffi::OsString> + Clone,
-    {
-        Parser::parse_from(iter)
-    }
-
     pub(crate) fn test_threads(&self) -> NonZero<usize> {
-        self.test_threads
-            .and_then(NonZero::new)
-            .or_else(|| std::thread::available_parallelism().ok())
-            .unwrap_or(NonZero::new(1).unwrap())
+        if self.ipc.is_some() {
+            // When running as an IPC-controlled worker, always use a single thread
+            NonZero::new(1).unwrap()
+        } else {
+            self.test_threads
+                .and_then(NonZero::new)
+                .or_else(|| std::thread::available_parallelism().ok())
+                .unwrap_or(NonZero::new(1).unwrap())
+        }
+    }
+}
+
+impl<A: Into<std::ffi::OsString> + Clone> FromIterator<A> for Arguments {
+    fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
+        Parser::parse_from(iter)
     }
 }
 

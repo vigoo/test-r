@@ -12,6 +12,7 @@ anstyle = "1.0.8"
 clap = { version = "4.5.17", features = ["derive"] }
 escape8259 = "0.5.3"
 futures = "0.3.30"
+interprocess = "2.2.1"
 parking_lot = { version = "0.12.3", features = ["arc_lock", "send_guard"] }
 quick-xml = "0.36.1"
 tokio = { version = "1.40.0", features = ["rt-multi-thread"], optional = true }
@@ -20,4 +21,4 @@ topological-sort = "0.2.2"
 
 [features]
 default = ["tokio"]
-tokio = ["dep:tokio", "dep:tokio-scoped"]
+tokio = ["dep:tokio", "dep:tokio-scoped", "interprocess/tokio"]

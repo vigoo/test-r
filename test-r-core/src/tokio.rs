@@ -6,9 +6,9 @@ use tokio::task::spawn_blocking;
 
 use crate::args::Arguments;
 use crate::execution::{TestExecution, TestSuiteExecution};
+use crate::internal;
 use crate::internal::{generate_tests, RegisteredTest, TestFunction, TestResult};
 use crate::output::{test_runner_output, TestRunnerOutput};
-use crate::{args, internal};
 
 pub fn test_runner() {
     tokio::runtime::Builder::new_multi_thread()
@@ -18,8 +18,9 @@ pub fn test_runner() {
         .block_on(async_test_runner());
 }
 
+#[allow(clippy::await_holding_lock)]
 async fn async_test_runner() {
-    let args = args::Arguments::from_args();
+    let args = Arguments::from_args();
     let output = test_runner_output(&args);
 
     let registered_tests = internal::REGISTERED_TESTS.lock().unwrap();
@@ -80,18 +81,18 @@ async fn async_test_runner() {
     }
 }
 
-async fn test_thread<'a>(
+async fn test_thread(
     args: Arguments,
-    execution: Arc<Mutex<TestSuiteExecution<'a>>>,
+    execution: Arc<Mutex<TestSuiteExecution<'_>>>,
     output: Arc<dyn TestRunnerOutput>,
     count: usize,
     results: Arc<Mutex<Vec<(RegisteredTest, TestResult)>>>,
 ) {
     while !is_done(&execution).await {
         if let Some(next) = pick_next(&execution).await {
-            output.start_running_test(&next.test, next.index, count);
-            let result = run_test(args.include_ignored, next.deps, &next.test).await;
-            output.finished_running_test(&next.test, next.index, count, &result);
+            output.start_running_test(next.test, next.index, count);
+            let result = run_test(args.include_ignored, next.deps, next.test).await;
+            output.finished_running_test(next.test, next.index, count, &result);
 
             results.lock().await.push((next.test.clone(), result));
         }
@@ -114,9 +115,9 @@ async fn run_test(
     include_ignored: bool,
     dependency_view: Box<dyn internal::DependencyView + Send + Sync>,
     test: &RegisteredTest,
-) -> internal::TestResult {
+) -> TestResult {
     if test.is_ignored && !include_ignored {
-        internal::TestResult::Ignored
+        TestResult::Ignored
     } else {
         match &test.run {
             TestFunction::Sync(_) => {
@@ -126,7 +127,7 @@ async fn run_test(
                 });
                 handle
                     .await
-                    .unwrap_or_else(|join_error| internal::TestResult::Failed {
+                    .unwrap_or_else(|join_error| TestResult::Failed {
                         panic: Box::new(join_error),
                     })
             }
@@ -135,8 +136,8 @@ async fn run_test(
                     .catch_unwind()
                     .await
                 {
-                    Ok(_) => internal::TestResult::Passed,
-                    Err(panic) => internal::TestResult::Failed { panic },
+                    Ok(_) => TestResult::Passed,
+                    Err(panic) => TestResult::Failed { panic },
                 }
             }
         }

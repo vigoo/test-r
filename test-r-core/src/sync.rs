@@ -1,4 +1,3 @@
-use crate::args;
 use crate::args::Arguments;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
@@ -8,7 +7,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
 pub fn test_runner() {
-    let args = args::Arguments::from_args();
+    let args = Arguments::from_args();
     let output = test_runner_output(&args);
 
     let registered_tests = internal::REGISTERED_TESTS.lock().unwrap();
@@ -74,10 +73,12 @@ fn test_thread(
 ) -> Vec<(RegisteredTest, TestResult)> {
     let mut results = Vec::with_capacity(count);
     while !is_done(&execution) {
+        // TODO: if we have an IPC connection, wait for the next test to run
         if let Some(next) = pick_next(&execution) {
-            output.start_running_test(&next.test, next.index, count);
-            let result = run_test(args.include_ignored, next.deps, &next.test);
-            output.finished_running_test(&next.test, next.index, count, &result);
+            // TODO: if we have an IPC connection and `next` is not the one, just skip it
+            output.start_running_test(next.test, next.index, count);
+            let result = run_test(args.include_ignored, next.deps, next.test);
+            output.finished_running_test(next.test, next.index, count, &result);
 
             results.push((next.test.clone(), result));
         }
@@ -99,9 +100,9 @@ fn run_test(
     include_ignored: bool,
     dependency_view: Box<dyn internal::DependencyView + Send + Sync>,
     test: &RegisteredTest,
-) -> internal::TestResult {
+) -> TestResult {
     if test.is_ignored && !include_ignored {
-        internal::TestResult::Ignored
+        TestResult::Ignored
     } else {
         let test_fn = &test.run;
         run_sync_test_function(test_fn, dependency_view)
@@ -112,7 +113,7 @@ fn run_test(
 pub(crate) fn run_sync_test_function(
     test_fn: &TestFunction,
     dependency_view: Box<dyn internal::DependencyView + Send + Sync>,
-) -> internal::TestResult {
+) -> TestResult {
     let result = catch_unwind(AssertUnwindSafe(move || match test_fn {
         TestFunction::Sync(test_fn) => test_fn(dependency_view),
         _ => {
@@ -120,7 +121,7 @@ pub(crate) fn run_sync_test_function(
         }
     }));
     match result {
-        Ok(_) => internal::TestResult::Passed,
-        Err(panic) => internal::TestResult::Failed { panic },
+        Ok(_) => TestResult::Passed,
+        Err(panic) => TestResult::Failed { panic },
     }
 }
