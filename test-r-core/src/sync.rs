@@ -4,16 +4,14 @@ use crate::internal;
 use crate::internal::{
     generate_tests_sync, CapturedOutput, RegisteredTest, TestFunction, TestResult,
 };
-use crate::ipc::{IpcCommand, IpcResponse};
+use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
 use crate::output::{test_runner_output, TestRunnerOutput};
 use bincode::{decode_from_slice, encode_to_vec};
 use interprocess::local_socket::prelude::*;
-use interprocess::local_socket::{
-    GenericFilePath, GenericNamespaced, ListenerOptions, NameType, Stream, ToFsName, ToNsName,
-};
+use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToNsName};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::process::{Child, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::{spawn, JoinHandle};
 use uuid::Uuid;
@@ -92,13 +90,7 @@ fn test_thread(
 ) -> Vec<(RegisteredTest, TestResult)> {
     let mut worker = spawn_worker_if_needed(&args);
     let mut connection = if let Some(name) = args.ipc {
-        let name = if GenericNamespaced::is_supported() {
-            name.to_ns_name::<GenericNamespaced>()
-                .expect("Invalid local socket name")
-        } else {
-            name.to_fs_name::<GenericFilePath>()
-                .expect("Invalid local socket name")
-        };
+        let name = ipc_name(name);
         let stream = Stream::connect(name).expect("Failed to connect to IPC socket");
         Some(stream)
     } else {
@@ -166,10 +158,10 @@ fn test_thread(
                         .expect("Failed to encode IPC response");
                     let message_size = (msg.len() as u16).to_le_bytes();
                     connection
-                        .write(&message_size)
+                        .write_all(&message_size)
                         .expect("Failed to write IPC response message size");
                     connection
-                        .write(&msg)
+                        .write_all(&msg)
                         .expect("Failed to write response to IPC connection");
                 }
 
@@ -235,10 +227,10 @@ impl Worker {
             encode_to_vec(&cmd, bincode::config::standard()).expect("Failed to encode IPC command");
         let message_size = (msg.len() as u16).to_le_bytes();
         self.connection
-            .write(&message_size)
+            .write_all(&message_size)
             .expect("Failed to write IPC message size");
         self.connection
-            .write(&msg)
+            .write_all(&msg)
             .expect("Failed to write to IPC connection");
 
         let mut response_size: [u8; 2] = [0, 0];
@@ -257,12 +249,7 @@ impl Worker {
 
         let out_lines: Vec<_> = self.out_lines.lock().unwrap().drain(..).collect();
         let err_lines: Vec<_> = self.err_lines.lock().unwrap().drain(..).collect();
-        let mut captured = vec![out_lines, err_lines].concat();
-        captured.sort();
-
-        let mut result: TestResult = result.into();
-        result.set_captured_output(captured);
-        result
+        result.into_test_result(out_lines, err_lines)
     }
 }
 
@@ -286,7 +273,7 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
         args.spawn_workers = false;
         let args = args.to_args();
 
-        let mut process = std::process::Command::new(exe)
+        let mut process = Command::new(exe)
             .args(args)
             .stdin(Stdio::inherit())
             .stderr(Stdio::piped())

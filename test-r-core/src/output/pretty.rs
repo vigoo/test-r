@@ -228,4 +228,13 @@ impl TestRunnerOutput for Pretty {
         writeln!(out).unwrap();
         writeln!(out, "{} tests", registered_tests.len()).unwrap();
     }
+
+    fn warning(&self, message: &str) {
+        eprintln!(
+            "{}{}{}",
+            self.style_stderr.render(),
+            message,
+            self.style_stderr.render_reset()
+        );
+    }
 }

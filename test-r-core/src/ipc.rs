@@ -1,5 +1,8 @@
-use crate::internal::TestResult;
+use crate::internal::{CapturedOutput, TestResult};
 use bincode::{Decode, Encode};
+use interprocess::local_socket::{
+    GenericFilePath, GenericNamespaced, Name, NameType, ToFsName, ToNsName,
+};
 
 /// Commands sent from the primary test runner to the spawned worker processes.
 #[derive(Debug, Encode, Decode)]
@@ -16,6 +19,21 @@ pub enum SerializableTestResult {
     Passed,
     Failed { panic: String },
     Ignored,
+}
+
+impl SerializableTestResult {
+    pub fn into_test_result(
+        self,
+        stdout: Vec<CapturedOutput>,
+        stderr: Vec<CapturedOutput>,
+    ) -> TestResult {
+        let mut captured = vec![stdout, stderr].concat();
+        captured.sort();
+
+        let mut result: TestResult = self.into();
+        result.set_captured_output(captured);
+        result
+    }
 }
 
 impl From<&TestResult> for SerializableTestResult {
@@ -44,4 +62,14 @@ impl From<SerializableTestResult> for TestResult {
 #[derive(Debug, Encode, Decode)]
 pub enum IpcResponse {
     TestFinished { result: SerializableTestResult },
+}
+
+pub fn ipc_name<'s>(name: String) -> Name<'s> {
+    if GenericNamespaced::is_supported() {
+        name.to_ns_name::<GenericNamespaced>()
+            .expect("Invalid local socket name")
+    } else {
+        name.to_fs_name::<GenericFilePath>()
+            .expect("Invalid local socket name")
+    }
 }

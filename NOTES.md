@@ -5,10 +5,6 @@ https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 https://github.com/rust-lang/rust/tree/master/library/test
 
 # Todo
-- Try to capture output and support no-capture (`--nocapture`, `--show-output`)
-   - we need to fork child processes for this
-   - must respect thread-count setting
-   - must respect shared dependencies (can't capture if there are top-level shared dependencies and threads>1)
 - Measure total and per-test execution time
 - Support `#[should_panic]`
 - Support `#[bench]`
