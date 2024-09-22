@@ -132,6 +132,7 @@ impl<'a> TestSuiteExecution<'a> {
     }
 
     #[cfg(feature = "tokio")]
+    #[allow(clippy::type_complexity)]
     async fn pick_next_internal(
         &mut self,
         materialized_parent_deps: &HashMap<String, Arc<dyn Any + Send + Sync>>,
@@ -178,6 +179,7 @@ impl<'a> TestSuiteExecution<'a> {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     fn pick_next_internal_sync(
         &mut self,
         materialized_parent_deps: &HashMap<String, Arc<dyn Any + Send + Sync>>,

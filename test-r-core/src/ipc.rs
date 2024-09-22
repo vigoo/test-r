@@ -27,7 +27,7 @@ impl SerializableTestResult {
         stdout: Vec<CapturedOutput>,
         stderr: Vec<CapturedOutput>,
     ) -> TestResult {
-        let mut captured = vec![stdout, stderr].concat();
+        let mut captured = [stdout, stderr].concat();
         captured.sort();
 
         let mut result: TestResult = self.into();

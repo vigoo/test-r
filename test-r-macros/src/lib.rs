@@ -288,10 +288,7 @@ pub fn add_test(input: TokenStream) -> TokenStream {
 
     let (dep_getters, _dep_names, bindings) =
         get_dependency_params_for_closure(function_closure.inputs.iter());
-    let is_async = match &*function_closure.body {
-        Expr::Async(_) => true,
-        _ => false,
-    };
+    let is_async = matches!(&*function_closure.body, Expr::Async(_));
 
     let result = if is_async {
         let mut lets = Vec::new();
@@ -377,7 +374,7 @@ fn get_dependency_params_for_closure<'a>(
     let mut bindings = Vec::new();
     for pat in ast {
         let dep_type = match pat {
-            Pat::Type(typ) => get_dependency_param_from_pat_type(&typ),
+            Pat::Type(typ) => get_dependency_param_from_pat_type(typ),
             _ => {
                 panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", pat.to_token_stream())
                 // TODO: nicer error report

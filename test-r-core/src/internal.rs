@@ -286,7 +286,7 @@ pub(crate) fn filter_registered_tests<'a>(
     registered_tests: &'a [&'a RegisteredTest],
 ) -> Vec<&'a RegisteredTest> {
     registered_tests
-        .into_iter()
+        .iter()
         .filter(|registered_test| {
             args.filter.as_ref().is_none()
                 || args
@@ -506,7 +506,7 @@ impl CapturedOutput {
 
 impl PartialOrd for CapturedOutput {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.timestamp().partial_cmp(&other.timestamp())
+        Some(self.cmp(other))
     }
 }
 
