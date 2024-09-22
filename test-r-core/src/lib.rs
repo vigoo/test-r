@@ -8,6 +8,7 @@ mod sync;
 pub use sync::test_runner;
 
 mod execution;
+mod ipc;
 mod output;
 #[cfg(feature = "tokio")]
 mod tokio;

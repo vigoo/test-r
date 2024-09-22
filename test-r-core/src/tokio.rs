@@ -20,7 +20,7 @@ pub fn test_runner() {
 
 #[allow(clippy::await_holding_lock)]
 async fn async_test_runner() {
-    let args = Arguments::from_args();
+    let mut args = Arguments::from_args();
     let output = test_runner_output(&args);
 
     let registered_tests = internal::REGISTERED_TESTS.lock().unwrap();
@@ -49,6 +49,8 @@ async fn async_test_runner() {
             &all_tests,
             registered_testsuite_props.as_slice(),
         );
+        args.finalize_for_execution(&execution, output.clone());
+
         // println!("Execution plan: {execution:?}");
 
         let count = execution.remaining();
@@ -117,7 +119,7 @@ async fn run_test(
     test: &RegisteredTest,
 ) -> TestResult {
     if test.is_ignored && !include_ignored {
-        TestResult::Ignored
+        TestResult::ignored()
     } else {
         match &test.run {
             TestFunction::Sync(_) => {
@@ -127,17 +129,15 @@ async fn run_test(
                 });
                 handle
                     .await
-                    .unwrap_or_else(|join_error| TestResult::Failed {
-                        panic: Box::new(join_error),
-                    })
+                    .unwrap_or_else(|join_error| TestResult::failed(Box::new(join_error)))
             }
             TestFunction::Async(test_fn) => {
                 match AssertUnwindSafe(test_fn(dependency_view))
                     .catch_unwind()
                     .await
                 {
-                    Ok(_) => TestResult::Passed,
-                    Err(panic) => TestResult::Failed { panic },
+                    Ok(_) => TestResult::passed(),
+                    Err(panic) => TestResult::failed(panic),
                 }
             }
         }

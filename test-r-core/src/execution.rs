@@ -22,6 +22,7 @@ pub(crate) struct TestSuiteExecution<'a> {
     remaining_count: usize,
     idx: usize,
     is_sequential: bool,
+    skip_creating_dependencies: bool,
 }
 
 impl<'a> TestSuiteExecution<'a> {
@@ -64,6 +65,15 @@ impl<'a> TestSuiteExecution<'a> {
         }
     }
 
+    /// Disables creating dependencies when picking the next test. This is useful when the execution plan
+    /// is only used to drive spawned workers instead of actually running the tests.
+    pub fn skip_creating_dependencies(&mut self) {
+        self.skip_creating_dependencies = true;
+        for inner in &mut self.inner {
+            inner.skip_creating_dependencies();
+        }
+    }
+
     pub fn remaining(&self) -> usize {
         self.remaining_count
     }
@@ -74,6 +84,11 @@ impl<'a> TestSuiteExecution<'a> {
 
     pub fn is_done(&self) -> bool {
         self.remaining_count == 0
+    }
+
+    /// Returns true if either this level, or any of the inner levels have dependencies
+    pub fn has_dependencies(&self) -> bool {
+        !self.dependencies.is_empty() || self.inner.iter().any(|inner| inner.has_dependencies())
     }
 
     #[cfg(feature = "tokio")]
@@ -245,6 +260,7 @@ impl<'a> TestSuiteExecution<'a> {
             idx: 0,
             sequential_lock: SequentialExecutionLock::new(),
             is_sequential,
+            skip_creating_dependencies: false,
         }
     }
 
@@ -273,6 +289,7 @@ impl<'a> TestSuiteExecution<'a> {
                     idx: 0,
                     is_sequential: false,
                     sequential_lock: SequentialExecutionLock::new(),
+                    skip_creating_dependencies: false,
                 };
                 inner.add_dependency(dep);
                 self.inner.push(inner);
@@ -305,6 +322,8 @@ impl<'a> TestSuiteExecution<'a> {
                     idx: 0,
                     is_sequential: false,
                     sequential_lock: SequentialExecutionLock::new(),
+
+                    skip_creating_dependencies: false,
                 };
                 inner.add_test(test);
                 self.inner.push(inner);
@@ -341,6 +360,7 @@ impl<'a> TestSuiteExecution<'a> {
                     idx: 0,
                     is_sequential: false,
                     sequential_lock: SequentialExecutionLock::new(),
+                    skip_creating_dependencies: false,
                 };
                 inner.add_prop(prop);
                 self.inner.push(inner);
@@ -349,7 +369,8 @@ impl<'a> TestSuiteExecution<'a> {
     }
 
     fn is_materialized(&self) -> bool {
-        self.materialized_dependencies.len() == self.dependencies.len()
+        self.skip_creating_dependencies
+            || self.materialized_dependencies.len() == self.dependencies.len()
     }
 
     #[cfg(feature = "tokio")]
@@ -496,12 +517,6 @@ enum SequentialExecutionLockGuard {
     #[cfg(feature = "tokio")]
     Async(tokio::sync::OwnedMutexGuard<()>),
     Sync(parking_lot::ArcMutexGuard<parking_lot::RawMutex, ()>),
-}
-
-impl Drop for SequentialExecutionLockGuard {
-    fn drop(&mut self) {
-        println!("Dropping lock guard");
-    }
 }
 
 struct SequentialExecutionLock {

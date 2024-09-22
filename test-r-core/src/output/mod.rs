@@ -24,6 +24,10 @@ pub trait TestRunnerOutput: Send + Sync {
         results: &[(RegisteredTest, TestResult)],
     );
     fn test_list(&self, registered_tests: &[&RegisteredTest]);
+
+    fn warning(&self, message: &str) {
+        eprintln!("{}", message);
+    }
 }
 
 pub fn test_runner_output(args: &Arguments) -> Arc<dyn TestRunnerOutput> {
@@ -33,10 +37,13 @@ pub fn test_runner_output(args: &Arguments) -> Arc<dyn TestRunnerOutput> {
         Arc::new(terse::Terse::new())
     } else {
         match args.format.unwrap_or_default() {
-            FormatSetting::Pretty => Arc::new(pretty::Pretty::new(args.color.unwrap_or_default())),
+            FormatSetting::Pretty => Arc::new(pretty::Pretty::new(
+                args.color.unwrap_or_default(),
+                args.show_output,
+            )),
             FormatSetting::Terse => Arc::new(terse::Terse::new()),
-            FormatSetting::Json => Arc::new(json::Json::new()),
-            FormatSetting::Junit => Arc::new(junit::JUnit::new()),
+            FormatSetting::Json => Arc::new(json::Json::new(args.show_output)),
+            FormatSetting::Junit => Arc::new(junit::JUnit::new(args.show_output)),
         }
     }
 }

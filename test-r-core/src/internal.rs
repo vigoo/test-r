@@ -1,10 +1,11 @@
 use crate::args::Arguments;
+use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::hash::Hash;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
@@ -347,16 +348,40 @@ pub(crate) fn generate_tests_sync(generators: &[RegisteredTestGenerator]) -> Vec
 }
 
 pub enum TestResult {
-    Passed,
+    Passed {
+        captured: Vec<CapturedOutput>,
+    },
     Failed {
         panic: Box<dyn std::any::Any + Send>,
+        captured: Vec<CapturedOutput>,
     },
-    Ignored,
+    Ignored {
+        captured: Vec<CapturedOutput>,
+    },
 }
 
 impl TestResult {
+    pub fn passed() -> Self {
+        TestResult::Passed {
+            captured: Vec::new(),
+        }
+    }
+
+    pub fn failed(panic: Box<dyn std::any::Any + Send>) -> Self {
+        TestResult::Failed {
+            panic,
+            captured: Vec::new(),
+        }
+    }
+
+    pub fn ignored() -> Self {
+        TestResult::Ignored {
+            captured: Vec::new(),
+        }
+    }
+
     pub(crate) fn is_passed(&self) -> bool {
-        matches!(self, TestResult::Passed)
+        matches!(self, TestResult::Passed { .. })
     }
 
     pub(crate) fn is_failed(&self) -> bool {
@@ -364,16 +389,39 @@ impl TestResult {
     }
 
     pub(crate) fn is_ignored(&self) -> bool {
-        matches!(self, TestResult::Ignored)
+        matches!(self, TestResult::Ignored { .. })
     }
 
     pub(crate) fn failure_message(&self) -> Option<&str> {
         match self {
-            TestResult::Failed { panic } => panic
+            TestResult::Failed { panic, .. } => panic
                 .downcast_ref::<String>()
                 .map(|s| s.as_str())
                 .or(panic.downcast_ref::<&str>().copied()),
             _ => None,
+        }
+    }
+
+    pub(crate) fn captured_output(&self) -> &Vec<CapturedOutput> {
+        match self {
+            TestResult::Passed { captured } => captured,
+            TestResult::Failed { captured, .. } => captured,
+            TestResult::Ignored { captured, .. } => captured,
+        }
+    }
+
+    pub(crate) fn set_captured_output(&mut self, captured: Vec<CapturedOutput>) {
+        match self {
+            TestResult::Passed {
+                captured: captured_ref,
+            } => *captured_ref = captured,
+            TestResult::Failed {
+                captured: captured_ref,
+                ..
+            } => *captured_ref = captured,
+            TestResult::Ignored {
+                captured: captured_ref,
+            } => *captured_ref = captured,
         }
     }
 }
@@ -424,5 +472,46 @@ pub trait DependencyView {
 impl DependencyView for Box<dyn DependencyView + Send + Sync> {
     fn get(&self, name: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         self.as_ref().get(name)
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum CapturedOutput {
+    Stdout { timestamp: SystemTime, line: String },
+    Stderr { timestamp: SystemTime, line: String },
+}
+
+impl CapturedOutput {
+    pub fn stdout(line: String) -> Self {
+        CapturedOutput::Stdout {
+            timestamp: SystemTime::now(),
+            line,
+        }
+    }
+
+    pub fn stderr(line: String) -> Self {
+        CapturedOutput::Stderr {
+            timestamp: SystemTime::now(),
+            line,
+        }
+    }
+
+    pub fn timestamp(&self) -> SystemTime {
+        match self {
+            CapturedOutput::Stdout { timestamp, .. } => *timestamp,
+            CapturedOutput::Stderr { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+impl PartialOrd for CapturedOutput {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.timestamp().partial_cmp(&other.timestamp())
+    }
+}
+
+impl Ord for CapturedOutput {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.timestamp().cmp(&other.timestamp())
     }
 }

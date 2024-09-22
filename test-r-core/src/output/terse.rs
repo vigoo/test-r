@@ -10,7 +10,7 @@ pub(crate) struct Terse {
 impl Terse {
     pub fn new() -> Self {
         Self {
-            pretty: Pretty::new(ColorSetting::default()),
+            pretty: Pretty::new(ColorSetting::default(), false),
         }
     }
 }
@@ -30,9 +30,9 @@ impl TestRunnerOutput for Terse {
         result: &TestResult,
     ) {
         match result {
-            TestResult::Passed => print!("."),
+            TestResult::Passed { .. } => print!("."),
             TestResult::Failed { .. } => print!("F"),
-            TestResult::Ignored => print!("i"),
+            TestResult::Ignored { .. } => print!("i"),
         };
     }
 

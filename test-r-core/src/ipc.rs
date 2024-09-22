@@ -1,0 +1,47 @@
+use crate::internal::TestResult;
+use bincode::{Decode, Encode};
+
+/// Commands sent from the primary test runner to the spawned worker processes.
+#[derive(Debug, Encode, Decode)]
+pub enum IpcCommand {
+    RunTest {
+        name: String,
+        crate_name: String,
+        module_path: String,
+    },
+}
+
+#[derive(Debug, Encode, Decode)]
+pub enum SerializableTestResult {
+    Passed,
+    Failed { panic: String },
+    Ignored,
+}
+
+impl From<&TestResult> for SerializableTestResult {
+    fn from(result: &TestResult) -> Self {
+        match &result {
+            TestResult::Passed { .. } => SerializableTestResult::Passed,
+            TestResult::Failed { .. } => SerializableTestResult::Failed {
+                panic: result.failure_message().unwrap_or_default().to_string(),
+            },
+            TestResult::Ignored { .. } => SerializableTestResult::Ignored,
+        }
+    }
+}
+
+impl From<SerializableTestResult> for TestResult {
+    fn from(result: SerializableTestResult) -> Self {
+        match result {
+            SerializableTestResult::Passed => TestResult::passed(),
+            SerializableTestResult::Failed { panic } => TestResult::failed(Box::new(panic)),
+            SerializableTestResult::Ignored => TestResult::ignored(),
+        }
+    }
+}
+
+/// Responses sent from the spawned worker processes to the primary test runner.
+#[derive(Debug, Encode, Decode)]
+pub enum IpcResponse {
+    TestFinished { result: SerializableTestResult },
+}

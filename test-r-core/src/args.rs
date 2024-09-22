@@ -1,5 +1,9 @@
+use crate::execution::TestSuiteExecution;
+use crate::output::TestRunnerOutput;
 use clap::{Parser, ValueEnum};
+use std::ffi::OsString;
 use std::num::NonZero;
+use std::sync::Arc;
 
 /// Command line arguments.
 ///
@@ -112,7 +116,12 @@ pub struct Arguments {
     /// Run the test suite in worker IPC mode - listening on the given local socket waiting
     /// for the test runner to connect and send test execution requests. The only stdout/stderr
     /// output will be the one emitted by the actual test runs so the test runner can capture them.
+    #[arg(long = "ipc", hide = true)]
     pub ipc: Option<String>,
+
+    /// If true, spawn worker processes in IPC mode and run the tests on those
+    #[arg(long = "spawn-workers", hide = true)]
+    pub spawn_workers: bool,
 }
 
 impl Arguments {
@@ -125,6 +134,124 @@ impl Arguments {
         Parser::parse()
     }
 
+    /// Renders the arguments as a list of strings that can be passed to a subprocess
+    pub fn to_args(&self) -> Vec<OsString> {
+        let mut result = Vec::new();
+
+        if self.include_ignored {
+            result.push(OsString::from("--include-ignored"));
+        }
+
+        if self.ignored {
+            result.push(OsString::from("--ignored"));
+        }
+
+        if self.exclude_should_panic {
+            result.push(OsString::from("--exclude-should-panic"));
+        }
+
+        if self.test {
+            result.push(OsString::from("--test"));
+        }
+
+        if self.bench {
+            result.push(OsString::from("--bench"));
+        }
+
+        if self.list {
+            result.push(OsString::from("--list"));
+        }
+
+        if let Some(logfile) = &self.logfile {
+            result.push(OsString::from("--logfile"));
+            result.push(OsString::from(logfile));
+        }
+
+        if self.nocapture {
+            result.push(OsString::from("--nocapture"));
+        }
+
+        if let Some(test_threads) = self.test_threads {
+            result.push(OsString::from("--test-threads"));
+            result.push(OsString::from(test_threads.to_string()));
+        }
+
+        for skip in &self.skip {
+            result.push(OsString::from("--skip"));
+            result.push(OsString::from(skip));
+        }
+
+        if self.quiet {
+            result.push(OsString::from("--quiet"));
+        }
+
+        if self.exact {
+            result.push(OsString::from("--exact"));
+        }
+
+        if let Some(color) = self.color {
+            result.push(OsString::from("--color"));
+            match color {
+                ColorSetting::Auto => result.push(OsString::from("auto")),
+                ColorSetting::Always => result.push(OsString::from("always")),
+                ColorSetting::Never => result.push(OsString::from("never")),
+            }
+        }
+
+        if let Some(format) = self.format {
+            result.push(OsString::from("--format"));
+            match format {
+                FormatSetting::Pretty => result.push(OsString::from("pretty")),
+                FormatSetting::Terse => result.push(OsString::from("terse")),
+                FormatSetting::Json => result.push(OsString::from("json")),
+                FormatSetting::Junit => result.push(OsString::from("junit")),
+            }
+        }
+
+        if self.show_output {
+            result.push(OsString::from("--show-output"));
+        }
+
+        if let Some(unstable_flags) = &self.unstable_flags {
+            result.push(OsString::from("-Z"));
+            match unstable_flags {
+                UnstableFlags::UnstableOptions => result.push(OsString::from("unstable-options")),
+            }
+        }
+
+        if self.report_time {
+            result.push(OsString::from("--report-time"));
+        }
+
+        if self.ensure_time {
+            result.push(OsString::from("--ensure-time"));
+        }
+
+        if self.shuffle {
+            result.push(OsString::from("--shuffle"));
+        }
+
+        if let Some(shuffle_seed) = &self.shuffle_seed {
+            result.push(OsString::from("--shuffle-seed"));
+            result.push(OsString::from(shuffle_seed.to_string()));
+        }
+
+        if let Some(filter) = &self.filter {
+            result.push(OsString::from(filter));
+        }
+
+        if let Some(ipc) = &self.ipc {
+            result.push(OsString::from("--ipc"));
+            result.push(OsString::from(ipc));
+        }
+
+        if self.spawn_workers {
+            result.push(OsString::from("--spawn-workers"));
+        }
+
+        result
+    }
+
     pub(crate) fn test_threads(&self) -> NonZero<usize> {
         if self.ipc.is_some() {
             // When running as an IPC-controlled worker, always use a single thread
@@ -134,6 +261,31 @@ impl Arguments {
                 .and_then(NonZero::new)
                 .or_else(|| std::thread::available_parallelism().ok())
                 .unwrap_or(NonZero::new(1).unwrap())
+        }
+    }
+
+    /// Make necessary adjustments to the configuration if needed based on the final execution plan
+    pub(crate) fn finalize_for_execution(
+        &mut self,
+        execution: &TestSuiteExecution,
+        output: Arc<dyn TestRunnerOutput>,
+    ) {
+        if self.nocapture || self.ipc.is_some() {
+            // If there is no need to capture the output, there are no restrictions to check and apply
+            // If this is an IPC worker, we don't need to do anything either, as the top level test runner already sets the proper arguments
+        } else {
+            // If capture is enabled, we need to spawn at least one worker process
+            self.spawn_workers = true;
+
+            if self.test_threads().get() > 1 {
+                // If tests are executed in parallel, and output needs to be captured, there cannot be any dependencies
+                // because it can only be done through spawned workers
+
+                if execution.has_dependencies() {
+                    output.warning("Cannot run tests in parallel when test have shared dependencies and output capturing is on. Using a single thread.");
+                    self.test_threads = Some(1); // Falling back to single-threaded execution
+                }
+            }
         }
     }
 }

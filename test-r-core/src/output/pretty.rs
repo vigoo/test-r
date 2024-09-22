@@ -10,7 +10,9 @@ pub(crate) struct Pretty {
     style_failed: Style,
     style_ignored: Style,
     style_progress: Style,
+    style_stderr: Style,
     lock: Mutex<PrettyImpl>,
+    show_output: bool,
 }
 
 struct PrettyImpl {
@@ -18,7 +20,7 @@ struct PrettyImpl {
 }
 
 impl Pretty {
-    pub fn new(color: ColorSetting) -> Self {
+    pub fn new(color: ColorSetting, show_output: bool) -> Self {
         Self {
             style_ok: Style::new().fg_color(Some(AnsiColor::Green.into())),
             style_failed: Style::new().bold().fg_color(Some(AnsiColor::Red.into())),
@@ -26,8 +28,56 @@ impl Pretty {
             style_progress: Style::new()
                 .bold()
                 .fg_color(Some(AnsiColor::BrightWhite.into())),
+            style_stderr: Style::new().fg_color(Some(AnsiColor::Yellow.into())),
             lock: Mutex::new(PrettyImpl { color }),
+            show_output,
         }
+    }
+
+    fn write_outputs<'a>(
+        &self,
+        out: &mut PrettyImpl,
+        results: impl Iterator<Item = &'a (RegisteredTest, TestResult)>,
+    ) {
+        for (test, result) in results {
+            if !result.captured_output().is_empty() {
+                writeln!(out, "---- {} stdout/err ----", test.name).unwrap();
+                for line in result.captured_output() {
+                    match line {
+                        crate::internal::CapturedOutput::Stdout { line, .. } => {
+                            writeln!(out, "{}", line).unwrap();
+                        }
+                        crate::internal::CapturedOutput::Stderr { line, .. } => {
+                            writeln!(
+                                out,
+                                "{}{}{}",
+                                self.style_stderr.render(),
+                                line,
+                                self.style_stderr.render_reset(),
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+                writeln!(out).unwrap();
+            }
+        }
+    }
+
+    fn write_success_outputs(
+        &self,
+        out: &mut PrettyImpl,
+        results: &[(RegisteredTest, TestResult)],
+    ) {
+        self.write_outputs(out, results.iter().filter(|(_, result)| result.is_passed()));
+    }
+
+    fn write_failure_outputs(
+        &self,
+        out: &mut PrettyImpl,
+        results: &[(RegisteredTest, TestResult)],
+    ) {
+        self.write_outputs(out, results.iter().filter(|(_, result)| result.is_failed()));
     }
 }
 
@@ -88,7 +138,7 @@ impl TestRunnerOutput for Pretty {
         let mut out = self.lock.lock().unwrap();
 
         let result = match result {
-            TestResult::Passed => format!(
+            TestResult::Passed { .. } => format!(
                 "{}PASSED{}",
                 self.style_ok.render(),
                 self.style_ok.render_reset()
@@ -98,7 +148,7 @@ impl TestRunnerOutput for Pretty {
                 self.style_failed.render(),
                 self.style_failed.render_reset()
             ),
-            TestResult::Ignored => format!(
+            TestResult::Ignored { .. } => format!(
                 "{}IGNORED{}",
                 self.style_ignored.render(),
                 self.style_ignored.render_reset()
@@ -124,6 +174,11 @@ impl TestRunnerOutput for Pretty {
         let mut out = self.lock.lock().unwrap();
 
         let result = SuiteResult::from_test_results(registered_tests, results);
+
+        if self.show_output {
+            self.write_success_outputs(&mut out, results);
+        }
+        self.write_failure_outputs(&mut out, results);
 
         let overall = if result.failed == 0 {
             format!(

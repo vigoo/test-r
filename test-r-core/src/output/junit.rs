@@ -1,22 +1,64 @@
-use crate::internal::{RegisteredTest, SuiteResult, TestResult};
+use crate::internal::{CapturedOutput, RegisteredTest, SuiteResult, TestResult};
 use crate::output::TestRunnerOutput;
-use quick_xml::events::BytesDecl;
 use quick_xml::events::Event::Decl;
+use quick_xml::events::{BytesCData, BytesDecl};
 use quick_xml::Writer;
-use std::io::Stdout;
+use std::io::{Stdout, Write};
 use std::sync::Mutex;
 
 pub(crate) struct JUnit {
     writer: Mutex<Writer<Stdout>>,
+    show_output: bool,
 }
 
 impl JUnit {
-    pub fn new() -> Self {
+    pub fn new(show_output: bool) -> Self {
         let stdout = std::io::stdout();
         let writer = Writer::new_with_indent(stdout, b' ', 4);
         Self {
             writer: Mutex::new(writer),
+            show_output,
         }
+    }
+
+    fn write_system_out<W: Write>(
+        &self,
+        writer: &mut Writer<W>,
+        captured: &[CapturedOutput],
+    ) -> Result<(), quick_xml::errors::Error> {
+        writer
+            .create_element("system-out")
+            .write_cdata_content(BytesCData::new(
+                captured
+                    .iter()
+                    .filter_map(|line| match line {
+                        CapturedOutput::Stdout { line, .. } => Some(line.clone()),
+                        CapturedOutput::Stderr { .. } => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ))?;
+        Ok(())
+    }
+
+    fn write_system_err<W: Write>(
+        &self,
+        writer: &mut Writer<W>,
+        captured: &[CapturedOutput],
+    ) -> Result<(), quick_xml::errors::Error> {
+        writer
+            .create_element("system-err")
+            .write_cdata_content(BytesCData::new(
+                captured
+                    .iter()
+                    .filter_map(|line| match line {
+                        CapturedOutput::Stderr { line, .. } => Some(line.clone()),
+                        CapturedOutput::Stdout { .. } => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ))?;
+        Ok(())
     }
 }
 
@@ -66,10 +108,18 @@ impl TestRunnerOutput for JUnit {
                                 .with_attribute(("time", "0.0"));
 
                             match result {
-                                TestResult::Passed => {
-                                    testcase.write_empty()?;
+                                TestResult::Passed { captured } => {
+                                    if captured.is_empty() || !self.show_output {
+                                        testcase.write_empty()?;
+                                    } else {
+                                        testcase.write_inner_content(|writer| {
+                                            self.write_system_out(writer, captured)?;
+                                            self.write_system_err(writer, captured)?;
+                                            Ok::<(), quick_xml::errors::Error>(())
+                                        })?;
+                                    }
                                 }
-                                TestResult::Failed { .. } => {
+                                TestResult::Failed { captured, .. } => {
                                     testcase.write_inner_content(|writer| {
                                         let mut failure = writer
                                             .create_element("failure")
@@ -80,16 +130,20 @@ impl TestRunnerOutput for JUnit {
                                         }
 
                                         failure.write_empty()?;
+
+                                        if !captured.is_empty() {
+                                            self.write_system_out(writer, captured)?;
+                                            self.write_system_err(writer, captured)?;
+                                        }
+
                                         Ok::<(), quick_xml::errors::Error>(())
                                     })?;
                                 }
-                                TestResult::Ignored => {}
+                                TestResult::Ignored { .. } => {}
                             };
                         }
                         Ok::<(), quick_xml::errors::Error>(())
                     })?;
-                writer.create_element("system-out").write_empty()?;
-                writer.create_element("system-err").write_empty()?;
                 Ok::<(), quick_xml::errors::Error>(())
             })
             .unwrap();

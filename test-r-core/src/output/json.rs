@@ -1,11 +1,13 @@
-use crate::internal::{RegisteredTest, SuiteResult, TestResult};
+use crate::internal::{CapturedOutput, RegisteredTest, SuiteResult, TestResult};
 use crate::output::TestRunnerOutput;
 
-pub(crate) struct Json {}
+pub(crate) struct Json {
+    show_output: bool,
+}
 
 impl Json {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(show_output: bool) -> Self {
+        Self { show_output }
     }
 }
 
@@ -29,13 +31,35 @@ impl TestRunnerOutput for Json {
         result: &TestResult,
     ) {
         let event = match result {
-            TestResult::Passed => "ok",
+            TestResult::Passed { .. } => "ok",
             TestResult::Failed { .. } => "failed",
-            TestResult::Ignored => "ignored",
+            TestResult::Ignored { .. } => "ignored",
         };
+
+        let mut stdout_lines = result
+            .captured_output()
+            .iter()
+            .filter_map(|line| match line {
+                CapturedOutput::Stdout { line, .. } => Some(line.clone()),
+                CapturedOutput::Stderr { .. } => None,
+            })
+            .collect::<Vec<_>>();
+
         let extra = match result.failure_message() {
-            Some(msg) => format!(r#", "stdout": "Error: \"{}\"\n""#, escape8259::escape(msg)),
-            None => "".to_string(),
+            Some(msg) => {
+                stdout_lines.push(format!("Error: {msg}"));
+                let stdout = stdout_lines.join("\n");
+
+                format!(r#", "stdout": "{}"#, escape8259::escape(stdout))
+            }
+            None => {
+                if self.show_output {
+                    let stdout = stdout_lines.join("\n");
+                    format!(r#", "stdout": "{}"#, escape8259::escape(stdout))
+                } else {
+                    "".to_string()
+                }
+            }
         };
         println!(
             r#"{{ "type": "test", "event": "{event}", "name": "{}"{extra} }}"#,
