@@ -2,6 +2,7 @@ use crate::args::ColorSetting;
 use crate::internal::{RegisteredTest, TestResult};
 use crate::output::pretty::Pretty;
 use crate::output::TestRunnerOutput;
+use std::time::Duration;
 
 pub(crate) struct Terse {
     pretty: Pretty,
@@ -40,8 +41,10 @@ impl TestRunnerOutput for Terse {
         &self,
         registered_tests: &[&RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
+        exec_time: Duration,
     ) {
-        self.pretty.finished_suite(registered_tests, results)
+        self.pretty
+            .finished_suite(registered_tests, results, exec_time)
     }
 
     fn test_list(&self, registered_tests: &[&RegisteredTest]) {

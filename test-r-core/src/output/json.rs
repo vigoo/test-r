@@ -1,5 +1,6 @@
 use crate::internal::{CapturedOutput, RegisteredTest, SuiteResult, TestResult};
 use crate::output::TestRunnerOutput;
+use std::time::Duration;
 
 pub(crate) struct Json {
     show_output: bool,
@@ -71,8 +72,9 @@ impl TestRunnerOutput for Json {
         &self,
         registered_tests: &[&RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
+        exec_time: Duration,
     ) {
-        let result = SuiteResult::from_test_results(registered_tests, results);
+        let result = SuiteResult::from_test_results(registered_tests, results, exec_time);
         let event = if result.failed == 0 { "ok" } else { "failed" };
         let passed = result.passed;
         let failed = result.failed;

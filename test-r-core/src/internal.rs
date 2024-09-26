@@ -350,10 +350,12 @@ pub(crate) fn generate_tests_sync(generators: &[RegisteredTestGenerator]) -> Vec
 pub enum TestResult {
     Passed {
         captured: Vec<CapturedOutput>,
+        exec_time: Duration,
     },
     Failed {
         panic: Box<dyn std::any::Any + Send>,
         captured: Vec<CapturedOutput>,
+        exec_time: Duration,
     },
     Ignored {
         captured: Vec<CapturedOutput>,
@@ -361,16 +363,18 @@ pub enum TestResult {
 }
 
 impl TestResult {
-    pub fn passed() -> Self {
+    pub fn passed(exec_time: Duration) -> Self {
         TestResult::Passed {
             captured: Vec::new(),
+            exec_time,
         }
     }
 
-    pub fn failed(panic: Box<dyn std::any::Any + Send>) -> Self {
+    pub fn failed(exec_time: Duration, panic: Box<dyn std::any::Any + Send>) -> Self {
         TestResult::Failed {
             panic,
             captured: Vec::new(),
+            exec_time,
         }
     }
 
@@ -404,7 +408,7 @@ impl TestResult {
 
     pub(crate) fn captured_output(&self) -> &Vec<CapturedOutput> {
         match self {
-            TestResult::Passed { captured } => captured,
+            TestResult::Passed { captured, .. } => captured,
             TestResult::Failed { captured, .. } => captured,
             TestResult::Ignored { captured, .. } => captured,
         }
@@ -414,6 +418,7 @@ impl TestResult {
         match self {
             TestResult::Passed {
                 captured: captured_ref,
+                ..
             } => *captured_ref = captured,
             TestResult::Failed {
                 captured: captured_ref,
@@ -439,6 +444,7 @@ impl SuiteResult {
     pub fn from_test_results(
         registered_tests: &[&RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
+        exec_time: Duration,
     ) -> Self {
         let passed = results
             .iter()
@@ -460,7 +466,7 @@ impl SuiteResult {
             ignored,
             measured: 0,
             filtered_out,
-            exec_time: Duration::new(0, 0),
+            exec_time,
         }
     }
 }

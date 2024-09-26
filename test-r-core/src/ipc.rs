@@ -3,6 +3,7 @@ use bincode::{Decode, Encode};
 use interprocess::local_socket::{
     GenericFilePath, GenericNamespaced, Name, NameType, ToFsName, ToNsName,
 };
+use std::time::Duration;
 
 /// Commands sent from the primary test runner to the spawned worker processes.
 #[derive(Debug, Encode, Decode)]
@@ -16,8 +17,8 @@ pub enum IpcCommand {
 
 #[derive(Debug, Encode, Decode)]
 pub enum SerializableTestResult {
-    Passed,
-    Failed { panic: String },
+    Passed { exec_time: Duration },
+    Failed { exec_time: Duration, panic: String },
     Ignored,
 }
 
@@ -39,8 +40,11 @@ impl SerializableTestResult {
 impl From<&TestResult> for SerializableTestResult {
     fn from(result: &TestResult) -> Self {
         match &result {
-            TestResult::Passed { .. } => SerializableTestResult::Passed,
-            TestResult::Failed { .. } => SerializableTestResult::Failed {
+            TestResult::Passed { exec_time, .. } => SerializableTestResult::Passed {
+                exec_time: *exec_time,
+            },
+            TestResult::Failed { exec_time, .. } => SerializableTestResult::Failed {
+                exec_time: *exec_time,
                 panic: result.failure_message().unwrap_or_default().to_string(),
             },
             TestResult::Ignored { .. } => SerializableTestResult::Ignored,
@@ -51,8 +55,10 @@ impl From<&TestResult> for SerializableTestResult {
 impl From<SerializableTestResult> for TestResult {
     fn from(result: SerializableTestResult) -> Self {
         match result {
-            SerializableTestResult::Passed => TestResult::passed(),
-            SerializableTestResult::Failed { panic } => TestResult::failed(Box::new(panic)),
+            SerializableTestResult::Passed { exec_time } => TestResult::passed(exec_time),
+            SerializableTestResult::Failed { exec_time, panic } => {
+                TestResult::failed(exec_time, Box::new(panic))
+            }
             SerializableTestResult::Ignored => TestResult::ignored(),
         }
     }

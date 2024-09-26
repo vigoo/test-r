@@ -5,7 +5,6 @@ https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 https://github.com/rust-lang/rust/tree/master/library/test
 
 # Todo
-- Measure total and per-test execution time
 - Support `#[should_panic]`
 - Support `#[bench]`
 - Support `--exclude-should-panic`
@@ -13,7 +12,7 @@ https://github.com/rust-lang/rust/tree/master/library/test
 - Support `--report-time`
 - Support `--report-time-format`
 - Support `#[timeout(duration)]`
-- Support `-shuffle`
+- Support `--shuffle`
 - Support `--shuffle-seed`
 - Support property based testing (with an existing library)
 - Flaky/non-flaky attributes

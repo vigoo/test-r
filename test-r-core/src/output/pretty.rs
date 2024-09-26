@@ -4,6 +4,7 @@ use crate::output::TestRunnerOutput;
 use anstyle::{AnsiColor, Style};
 use std::io::Write;
 use std::sync::Mutex;
+use std::time::Duration;
 
 pub(crate) struct Pretty {
     style_ok: Style,
@@ -170,10 +171,11 @@ impl TestRunnerOutput for Pretty {
         &self,
         registered_tests: &[&RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
+        exec_time: Duration,
     ) {
         let mut out = self.lock.lock().unwrap();
 
-        let result = SuiteResult::from_test_results(registered_tests, results);
+        let result = SuiteResult::from_test_results(registered_tests, results, exec_time);
 
         if self.show_output {
             self.write_success_outputs(&mut out, results);
@@ -197,8 +199,8 @@ impl TestRunnerOutput for Pretty {
         writeln!(out).unwrap();
         writeln!(
             out,
-            "test result: {}; {} passed; {} failed; {} ignored; {} filtered out;",
-            overall, result.passed, result.failed, result.ignored, result.filtered_out,
+            "test result: {}; {} passed; {} failed; {} ignored; {} filtered out; finished in {:.3}s",
+            overall, result.passed, result.failed, result.ignored, result.filtered_out, result.exec_time.as_secs_f64()
         )
         .unwrap();
         writeln!(out).unwrap();

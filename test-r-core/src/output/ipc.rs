@@ -1,5 +1,6 @@
 use crate::internal::{RegisteredTest, TestResult};
 use crate::output::TestRunnerOutput;
+use std::time::Duration;
 
 pub(crate) struct IpcWorkerOutput {}
 
@@ -27,6 +28,7 @@ impl TestRunnerOutput for IpcWorkerOutput {
         &self,
         _registered_tests: &[&RegisteredTest],
         _results: &[(RegisteredTest, TestResult)],
+        _exec_time: Duration,
     ) {
     }
 

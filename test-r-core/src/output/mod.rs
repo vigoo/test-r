@@ -7,6 +7,7 @@ mod terse;
 use crate::args::{Arguments, FormatSetting};
 use crate::internal::{RegisteredTest, TestResult};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub trait TestRunnerOutput: Send + Sync {
     fn start_suite(&self, count: usize);
@@ -22,6 +23,7 @@ pub trait TestRunnerOutput: Send + Sync {
         &self,
         registered_tests: &[&RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
+        exec_time: Duration,
     );
     fn test_list(&self, registered_tests: &[&RegisteredTest]);
 

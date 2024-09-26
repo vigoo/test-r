@@ -5,6 +5,7 @@ use quick_xml::events::{BytesCData, BytesDecl};
 use quick_xml::Writer;
 use std::io::{Stdout, Write};
 use std::sync::Mutex;
+use std::time::Duration;
 
 pub(crate) struct JUnit {
     writer: Mutex<Writer<Stdout>>,
@@ -83,12 +84,14 @@ impl TestRunnerOutput for JUnit {
         &self,
         registered_tests: &[&RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
+        exec_time: Duration,
     ) {
-        let result = SuiteResult::from_test_results(registered_tests, results);
+        let result = SuiteResult::from_test_results(registered_tests, results, exec_time);
         self.writer
             .lock()
             .unwrap()
             .create_element("testsuites")
+            .with_attribute(("time", exec_time.as_secs_f64().to_string().as_str()))
             .write_inner_content(|writer| {
                 writer
                     .create_element("testsuite")
@@ -99,45 +102,68 @@ impl TestRunnerOutput for JUnit {
                     .with_attribute(("failures", result.failed.to_string().as_str()))
                     .with_attribute(("tests", registered_tests.len().to_string().as_str()))
                     .with_attribute(("skipped", result.ignored.to_string().as_str()))
+                    .with_attribute(("time", exec_time.as_secs_f64().to_string().as_str()))
                     .write_inner_content(|writer| {
                         for (test, result) in results {
                             let testcase = writer
                                 .create_element("testcase")
                                 .with_attribute(("name", test.name.as_str()))
-                                .with_attribute(("classname", test.crate_and_module().as_str()))
-                                .with_attribute(("time", "0.0"));
+                                .with_attribute(("classname", test.crate_and_module().as_str()));
 
                             match result {
-                                TestResult::Passed { captured } => {
+                                TestResult::Passed {
+                                    exec_time,
+                                    captured,
+                                } => {
                                     if captured.is_empty() || !self.show_output {
-                                        testcase.write_empty()?;
+                                        testcase
+                                            .with_attribute((
+                                                "time",
+                                                exec_time.as_secs_f64().to_string().as_str(),
+                                            ))
+                                            .write_empty()?;
                                     } else {
-                                        testcase.write_inner_content(|writer| {
-                                            self.write_system_out(writer, captured)?;
-                                            self.write_system_err(writer, captured)?;
-                                            Ok::<(), quick_xml::errors::Error>(())
-                                        })?;
+                                        testcase
+                                            .with_attribute((
+                                                "time",
+                                                exec_time.as_secs_f64().to_string().as_str(),
+                                            ))
+                                            .write_inner_content(|writer| {
+                                                self.write_system_out(writer, captured)?;
+                                                self.write_system_err(writer, captured)?;
+                                                Ok::<(), quick_xml::errors::Error>(())
+                                            })?;
                                     }
                                 }
-                                TestResult::Failed { captured, .. } => {
-                                    testcase.write_inner_content(|writer| {
-                                        let mut failure = writer
-                                            .create_element("failure")
-                                            .with_attribute(("type", "assert"));
+                                TestResult::Failed {
+                                    exec_time,
+                                    captured,
+                                    ..
+                                } => {
+                                    testcase
+                                        .with_attribute((
+                                            "time",
+                                            exec_time.as_secs_f64().to_string().as_str(),
+                                        ))
+                                        .write_inner_content(|writer| {
+                                            let mut failure = writer
+                                                .create_element("failure")
+                                                .with_attribute(("type", "assert"));
 
-                                        if let Some(message) = result.failure_message() {
-                                            failure = failure.with_attribute(("message", message));
-                                        }
+                                            if let Some(message) = result.failure_message() {
+                                                failure =
+                                                    failure.with_attribute(("message", message));
+                                            }
 
-                                        failure.write_empty()?;
+                                            failure.write_empty()?;
 
-                                        if !captured.is_empty() {
-                                            self.write_system_out(writer, captured)?;
-                                            self.write_system_err(writer, captured)?;
-                                        }
+                                            if !captured.is_empty() {
+                                                self.write_system_out(writer, captured)?;
+                                                self.write_system_err(writer, captured)?;
+                                            }
 
-                                        Ok::<(), quick_xml::errors::Error>(())
-                                    })?;
+                                            Ok::<(), quick_xml::errors::Error>(())
+                                        })?;
                                 }
                                 TestResult::Ignored { .. } => {}
                             };

@@ -14,6 +14,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::{spawn, JoinHandle};
+use std::time::Instant;
 use uuid::Uuid;
 
 pub fn test_runner() {
@@ -59,6 +60,7 @@ pub fn test_runner() {
         let mut results = Vec::with_capacity(count);
 
         std::thread::scope(|s| {
+            let start = Instant::now();
             output.start_suite(count);
 
             let execution = Arc::new(Mutex::new(execution));
@@ -77,7 +79,7 @@ pub fn test_runner() {
                 results.extend(handle.join().unwrap());
             }
 
-            output.finished_suite(&all_tests, &results);
+            output.finished_suite(&all_tests, &results, start.elapsed());
         });
     }
 }
@@ -187,6 +189,7 @@ pub(crate) fn run_sync_test_function(
     test_fn: &TestFunction,
     dependency_view: Box<dyn internal::DependencyView + Send + Sync>,
 ) -> TestResult {
+    let start = Instant::now();
     let result = catch_unwind(AssertUnwindSafe(move || match test_fn {
         TestFunction::Sync(test_fn) => test_fn(dependency_view),
         _ => {
@@ -194,13 +197,8 @@ pub(crate) fn run_sync_test_function(
         }
     }));
     match result {
-        Ok(_) => TestResult::Passed {
-            captured: Vec::new(),
-        },
-        Err(panic) => TestResult::Failed {
-            panic,
-            captured: Vec::new(),
-        },
+        Ok(_) => TestResult::passed(start.elapsed()),
+        Err(panic) => TestResult::failed(start.elapsed(), panic),
     }
 }
 

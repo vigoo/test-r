@@ -17,6 +17,7 @@ use tokio::process::{Child, Command};
 use tokio::spawn;
 use tokio::sync::Mutex;
 use tokio::task::{spawn_blocking, JoinHandle};
+use tokio::time::Instant;
 use uuid::Uuid;
 
 pub fn test_runner() {
@@ -70,6 +71,7 @@ async fn async_test_runner() {
         let count = execution.remaining();
         let results = Arc::new(Mutex::new(Vec::with_capacity(count)));
 
+        let start = Instant::now();
         output.start_suite(count);
 
         tokio_scoped::scope(|s| {
@@ -93,7 +95,7 @@ async fn async_test_runner() {
             }
         });
 
-        output.finished_suite(&all_tests, &results.lock().await);
+        output.finished_suite(&all_tests, &results.lock().await, start.elapsed());
     }
 }
 
@@ -206,23 +208,24 @@ async fn run_test(
     } else if let Some(worker) = worker.as_mut() {
         worker.run_test(test).await
     } else {
+        let start = Instant::now();
         match &test.run {
             TestFunction::Sync(_) => {
                 let test_fn = test.run.clone();
                 let handle = spawn_blocking(move || {
                     crate::sync::run_sync_test_function(&test_fn, dependency_view)
                 });
-                handle
-                    .await
-                    .unwrap_or_else(|join_error| TestResult::failed(Box::new(join_error)))
+                handle.await.unwrap_or_else(|join_error| {
+                    TestResult::failed(start.elapsed(), Box::new(join_error))
+                })
             }
             TestFunction::Async(test_fn) => {
                 match AssertUnwindSafe(test_fn(dependency_view))
                     .catch_unwind()
                     .await
                 {
-                    Ok(_) => TestResult::passed(),
-                    Err(panic) => TestResult::failed(panic),
+                    Ok(_) => TestResult::passed(start.elapsed()),
+                    Err(panic) => TestResult::failed(start.elapsed(), panic),
                 }
             }
         }
