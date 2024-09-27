@@ -24,6 +24,36 @@ mod tests {
         let result = 2 + 2;
         assert_eq!(result, 4);
     }
+
+    #[test]
+    #[should_panic]
+    async fn panic_test_1() {
+        let _ = tokio::io::stdout()
+            .write(b"Print from 'panic_test_1'\n")
+            .await
+            .unwrap();
+        panic!("This test should panic");
+    }
+
+    #[test]
+    #[should_panic(expected = "hello world")]
+    async fn panic_test_2a() {
+        let _ = tokio::io::stdout()
+            .write(b"Print from 'panic_test_2a'\n")
+            .await
+            .unwrap();
+        panic!("hello world");
+    }
+
+    #[test]
+    #[should_panic(expected = "hello world")]
+    async fn panic_test_2b() {
+        let _ = tokio::io::stdout()
+            .write(b"Print from 'panic_test_2b'\n")
+            .await
+            .unwrap();
+        panic!("something else");
+    }
 }
 
 mod inner {

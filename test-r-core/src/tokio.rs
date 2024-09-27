@@ -39,11 +39,7 @@ async fn async_test_runner() {
     let registered_testsuite_props = internal::REGISTERED_TESTSUITE_PROPS.lock().unwrap();
     let registered_test_generators = internal::REGISTERED_TEST_GENERATORS.lock().unwrap();
 
-    let generated_tests = registered_tests
-        .iter()
-        .cloned()
-        .chain(generate_tests(&registered_test_generators).await)
-        .collect::<Vec<_>>();
+    let generated_tests = generate_tests(&registered_test_generators).await;
 
     let all_tests: Vec<&RegisteredTest> = registered_tests
         .iter()
@@ -212,21 +208,19 @@ async fn run_test(
         match &test.run {
             TestFunction::Sync(_) => {
                 let test_fn = test.run.clone();
+                let should_panic = test.should_panic.clone();
                 let handle = spawn_blocking(move || {
-                    crate::sync::run_sync_test_function(&test_fn, dependency_view)
+                    crate::sync::run_sync_test_function(&should_panic, &test_fn, dependency_view)
                 });
                 handle.await.unwrap_or_else(|join_error| {
                     TestResult::failed(start.elapsed(), Box::new(join_error))
                 })
             }
             TestFunction::Async(test_fn) => {
-                match AssertUnwindSafe(test_fn(dependency_view))
+                let result = AssertUnwindSafe(test_fn(dependency_view))
                     .catch_unwind()
-                    .await
-                {
-                    Ok(_) => TestResult::passed(start.elapsed()),
-                    Err(panic) => TestResult::failed(start.elapsed(), panic),
-                }
+                    .await;
+                TestResult::from_result(&test.should_panic, start.elapsed(), result)
             }
         }
     }

@@ -2,7 +2,7 @@ use crate::args::Arguments;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
 use crate::internal::{
-    generate_tests_sync, CapturedOutput, RegisteredTest, TestFunction, TestResult,
+    generate_tests_sync, CapturedOutput, RegisteredTest, ShouldPanic, TestFunction, TestResult,
 };
 use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
 use crate::output::{test_runner_output, TestRunnerOutput};
@@ -27,11 +27,7 @@ pub fn test_runner() {
     let registered_testsuite_props = internal::REGISTERED_TESTSUITE_PROPS.lock().unwrap();
     let registered_test_generators = internal::REGISTERED_TEST_GENERATORS.lock().unwrap();
 
-    let generated_tests = registered_tests
-        .iter()
-        .cloned()
-        .chain(generate_tests_sync(&registered_test_generators))
-        .collect::<Vec<_>>();
+    let generated_tests = generate_tests_sync(&registered_test_generators);
 
     let all_tests: Vec<&RegisteredTest> = registered_tests
         .iter()
@@ -147,7 +143,7 @@ fn test_thread(
                 } else if let Some(worker) = worker.as_mut() {
                     worker.run_test(next.test)
                 } else {
-                    run_sync_test_function(&next.test.run, next.deps)
+                    run_sync_test_function(&next.test.should_panic, &next.test.run, next.deps)
                 };
 
                 output.finished_running_test(next.test, next.index, count, &result);
@@ -186,6 +182,7 @@ fn pick_next<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> Option<TestE
 
 #[allow(unreachable_patterns)]
 pub(crate) fn run_sync_test_function(
+    should_panic: &ShouldPanic,
     test_fn: &TestFunction,
     dependency_view: Box<dyn internal::DependencyView + Send + Sync>,
 ) -> TestResult {
@@ -196,10 +193,7 @@ pub(crate) fn run_sync_test_function(
             panic!("Async tests are not supported in sync mode, enable the 'tokio' feature")
         }
     }));
-    match result {
-        Ok(_) => TestResult::passed(start.elapsed()),
-        Err(panic) => TestResult::failed(start.elapsed(), panic),
-    }
+    TestResult::from_result(should_panic, start.elapsed(), result)
 }
 
 struct Worker {

@@ -1,4 +1,5 @@
 use crate::args::Arguments;
+use std::any::Any;
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
@@ -23,12 +24,20 @@ pub enum TestFunction {
     ),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShouldPanic {
+    No,
+    Yes,
+    WithMessage(String),
+}
+
 #[derive(Clone)]
 pub struct RegisteredTest {
     pub name: String,
     pub crate_name: String,
     pub module_path: String,
     pub is_ignored: bool,
+    pub should_panic: ShouldPanic,
     pub run: TestFunction,
 }
 
@@ -309,6 +318,7 @@ fn add_generated_tests(
         crate_name: generator.crate_name.clone(),
         module_path: generator.module_path.clone(),
         is_ignored: generator.is_ignored,
+        should_panic: ShouldPanic::No,
         run: test.run,
     }));
 }
@@ -429,6 +439,41 @@ impl TestResult {
             } => *captured_ref = captured,
         }
     }
+
+    pub(crate) fn from_result<A>(
+        should_panic: &ShouldPanic,
+        elapsed: Duration,
+        result: Result<A, Box<dyn Any + Send>>,
+    ) -> Self {
+        match result {
+            Ok(_) => {
+                if should_panic == &ShouldPanic::No {
+                    TestResult::passed(elapsed)
+                } else {
+                    TestResult::failed(elapsed, Box::new("Test did not panic as expected"))
+                }
+            }
+            Err(panic) => match should_panic {
+                ShouldPanic::WithMessage(expected) => {
+                    let failure = TestResult::failed(elapsed, panic);
+                    let message = failure.failure_message();
+
+                    match message {
+                        Some(message) if message.contains(expected) => TestResult::passed(elapsed),
+                        _ => TestResult::failed(
+                            elapsed,
+                            Box::new(format!(
+                                "Test panicked with unexpected message: {}",
+                                message.unwrap_or_default()
+                            )),
+                        ),
+                    }
+                }
+                ShouldPanic::Yes => TestResult::passed(elapsed),
+                ShouldPanic::No => TestResult::failed(elapsed, panic),
+            },
+        }
+    }
 }
 
 pub struct SuiteResult {
@@ -472,11 +517,11 @@ impl SuiteResult {
 }
 
 pub trait DependencyView {
-    fn get(&self, name: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
+    fn get(&self, name: &str) -> Option<Arc<dyn Any + Send + Sync>>;
 }
 
 impl DependencyView for Box<dyn DependencyView + Send + Sync> {
-    fn get(&self, name: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+    fn get(&self, name: &str) -> Option<Arc<dyn Any + Send + Sync>> {
         self.as_ref().get(name)
     }
 }

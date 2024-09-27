@@ -8,12 +8,18 @@ pub use test_r_macro::uses_test_r as enable;
 
 pub mod core {
     pub use test_r_core::internal::{
-        DependencyConstructor, DependencyView, DynamicTestRegistration, GeneratedTest,
+        DependencyConstructor, DependencyView, DynamicTestRegistration, GeneratedTest, ShouldPanic,
         TestFunction, TestGeneratorFunction,
     };
     pub use test_r_core::*;
 
-    pub fn register_test(name: &str, module_path: &str, is_ignored: bool, run: TestFunction) {
+    pub fn register_test(
+        name: &str,
+        module_path: &str,
+        is_ignored: bool,
+        should_panic: ShouldPanic,
+        run: TestFunction,
+    ) {
         let (crate_name, module_path) = split_module_path(module_path);
 
         internal::REGISTERED_TESTS
@@ -24,6 +30,7 @@ pub mod core {
                 crate_name,
                 module_path,
                 is_ignored,
+                should_panic,
                 run,
             });
     }

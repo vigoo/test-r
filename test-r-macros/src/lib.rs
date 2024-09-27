@@ -2,11 +2,13 @@ use proc_macro::TokenStream;
 
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
+use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    parse2, parse_macro_input, Expr, ExprClosure, FnArg, ItemFn, ItemMod, Pat, PatType, ReturnType,
-    Token, Type, TypePath,
+    parse2, parse_macro_input, Expr, ExprClosure, FnArg, ItemFn, ItemMod, LitStr, Pat, PatType,
+    ReturnType, Token, Type, TypePath,
 };
+use test_r_core::internal::ShouldPanic;
 
 #[proc_macro_attribute]
 pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -15,6 +17,20 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let test_name_str = test_name.to_string();
 
     let is_ignored = ast.attrs.iter().any(|attr| attr.path().is_ident("ignore"));
+    let should_panic = ast
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("should_panic"))
+        .map(should_panic_message)
+        .unwrap_or(ShouldPanic::No);
+
+    let should_panic = match should_panic {
+        ShouldPanic::No => quote! { test_r::core::ShouldPanic::No },
+        ShouldPanic::Yes => quote! { test_r::core::ShouldPanic::Yes },
+        ShouldPanic::WithMessage(message) => {
+            quote! { test_r::core::ShouldPanic::WithMessage(#message.to_string()) }
+        }
+    };
 
     let register_ident = Ident::new(
         &format!("test_r_register_{}", test_name_str),
@@ -30,6 +46,7 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
                   #test_name_str,
                   module_path!(),
                   #is_ignored,
+                  #should_panic,
                   test_r::core::TestFunction::Async(std::sync::Arc::new(|deps| Box::pin(async move { #test_name(#(#dep_getters),*).await })))
               );
         }
@@ -39,6 +56,7 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 #test_name_str,
                 module_path!(),
                 #is_ignored,
+                #should_panic,
                 test_r::core::TestFunction::Sync(std::sync::Arc::new(|deps| #test_name(#(#dep_getters),*)))
             );
         }
@@ -55,6 +73,37 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     result.into()
+}
+
+struct ShouldPanicArgs {
+    pub expected: Option<LitStr>,
+}
+
+impl Parse for ShouldPanicArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        fn try_parse(input: ParseStream) -> syn::Result<Option<LitStr>> {
+            let key: Ident = input.parse()?;
+            if key != "expected" {
+                return Err(syn::Error::new(key.span(), "Expected `expected`"));
+            }
+            input.parse::<Token![=]>()?;
+            let message: LitStr = input.parse()?;
+            Ok(Some(message))
+        }
+
+        let expected = try_parse(input).ok().flatten();
+        Ok(ShouldPanicArgs { expected })
+    }
+}
+
+fn should_panic_message(attr: &syn::Attribute) -> ShouldPanic {
+    let args: ShouldPanicArgs = attr
+        .parse_args()
+        .unwrap_or(ShouldPanicArgs { expected: None });
+    match args.expected {
+        Some(message) => ShouldPanic::WithMessage(message.value()),
+        None => ShouldPanic::Yes,
+    }
 }
 
 #[proc_macro]
