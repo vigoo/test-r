@@ -3,9 +3,9 @@ https://rustc-dev-guide.rust-lang.org/test-implementation.html
 https://github.com/LukasKalbertodt/libtest-mimic/
 https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 https://github.com/rust-lang/rust/tree/master/library/test
+https://github.com/rust-lang/rust/issues/105424
 
 # Todo
-- Support `--logfile PATH`
 - Support `--report-time`
 - Support `--report-time-format`
 - Support `#[timeout(duration)]`
@@ -24,6 +24,7 @@ https://github.com/rust-lang/rust/tree/master/library/test
 - Tests for tests
 - Align terse output more with https://github.com/rust-lang/rust/blob/master/library/test/src/formatters/terse.rs
 - How does it work together with criterion? Just ignore the test-r bench macro for those?
+- Check if we can do some trick to run doctests with test-r (#cfg(doctest) imports?)
 
 Later:
 - Support `#[should_panic]` in dynamic tests

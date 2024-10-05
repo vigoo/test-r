@@ -1,27 +1,46 @@
 use crate::internal::{CapturedOutput, RegisteredTest, SuiteResult, TestResult};
-use crate::output::TestRunnerOutput;
+use crate::output::{LogFile, StdoutOrLogFile, TestRunnerOutput};
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 
 pub(crate) struct Json {
     show_output: bool,
+    target: Mutex<StdoutOrLogFile>,
 }
 
 impl Json {
-    pub fn new(show_output: bool) -> Self {
-        Self { show_output }
+    pub fn new(show_output: bool, logfile_path: Option<PathBuf>) -> Self {
+        let target = Mutex::new(match logfile_path {
+            Some(path) => StdoutOrLogFile::LogFile(LogFile::new(path, false)),
+            None => StdoutOrLogFile::Stdout(std::io::stdout()),
+        });
+        Self {
+            show_output,
+            target,
+        }
     }
 }
 
 impl TestRunnerOutput for Json {
     fn start_suite(&self, count: usize) {
-        println!(r#"{{ "type": "suite", "event": "started", "test_count": {count} }}"#)
+        let mut out = self.target.lock().unwrap();
+        writeln!(
+            out,
+            r#"{{ "type": "suite", "event": "started", "test_count": {count} }}"#
+        )
+        .expect("Failed to write to output");
     }
 
     fn start_running_test(&self, test: &RegisteredTest, _idx: usize, _count: usize) {
-        println!(
+        let mut out = self.target.lock().unwrap();
+        writeln!(
+            out,
             r#"{{ "type": "test", "event": "started", "name": "{}" }}"#,
             escape8259::escape(test.fully_qualified_name())
-        );
+        )
+        .expect("Failed to write to output");
     }
 
     fn finished_running_test(
@@ -31,6 +50,7 @@ impl TestRunnerOutput for Json {
         _count: usize,
         result: &TestResult,
     ) {
+        let mut out = self.target.lock().unwrap();
         let event = match result {
             TestResult::Passed { .. } => Some("ok"),
             TestResult::Failed { .. } => Some("failed"),
@@ -64,10 +84,12 @@ impl TestRunnerOutput for Json {
                     }
                 }
             };
-            println!(
+            writeln!(
+                out,
                 r#"{{ "type": "test", "event": "{event}", "name": "{}"{extra} }}"#,
                 escape8259::escape(test.fully_qualified_name())
-            );
+            )
+            .expect("Failed to write to output");
         } else if let TestResult::Benchmarked {
             ns_iter_summ, mb_s, ..
         } = result
@@ -80,10 +102,11 @@ impl TestRunnerOutput for Json {
                 format!(r#", "mib_per_second": {}"#, mb_s)
             };
 
-            println!(
+            writeln!(
+                out,
                 r#"{{ "type": "bench", "name": "{}", "median": {median}, "deviation": {deviation}{mbps} }}"#,
                 escape8259::escape(test.fully_qualified_name()),
-            );
+            ).expect("Failed to write to output");
         }
     }
 
@@ -93,6 +116,7 @@ impl TestRunnerOutput for Json {
         results: &[(RegisteredTest, TestResult)],
         exec_time: Duration,
     ) {
+        let mut out = self.target.lock().unwrap();
         let result = SuiteResult::from_test_results(registered_tests, results, exec_time);
         let event = if result.failed == 0 { "ok" } else { "failed" };
         let passed = result.passed;
@@ -102,16 +126,22 @@ impl TestRunnerOutput for Json {
         let filtered_out = result.filtered_out;
         let exec_time = result.exec_time.as_secs_f64();
 
-        println!(
+        writeln!(out,
             r#"{{ "type": "suite", "event": "{event}", "passed": "{passed}", "failed": {failed}, "ignored": {ignored}, "measured": {measured}, "filtered_out": {filtered_out}, "exec_time": {exec_time} }}"#
-        )
+        ).expect("Failed to write to output");
     }
 
     fn test_list(&self, registered_tests: &[&RegisteredTest]) {
-        println!(r#"["#);
+        let mut out = self.target.lock().unwrap();
+        writeln!(out, r#"["#).expect("Failed to write to output");
         for test in registered_tests {
-            println!(r#""{}","#, escape8259::escape(test.fully_qualified_name()));
+            writeln!(
+                out,
+                r#""{}","#,
+                escape8259::escape(test.fully_qualified_name())
+            )
+            .expect("Failed to write to output");
         }
-        println!(r#"]"#);
+        writeln!(out, r#"]"#).expect("Failed to write to output");
     }
 }

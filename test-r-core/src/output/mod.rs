@@ -6,6 +6,8 @@ mod terse;
 
 use crate::args::{Arguments, FormatSetting};
 use crate::internal::{RegisteredTest, TestResult};
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,14 +40,69 @@ pub fn test_runner_output(args: &Arguments) -> Arc<dyn TestRunnerOutput> {
     } else if args.quiet {
         Arc::new(terse::Terse::new())
     } else {
+        let logfile = args.logfile.as_ref().map(PathBuf::from);
         match args.format.unwrap_or_default() {
             FormatSetting::Pretty => Arc::new(pretty::Pretty::new(
                 args.color.unwrap_or_default(),
                 args.show_output,
+                logfile,
             )),
             FormatSetting::Terse => Arc::new(terse::Terse::new()),
-            FormatSetting::Json => Arc::new(json::Json::new(args.show_output)),
-            FormatSetting::Junit => Arc::new(junit::JUnit::new(args.show_output)),
+            FormatSetting::Json => Arc::new(json::Json::new(args.show_output, logfile)),
+            FormatSetting::Junit => Arc::new(junit::JUnit::new(args.show_output, logfile)),
+        }
+    }
+}
+
+struct LogFile {
+    pub file: std::fs::File,
+}
+
+impl LogFile {
+    fn new(mut path: PathBuf, merged: bool) -> Self {
+        if !merged {
+            // Because of https://github.com/rust-lang/rust/issues/105424 we have to generate a unique log file name
+            // otherwise the core test runner will overwrite it
+            let uuid = uuid::Uuid::new_v4();
+            let stem = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let extension = path
+                .extension()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            path.set_file_name(format!("{}-{}.{}", stem, uuid, extension));
+        }
+
+        eprintln!("Logging to {}", path.to_string_lossy());
+
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path.clone())
+            .unwrap_or_else(|_| panic!("Failed to open log file {}", path.to_string_lossy()));
+        LogFile { file }
+    }
+}
+
+enum StdoutOrLogFile {
+    Stdout(std::io::Stdout),
+    LogFile(LogFile),
+}
+
+impl Write for StdoutOrLogFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            StdoutOrLogFile::Stdout(stdout) => stdout.write(buf),
+            StdoutOrLogFile::LogFile(logfile) => logfile.file.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            StdoutOrLogFile::Stdout(stdout) => stdout.flush(),
+            StdoutOrLogFile::LogFile(logfile) => logfile.file.flush(),
         }
     }
 }

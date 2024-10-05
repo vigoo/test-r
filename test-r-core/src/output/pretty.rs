@@ -1,8 +1,9 @@
 use crate::args::ColorSetting;
 use crate::internal::{RegisteredTest, SuiteResult, TestResult};
-use crate::output::TestRunnerOutput;
+use crate::output::{LogFile, TestRunnerOutput};
 use anstyle::{AnsiColor, Style};
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -19,10 +20,13 @@ pub(crate) struct Pretty {
 
 struct PrettyImpl {
     color: ColorSetting,
+    logfile: Option<LogFile>,
 }
 
 impl Pretty {
-    pub fn new(color: ColorSetting, show_output: bool) -> Self {
+    pub fn new(color: ColorSetting, show_output: bool, logfile_path: Option<PathBuf>) -> Self {
+        let logfile = logfile_path.map(|path| LogFile::new(path, false));
+
         Self {
             style_ok: Style::new().fg_color(Some(AnsiColor::Green.into())),
             style_failed: Style::new().bold().fg_color(Some(AnsiColor::Red.into())),
@@ -34,7 +38,7 @@ impl Pretty {
                 .bold()
                 .fg_color(Some(AnsiColor::BrightWhite.into())),
             style_stderr: Style::new().fg_color(Some(AnsiColor::Yellow.into())),
-            lock: Mutex::new(PrettyImpl { color }),
+            lock: Mutex::new(PrettyImpl { color, logfile }),
             show_output,
         }
     }
@@ -115,20 +119,33 @@ impl Pretty {
 
 impl Write for PrettyImpl {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let stdout = std::io::stdout().lock();
-        let mut stdout = anstream::AutoStream::new(
-            stdout,
-            match self.color {
-                ColorSetting::Auto => anstream::ColorChoice::Auto,
-                ColorSetting::Always => anstream::ColorChoice::Always,
-                ColorSetting::Never => anstream::ColorChoice::Never,
-            },
-        );
-        stdout.write(buf)
+        let color_setting = match self.color {
+            ColorSetting::Auto => anstream::ColorChoice::Auto,
+            ColorSetting::Always => anstream::ColorChoice::Always,
+            ColorSetting::Never => anstream::ColorChoice::Never,
+        };
+        match self.logfile.take() {
+            None => {
+                let stdout = std::io::stdout().lock();
+                let mut stdout = anstream::AutoStream::new(stdout, color_setting);
+                stdout.write(buf)
+            }
+            Some(logfile) => {
+                let mut out = anstream::AutoStream::new(logfile.file, color_setting);
+                let result = out.write(buf);
+                let mut logfile = out.into_inner();
+                logfile.flush()?;
+                self.logfile = Some(LogFile { file: logfile });
+                result
+            }
+        }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        std::io::stdout().flush()
+        match &mut self.logfile {
+            None => std::io::stdout().flush(),
+            Some(logfile) => logfile.file.flush(),
+        }
     }
 }
 

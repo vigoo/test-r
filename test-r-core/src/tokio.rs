@@ -329,6 +329,7 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
         let mut args = args.clone();
         args.ipc = Some(name_str);
         args.spawn_workers = false;
+        args.logfile = None;
         let args = args.to_args();
 
         let mut process = Command::new(exe)

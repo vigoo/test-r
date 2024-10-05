@@ -11,7 +11,7 @@ pub(crate) struct Terse {
 impl Terse {
     pub fn new() -> Self {
         Self {
-            pretty: Pretty::new(ColorSetting::default(), false),
+            pretty: Pretty::new(ColorSetting::default(), false, None),
         }
     }
 }

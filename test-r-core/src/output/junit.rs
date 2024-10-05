@@ -1,21 +1,26 @@
 use crate::internal::{CapturedOutput, RegisteredTest, SuiteResult, TestResult};
-use crate::output::TestRunnerOutput;
+use crate::output::{LogFile, StdoutOrLogFile, TestRunnerOutput};
 use quick_xml::events::Event::Decl;
 use quick_xml::events::{BytesCData, BytesDecl};
 use quick_xml::Writer;
-use std::io::{Stdout, Write};
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
 pub(crate) struct JUnit {
-    writer: Mutex<Writer<Stdout>>,
+    writer: Mutex<Writer<StdoutOrLogFile>>,
     show_output: bool,
 }
 
 impl JUnit {
-    pub fn new(show_output: bool) -> Self {
-        let stdout = std::io::stdout();
-        let writer = Writer::new_with_indent(stdout, b' ', 4);
+    pub fn new(show_output: bool, logfile_path: Option<PathBuf>) -> Self {
+        let logfile = logfile_path.map(|path| LogFile::new(path, false));
+        let stream = match logfile {
+            Some(log) => StdoutOrLogFile::LogFile(log),
+            None => StdoutOrLogFile::Stdout(std::io::stdout()),
+        };
+        let writer = Writer::new_with_indent(stream, b' ', 4);
         Self {
             writer: Mutex::new(writer),
             show_output,
