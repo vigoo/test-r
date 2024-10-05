@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "test-r"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "ctor",
  "test-r-core",
@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "test-r-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anstream",
  "anstyle",
@@ -617,14 +617,14 @@ dependencies = [
 
 [[package]]
 name = "test-r-example"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "test-r",
 ]
 
 [[package]]
 name = "test-r-example-tokio"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "test-r",
  "tokio",
@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "test-r-macro"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "heck",
  "proc-macro2",

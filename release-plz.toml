@@ -1,0 +1,10 @@
+[workspace]
+
+[[package]]
+name = "test-r-example"
+release = false
+
+[[package]]
+name = "test-r-example-tokio"
+release = false
+

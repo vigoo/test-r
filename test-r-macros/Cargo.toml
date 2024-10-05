@@ -8,7 +8,7 @@ license = "Apache-2.0"
 proc-macro = true
 
 [dependencies]
-test-r-core = { version = "0.1.0", path = "../test-r-core" }
+test-r-core = { version = "0.0.1", path = "../test-r-core" }
 
 heck = "0.5"
 proc-macro2 = "1"
