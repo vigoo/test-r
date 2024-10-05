@@ -5,7 +5,6 @@ https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 https://github.com/rust-lang/rust/tree/master/library/test
 
 # Todo
-- Support `--exclude-should-panic`
 - Support `--logfile PATH`
 - Support `--report-time`
 - Support `--report-time-format`

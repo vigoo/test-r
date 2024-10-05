@@ -342,6 +342,9 @@ pub(crate) fn filter_registered_tests<'a>(
                 || (args.test && !registered_tests.run.is_bench())
                 || (!args.bench && !args.test)
         })
+        .filter(|registered_test| {
+            !args.exclude_should_panic || registered_test.should_panic == ShouldPanic::No
+        })
         .copied()
         .collect::<Vec<_>>()
 }
