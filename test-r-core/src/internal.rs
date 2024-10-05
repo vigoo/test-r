@@ -1,5 +1,5 @@
 use crate::args::Arguments;
-use crate::bench::{AsyncBencher, Bencher};
+use crate::bench::Bencher;
 use crate::stats::Summary;
 use std::any::Any;
 use std::cmp::{max, Ordering};
@@ -17,6 +17,7 @@ pub enum TestFunction {
     SyncBench(
         Arc<dyn Fn(&mut Bencher, Box<dyn DependencyView + Send + Sync>) + Send + Sync + 'static>,
     ),
+    #[cfg(feature = "tokio")]
     Async(
         Arc<
             dyn (Fn(
@@ -27,9 +28,13 @@ pub enum TestFunction {
                 + 'static,
         >,
     ),
+    #[cfg(feature = "tokio")]
     AsyncBench(
         Arc<
-            dyn Fn(&mut AsyncBencher, Box<dyn DependencyView + Send + Sync>)
+            dyn for<'a> Fn(
+                    &'a mut crate::bench::AsyncBencher,
+                    Box<dyn DependencyView + Send + Sync>,
+                ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
                 + Send
                 + Sync
                 + 'static,
@@ -38,6 +43,12 @@ pub enum TestFunction {
 }
 
 impl TestFunction {
+    #[cfg(not(feature = "tokio"))]
+    pub fn is_bench(&self) -> bool {
+        matches!(self, TestFunction::SyncBench(_))
+    }
+
+    #[cfg(feature = "tokio")]
     pub fn is_bench(&self) -> bool {
         matches!(
             self,

@@ -5,7 +5,6 @@ https://github.com/LukasKalbertodt/libtest-mimic/issues/9
 https://github.com/rust-lang/rust/tree/master/library/test
 
 # Todo
-- Support `#[bench]` https://github.com/LukasKalbertodt/libtest-mimic/blob/master/src/lib.rs#L125-L136
 - Support `--exclude-should-panic`
 - Support `--logfile PATH`
 - Support `--report-time`

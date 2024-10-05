@@ -108,6 +108,37 @@ mod inner {
     }
 }
 
+pub mod benches {
+    use std::sync::Arc;
+    use test_r::AsyncBencher;
+    use test_r::{bench, test_dep};
+
+    #[bench]
+    async fn bench1(b: &mut AsyncBencher) {
+        b.iter(|| Box::pin(async { 10 + 11 })).await;
+    }
+
+    pub struct Dep1 {
+        pub value: i32,
+    }
+
+    #[test_dep]
+    fn create_dep1() -> Arc<Dep1> {
+        println!("Creating Dep1 for bench2");
+        Arc::new(Dep1 { value: 10 })
+    }
+
+    #[bench]
+    async fn bench2(b: &mut AsyncBencher, dep1: &Arc<Dep1>) {
+        let dep1 = dep1.clone();
+        b.iter(move || {
+            let dep1 = dep1.clone();
+            Box::pin(async move { dep1.value + 11 })
+        })
+        .await;
+    }
+}
+
 pub mod deps {
     #[cfg(test)]
     use test_r::sequential;

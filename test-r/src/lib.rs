@@ -7,6 +7,10 @@ pub use test_r_macro::test_dep;
 pub use test_r_macro::test_gen;
 pub use test_r_macro::uses_test_r as enable;
 
+#[cfg(feature = "tokio")]
+pub use test_r_core::bench::AsyncBencher;
+pub use test_r_core::bench::Bencher;
+
 pub mod core {
     pub use test_r_core::internal::{
         DependencyConstructor, DependencyView, DynamicTestRegistration, GeneratedTest, ShouldPanic,

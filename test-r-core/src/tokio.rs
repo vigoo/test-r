@@ -1,4 +1,5 @@
 use crate::args::Arguments;
+use crate::bench::AsyncBencher;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
 use crate::internal::{generate_tests, CapturedOutput, RegisteredTest, TestFunction, TestResult};
@@ -223,10 +224,35 @@ async fn run_test(
                 TestResult::from_result(&test.should_panic, start.elapsed(), result)
             }
             TestFunction::SyncBench(_) => {
-                todo!()
+                let test_fn = test.run.clone();
+                let should_panic = test.should_panic.clone();
+                let handle = spawn_blocking(move || {
+                    crate::sync::run_sync_test_function(&should_panic, &test_fn, dependency_view)
+                });
+                handle.await.unwrap_or_else(|join_error| {
+                    TestResult::failed(start.elapsed(), Box::new(join_error))
+                })
             }
-            TestFunction::AsyncBench(_) => {
-                todo!()
+            TestFunction::AsyncBench(bench_fn) => {
+                let mut bencher = AsyncBencher::new();
+                let result = AssertUnwindSafe(async move {
+                    bench_fn(&mut bencher, dependency_view).await;
+                    (
+                        bencher
+                            .summary()
+                            .expect("iter() was not called in bench function"),
+                        bencher.bytes,
+                    )
+                })
+                .catch_unwind()
+                .await;
+                let bytes = result.as_ref().map(|(_, bytes)| *bytes).unwrap_or_default();
+                TestResult::from_summary(
+                    &test.should_panic,
+                    start.elapsed(),
+                    result.map(|(summary, _)| summary),
+                    bytes,
+                )
             }
         }
     }
