@@ -6,9 +6,7 @@ https://github.com/rust-lang/rust/tree/master/library/test
 https://github.com/rust-lang/rust/issues/105424
 
 # Todo
-- Support `--report-time`
 - Support `--ensure-time`
-- Support `--report-time-format`
 - Support `#[timeout(duration)]`
 - Support `--shuffle`
 - Support `--shuffle-seed`
@@ -17,7 +15,6 @@ https://github.com/rust-lang/rust/issues/105424
 - Capture/no-capture controlled by attributes
 - Support tests returning `Result<>` 
 - Tags
-- Make sure `#[tracing::instrument]` works
 - Provide a nicer assertion macro (or at least recommend a 3rd party that works well)
 - Make sure some 3rd party golden testing framework works, or add our own (https://crates.io/crates/goldenfile)
 - CI

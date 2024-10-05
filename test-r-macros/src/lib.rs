@@ -358,14 +358,15 @@ pub fn sequential(_attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn add_test(input: TokenStream) -> TokenStream {
     let params = parse_macro_input!(input with Punctuated::<Expr, Token![,]>::parse_terminated);
 
-    if params.len() != 3 {
-        panic!("add_test! expects exactly 3 parameters");
+    if params.len() != 4 {
+        panic!("add_test! expects exactly 4 parameters");
     }
 
     let dtr_expr = &params[0];
     let name_expr = &params[1];
+    let test_type_expr = &params[2];
 
-    let function_expr = &params[2];
+    let function_expr = &params[3];
 
     let function_closure: ExprClosure = parse2(function_expr.to_token_stream())
         .expect("the third parameter of add_test! must be a closure");
@@ -386,7 +387,7 @@ pub fn add_test(input: TokenStream) -> TokenStream {
             _ => panic!("Expected async block"),
         };
         quote! {
-            #dtr_expr.add_async_test(#name_expr, move |deps| {
+            #dtr_expr.add_async_test(#name_expr, #test_type_expr, move |deps| {
                 Box::pin(async move {
                     #(#lets)*
                     #body
@@ -395,7 +396,7 @@ pub fn add_test(input: TokenStream) -> TokenStream {
         }
     } else {
         quote! {
-            #dtr_expr.add_sync_test(#name_expr, move |deps| {
+            #dtr_expr.add_sync_test(#name_expr, #test_type_expr, move |deps| {
                 let gen = #function_closure;
                 gen(#(#dep_getters),*)
             });

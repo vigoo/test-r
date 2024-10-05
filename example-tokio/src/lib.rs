@@ -143,6 +143,7 @@ pub mod deps {
     #[cfg(test)]
     use test_r::sequential;
 
+    #[derive(Debug)]
     pub struct Dep1 {
         pub value: i32,
     }
@@ -166,6 +167,17 @@ pub mod deps {
         use crate::deps::Dep1;
         use test_r::{test, test_dep};
         use tokio::io::AsyncWriteExt;
+        use tracing::info;
+
+        #[derive(Debug)]
+        struct InitializedTracing;
+
+        #[test_dep]
+        fn initialized_tracing() -> InitializedTracing {
+            tracing_subscriber::fmt::init();
+            info!("Initialized tracing");
+            InitializedTracing
+        }
 
         #[test_dep]
         fn create_dep1() -> Dep1 {
@@ -177,6 +189,7 @@ pub mod deps {
             Dep2::new(20).await
         }
 
+        #[derive(Debug)]
         pub struct Dep2 {
             pub value: i32,
         }
@@ -217,9 +230,11 @@ pub mod deps {
             use crate::deps::Dep1;
             use std::sync::Arc;
             use test_r::{inherit_test_dep, test, test_dep};
+            use tracing::info;
 
             inherit_test_dep!(Dep1);
 
+            #[derive(Debug)]
             struct Dep3 {
                 value: i32,
             }
@@ -239,20 +254,23 @@ pub mod deps {
             }
 
             #[test]
+            #[tracing::instrument]
             async fn dep_test_inner_works_1(dep1: &Dep1) {
-                println!("Print from dep test inner 1");
+                info!("Print from dep test inner 1");
                 assert_eq!(dep1.value, 10);
             }
 
             #[test]
+            #[tracing::instrument]
             async fn dep_test_inner_works_2(dep2: &Dep2) {
-                println!("Print from dep test inner 2");
+                info!("Print from dep test inner 2");
                 assert_eq!(dep2.value, 210);
             }
 
             #[test]
+            #[tracing::instrument]
             async fn dep_test_inner_works_3(dep3: &Dep3) {
-                println!("Print from dep test inner 3");
+                info!("Print from dep test inner 3");
                 assert_eq!(dep3.value, 240);
             }
         }
@@ -263,14 +281,14 @@ pub mod deps {
 mod generated {
     use crate::deps::tests::Dep2;
     use crate::deps::Dep1;
-    use test_r::core::DynamicTestRegistration;
+    use test_r::core::{DynamicTestRegistration, TestType};
     use test_r::{add_test, test_dep, test_gen};
 
     #[test_gen]
     fn generate_tests_1(r: &mut DynamicTestRegistration) {
         println!("Generating some tests in a sync generator");
         for i in 0..10 {
-            r.add_sync_test(format!("test_{i}"), move |_| {
+            r.add_sync_test(format!("test_{i}"), TestType::UnitTest, move |_| {
                 println!("Running test {}", i);
                 let s = i.to_string();
                 let i2 = s.parse::<i32>().unwrap();
@@ -283,7 +301,7 @@ mod generated {
     async fn generate_tests_2(r: &mut DynamicTestRegistration) {
         println!("Generating some tests in an async generator");
         for i in 0..10 {
-            r.add_async_test(format!("test_{i}"), move |_| {
+            r.add_async_test(format!("test_{i}"), TestType::UnitTest, move |_| {
                 Box::pin(async move {
                     println!("Running test {}", i);
                     let s = i.to_string();
@@ -308,7 +326,7 @@ mod generated {
     fn generate_tests_3(r: &mut DynamicTestRegistration) {
         println!("Generating some tests with dependencies in a sync generator");
         for i in 0..10 {
-            add_test!(r, format!("test_{i}"), move |dep1: &Dep1| {
+            add_test!(r, format!("test_{i}"), TestType::UnitTest, move |dep1: &Dep1| {
                 println!("Running test {} using dep {}", i, dep1.value);
                 let s = i.to_string();
                 let i2 = s.parse::<i32>().unwrap();
@@ -324,6 +342,7 @@ mod generated {
             add_test!(
                 r,
                 format!("test_{i}"),
+                TestType::UnitTest,
                 move |dep1: &Dep1, d2: &Dep2| async {
                     println!("Running test {} using deps {} {}", i, dep1.value, d2.value);
                     let s = i.to_string();
