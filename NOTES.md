@@ -6,7 +6,6 @@ https://github.com/rust-lang/rust/tree/master/library/test
 https://github.com/rust-lang/rust/issues/105424
 
 # Todo
-- CI
 - Support `--ensure-time`
 - Support `#[timeout(duration)]`
 - Support `--shuffle`
