@@ -1,6 +1,6 @@
 [package]
 name = "test-r-example"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -16,4 +16,4 @@ name = "tests"
 harness = false
 
 [dependencies]
-test-r = { version = "0.1.0", path = "../test-r", default-features = false }
+test-r = { version = "0.0.1", path = "../test-r", default-features = false }
