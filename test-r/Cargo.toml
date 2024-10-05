@@ -8,8 +8,8 @@ license = "Apache-2.0"
 test-r-core = { version = "0.1.0", path = "../test-r-core", default-features = false }
 test-r-macro = { version = "0.1.0", path = "../test-r-macros" }
 
-ctor = "0.2.8"
-tokio = { version = "1.40.0", features = ["rt-multi-thread"], optional = true }
+ctor = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 
 [features]
 default = ["tokio"]

@@ -1,0 +1,22 @@
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  build-and-test:
+    strategy:
+        matrix:
+            os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo-binstall cargo-deny
+
+      - run: cargo test -p test-r --all-features
+      - run: cargo test -p test-r-example --no-run
+      - run: cargo test -p test-r-example-tokio --no-run
+      - run: cargo clippy --no-deps --all-targets -- -Dwarnings
+      - run: cargo fmt --all -- --check
+      - run: cargo deny check

@@ -108,6 +108,7 @@ mod inner {
     }
 }
 
+#[cfg(test)]
 pub mod benches {
     use std::sync::Arc;
     use test_r::AsyncBencher;
@@ -326,12 +327,17 @@ mod generated {
     fn generate_tests_3(r: &mut DynamicTestRegistration) {
         println!("Generating some tests with dependencies in a sync generator");
         for i in 0..10 {
-            add_test!(r, format!("test_{i}"), TestType::UnitTest, move |dep1: &Dep1| {
-                println!("Running test {} using dep {}", i, dep1.value);
-                let s = i.to_string();
-                let i2 = s.parse::<i32>().unwrap();
-                assert_eq!(i, i2);
-            });
+            add_test!(
+                r,
+                format!("test_{i}"),
+                TestType::UnitTest,
+                move |dep1: &Dep1| {
+                    println!("Running test {} using dep {}", i, dep1.value);
+                    let s = i.to_string();
+                    let i2 = s.parse::<i32>().unwrap();
+                    assert_eq!(i, i2);
+                }
+            );
         }
     }
 
