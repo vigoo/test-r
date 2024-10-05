@@ -11,4 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- Fix cargo metadata
+
+## [0.0.1](https://github.com/vigoo/test-r/releases/tag/test-r-core-v0.0.1) - 2024-10-05
+
+### Other
+
 - release-plz
