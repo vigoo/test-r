@@ -1,4 +1,4 @@
-use crate::args::ColorSetting;
+use crate::args::{ColorSetting, TimeThreshold};
 use crate::internal::{RegisteredTest, TestResult};
 use crate::output::pretty::Pretty;
 use crate::output::TestRunnerOutput;
@@ -11,7 +11,14 @@ pub(crate) struct Terse {
 impl Terse {
     pub fn new() -> Self {
         Self {
-            pretty: Pretty::new(ColorSetting::default(), false, None),
+            pretty: Pretty::new(
+                ColorSetting::default(),
+                false,
+                None,
+                false,
+                TimeThreshold::default(),
+                TimeThreshold::default(),
+            ),
         }
     }
 }

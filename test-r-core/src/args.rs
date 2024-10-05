@@ -3,7 +3,9 @@ use crate::output::TestRunnerOutput;
 use clap::{Parser, ValueEnum};
 use std::ffi::OsString;
 use std::num::NonZero;
+use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Command line arguments.
 ///
@@ -252,6 +254,20 @@ impl Arguments {
         result
     }
 
+    pub fn unit_test_threshold(&self) -> TimeThreshold {
+        TimeThreshold::from_env_var("RUST_TEST_TIME_UNIT").unwrap_or(TimeThreshold::new(
+            Duration::from_millis(50),
+            Duration::from_millis(100),
+        ))
+    }
+
+    pub fn integration_test_threshold(&self) -> TimeThreshold {
+        TimeThreshold::from_env_var("RUST_TEST_TIME_INTEGRATION").unwrap_or(TimeThreshold::new(
+            Duration::from_millis(500),
+            Duration::from_millis(1000),
+        ))
+    }
+
     pub(crate) fn test_threads(&self) -> NonZero<usize> {
         if self.ipc.is_some() {
             // When running as an IPC-controlled worker, always use a single thread
@@ -290,7 +306,7 @@ impl Arguments {
     }
 }
 
-impl<A: Into<std::ffi::OsString> + Clone> FromIterator<A> for Arguments {
+impl<A: Into<OsString> + Clone> FromIterator<A> for Arguments {
     fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
         Parser::parse_from(iter)
     }
@@ -332,6 +348,67 @@ pub enum FormatSetting {
 
     /// Output a JUnit document
     Junit,
+}
+
+/// Structure denoting time limits for test execution.
+///
+/// From https://github.com/rust-lang/rust/blob/master/library/test/src/time.rs
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct TimeThreshold {
+    pub warn: Duration,
+    pub critical: Duration,
+}
+
+impl TimeThreshold {
+    /// Creates a new `TimeThreshold` instance with provided durations.
+    pub fn new(warn: Duration, critical: Duration) -> Self {
+        Self { warn, critical }
+    }
+
+    /// Attempts to create a `TimeThreshold` instance with values obtained
+    /// from the environment variable, and returns `None` if the variable
+    /// is not set.
+    /// Environment variable format is expected to match `\d+,\d+`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if variable with provided name is set but contains inappropriate
+    /// value.
+    pub fn from_env_var(env_var_name: &str) -> Option<Self> {
+        let durations_str = std::env::var(env_var_name).ok()?;
+        let (warn_str, critical_str) = durations_str.split_once(',').unwrap_or_else(|| {
+            panic!(
+                "Duration variable {env_var_name} expected to have 2 numbers separated by comma, but got {durations_str}"
+            )
+        });
+
+        let parse_u64 = |v| {
+            u64::from_str(v).unwrap_or_else(|_| {
+                panic!(
+                    "Duration value in variable {env_var_name} is expected to be a number, but got {v}"
+                )
+            })
+        };
+
+        let warn = parse_u64(warn_str);
+        let critical = parse_u64(critical_str);
+        if warn > critical {
+            panic!("Test execution warn time should be less or equal to the critical time");
+        }
+
+        Some(Self::new(
+            Duration::from_millis(warn),
+            Duration::from_millis(critical),
+        ))
+    }
+
+    pub fn is_critical(&self, duration: &Duration) -> bool {
+        *duration >= self.critical
+    }
+
+    pub fn is_warn(&self, duration: &Duration) -> bool {
+        *duration >= self.warn
+    }
 }
 
 #[cfg(test)]

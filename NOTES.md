@@ -7,6 +7,7 @@ https://github.com/rust-lang/rust/issues/105424
 
 # Todo
 - Support `--report-time`
+- Support `--ensure-time`
 - Support `--report-time-format`
 - Support `#[timeout(duration)]`
 - Support `--shuffle`

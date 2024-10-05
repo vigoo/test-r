@@ -57,6 +57,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                       module_path!(),
                       #is_ignored,
                       #should_panic,
+                      test_r::core::TestType::from_path(file!()),
                       test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|bencher, deps| Box::pin(async move { #test_name(bencher, #(#dep_getters),*).await })))
                   );
             }
@@ -67,6 +68,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                     module_path!(),
                     #is_ignored,
                     #should_panic,
+                    test_r::core::TestType::from_path(file!()),
                     test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|bencher, deps| #test_name(bencher, #(#dep_getters),*)))
                 );
             }
@@ -78,6 +80,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                   module_path!(),
                   #is_ignored,
                   #should_panic,
+                  test_r::core::TestType::from_path(file!()),
                   test_r::core::TestFunction::Async(std::sync::Arc::new(|deps| Box::pin(async move { #test_name(#(#dep_getters),*).await })))
               );
         }
@@ -88,6 +91,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                 module_path!(),
                 #is_ignored,
                 #should_panic,
+                test_r::core::TestType::from_path(file!()),
                 test_r::core::TestFunction::Sync(std::sync::Arc::new(|deps| #test_name(#(#dep_getters),*)))
             );
         }

@@ -1,4 +1,4 @@
-use crate::args::ColorSetting;
+use crate::args::{ColorSetting, TimeThreshold};
 use crate::internal::{RegisteredTest, SuiteResult, TestResult};
 use crate::output::{LogFile, TestRunnerOutput};
 use anstyle::{AnsiColor, Style};
@@ -14,8 +14,13 @@ pub(crate) struct Pretty {
     style_bench: Style,
     style_progress: Style,
     style_stderr: Style,
+    style_critical_time: Style,
+    style_warn_time: Style,
     lock: Mutex<PrettyImpl>,
     show_output: bool,
+    report_time: bool,
+    unit_test_threshold: TimeThreshold,
+    integ_test_threshold: TimeThreshold,
 }
 
 struct PrettyImpl {
@@ -24,7 +29,14 @@ struct PrettyImpl {
 }
 
 impl Pretty {
-    pub fn new(color: ColorSetting, show_output: bool, logfile_path: Option<PathBuf>) -> Self {
+    pub fn new(
+        color: ColorSetting,
+        show_output: bool,
+        logfile_path: Option<PathBuf>,
+        report_time: bool,
+        unit_test_threshold: TimeThreshold,
+        integ_test_threshold: TimeThreshold,
+    ) -> Self {
         let logfile = logfile_path.map(|path| LogFile::new(path, false));
 
         Self {
@@ -33,13 +45,18 @@ impl Pretty {
             style_ignored: Style::new()
                 .dimmed()
                 .fg_color(Some(AnsiColor::Yellow.into())),
-            style_bench: Style::new().dimmed().fg_color(Some(AnsiColor::Cyan.into())),
+            style_bench: Style::new().fg_color(Some(AnsiColor::Cyan.into())),
             style_progress: Style::new()
                 .bold()
                 .fg_color(Some(AnsiColor::BrightWhite.into())),
             style_stderr: Style::new().fg_color(Some(AnsiColor::Yellow.into())),
+            style_critical_time: Style::new().fg_color(Some(AnsiColor::Red.into())),
+            style_warn_time: Style::new().fg_color(Some(AnsiColor::Yellow.into())),
             lock: Mutex::new(PrettyImpl { color, logfile }),
             show_output,
+            report_time,
+            unit_test_threshold,
+            integ_test_threshold,
         }
     }
 
@@ -115,6 +132,20 @@ impl Pretty {
 
         output
     }
+
+    fn time_style(&self, test_type: &crate::internal::TestType, exec_time: &Duration) -> String {
+        let threshold = match test_type {
+            crate::internal::TestType::UnitTest => &self.unit_test_threshold,
+            crate::internal::TestType::IntegrationTest => &self.integ_test_threshold,
+        };
+        if threshold.is_critical(exec_time) {
+            self.style_critical_time.render().to_string()
+        } else if threshold.is_warn(exec_time) {
+            self.style_warn_time.render().to_string()
+        } else {
+            self.style_ok.render().to_string()
+        }
+    }
 }
 
 impl Write for PrettyImpl {
@@ -187,32 +218,60 @@ impl TestRunnerOutput for Pretty {
         let mut out = self.lock.lock().unwrap();
 
         let result = match result {
-            TestResult::Passed { .. } => format!(
-                "{}PASSED{}",
-                self.style_ok.render(),
-                self.style_ok.render_reset()
-            ),
+            TestResult::Passed { exec_time, .. } => {
+                if self.report_time {
+                    format!(
+                        "[{}PASSED{}]         <{}{:.3}s{}>",
+                        self.style_ok.render(),
+                        self.style_ok.render_reset(),
+                        self.time_style(&test.test_type, exec_time),
+                        exec_time.as_secs_f64(),
+                        self.style_ok.render_reset()
+                    )
+                } else {
+                    format!(
+                        "[{}PASSED{}]",
+                        self.style_ok.render(),
+                        self.style_ok.render_reset()
+                    )
+                }
+            }
             TestResult::Benchmarked { ns_iter_summ, .. } => format!(
-                "{}BENCH          {:>14} ns/iter (+/- {}){}",
+                "[{}BENCH{}]         {}{:>14} ns/iter (+/- {}){}",
+                self.style_bench.render(),
+                self.style_bench.render_reset(),
                 self.style_bench.render(),
                 Self::fmt_thousands_sep(ns_iter_summ.median, ','),
                 Self::fmt_thousands_sep(ns_iter_summ.max - ns_iter_summ.min, ','),
                 self.style_bench.render_reset()
             ),
-            TestResult::Failed { .. } => format!(
-                "{}FAILED{}",
-                self.style_failed.render(),
-                self.style_failed.render_reset()
-            ),
+            TestResult::Failed { exec_time, .. } => {
+                if self.report_time {
+                    format!(
+                        "[{}FAILED{}]         <{}{:.3}s{}>",
+                        self.style_failed.render(),
+                        self.style_failed.render_reset(),
+                        self.time_style(&test.test_type, exec_time),
+                        exec_time.as_secs_f64(),
+                        self.style_ok.render_reset()
+                    )
+                } else {
+                    format!(
+                        "[{}FAILED{}]",
+                        self.style_failed.render(),
+                        self.style_failed.render_reset()
+                    )
+                }
+            }
             TestResult::Ignored { .. } => format!(
-                "{}IGNORED{}",
+                "[{}IGNORED{}]",
                 self.style_ignored.render(),
                 self.style_ignored.render_reset()
             ),
         };
         writeln!(
             out,
-            "{}[{}/{}]{} Finished test: {} [{result}]",
+            "{}[{}/{}]{} Finished test: {} {result}",
             self.style_progress.render(),
             idx + 1,
             count,

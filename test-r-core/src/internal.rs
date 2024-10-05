@@ -64,6 +64,22 @@ pub enum ShouldPanic {
     WithMessage(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TestType {
+    UnitTest,
+    IntegrationTest,
+}
+
+impl TestType {
+    pub fn from_path(path: &str) -> Self {
+        if path.contains("/src/") {
+            TestType::UnitTest
+        } else {
+            TestType::IntegrationTest
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct RegisteredTest {
     pub name: String,
@@ -72,6 +88,7 @@ pub struct RegisteredTest {
     pub is_ignored: bool,
     pub should_panic: ShouldPanic,
     pub run: TestFunction,
+    pub test_type: TestType,
 }
 
 impl RegisteredTest {
@@ -263,11 +280,13 @@ impl DynamicTestRegistration {
     pub fn add_sync_test(
         &mut self,
         name: impl AsRef<str>,
+        test_type: TestType,
         run: impl Fn(Box<dyn DependencyView + Send + Sync>) + Send + Sync + 'static,
     ) {
         self.tests.push(GeneratedTest {
             name: name.as_ref().to_string(),
             run: TestFunction::Sync(Arc::new(run)),
+            test_type,
         });
     }
 
@@ -275,6 +294,7 @@ impl DynamicTestRegistration {
     pub fn add_async_test(
         &mut self,
         name: impl AsRef<str>,
+        test_type: TestType,
         run: impl (Fn(Box<dyn DependencyView + Send + Sync>) -> Pin<Box<dyn Future<Output = ()> + Send>>)
             + Send
             + Sync
@@ -283,6 +303,7 @@ impl DynamicTestRegistration {
         self.tests.push(GeneratedTest {
             name: name.as_ref().to_string(),
             run: TestFunction::Async(Arc::new(run)),
+            test_type,
         });
     }
 }
@@ -291,6 +312,7 @@ impl DynamicTestRegistration {
 pub struct GeneratedTest {
     pub name: String,
     pub run: TestFunction,
+    pub test_type: TestType,
 }
 
 #[derive(Clone)]
@@ -361,6 +383,7 @@ fn add_generated_tests(
         is_ignored: generator.is_ignored,
         should_panic: ShouldPanic::No,
         run: test.run,
+        test_type: test.test_type,
     }));
 }
 

@@ -14,7 +14,7 @@ pub use test_r_core::bench::Bencher;
 pub mod core {
     pub use test_r_core::internal::{
         DependencyConstructor, DependencyView, DynamicTestRegistration, GeneratedTest, ShouldPanic,
-        TestFunction, TestGeneratorFunction,
+        TestFunction, TestGeneratorFunction, TestType,
     };
     pub use test_r_core::*;
 
@@ -23,6 +23,7 @@ pub mod core {
         module_path: &str,
         is_ignored: bool,
         should_panic: ShouldPanic,
+        test_type: TestType,
         run: TestFunction,
     ) {
         let (crate_name, module_path) = split_module_path(module_path);
@@ -37,6 +38,7 @@ pub mod core {
                 is_ignored,
                 should_panic,
                 run,
+                test_type,
             });
     }
 

@@ -489,7 +489,7 @@ impl<'a> Debug for TestSuiteExecution<'a> {
         }
         writeln!(f, "  tests:")?;
         for test in &self.tests {
-            writeln!(f, "    '{}'", test.name)?;
+            writeln!(f, "    '{}' [{:?}]", test.name, test.test_type)?;
         }
         for inner in &self.inner {
             let inner_str = format!("{inner:?}");
