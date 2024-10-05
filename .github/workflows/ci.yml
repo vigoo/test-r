@@ -11,13 +11,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny
 
       - run: cargo test -p test-r --all-features
       - run: cargo test -p test-r-example --no-run
       - run: cargo test -p test-r-example-tokio --no-run
+
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
       - run: cargo clippy --no-deps --all-targets -- -Dwarnings
       - run: cargo fmt --all -- --check
       - run: cargo deny check
