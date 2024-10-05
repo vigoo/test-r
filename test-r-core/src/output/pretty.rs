@@ -10,6 +10,7 @@ pub(crate) struct Pretty {
     style_ok: Style,
     style_failed: Style,
     style_ignored: Style,
+    style_bench: Style,
     style_progress: Style,
     style_stderr: Style,
     lock: Mutex<PrettyImpl>,
@@ -25,7 +26,10 @@ impl Pretty {
         Self {
             style_ok: Style::new().fg_color(Some(AnsiColor::Green.into())),
             style_failed: Style::new().bold().fg_color(Some(AnsiColor::Red.into())),
-            style_ignored: Style::new().dimmed().fg_color(Some(AnsiColor::Cyan.into())),
+            style_ignored: Style::new()
+                .dimmed()
+                .fg_color(Some(AnsiColor::Yellow.into())),
+            style_bench: Style::new().dimmed().fg_color(Some(AnsiColor::Cyan.into())),
             style_progress: Style::new()
                 .bold()
                 .fg_color(Some(AnsiColor::BrightWhite.into())),
@@ -79,6 +83,33 @@ impl Pretty {
         results: &[(RegisteredTest, TestResult)],
     ) {
         self.write_outputs(out, results.iter().filter(|(_, result)| result.is_failed()));
+    }
+
+    // Format a number with thousands separators - from https://github.com/rust-lang/rust/blob/master/library/test/src/bench.rs
+    fn fmt_thousands_sep(mut n: f64, sep: char) -> String {
+        use std::fmt::Write;
+        let mut output = String::new();
+        let mut trailing = false;
+        for &pow in &[9, 6, 3, 0] {
+            let base = 10_usize.pow(pow);
+            if pow == 0 || trailing || n / base as f64 >= 1.0 {
+                match (pow, trailing) {
+                    // modern CPUs can execute multiple instructions per nanosecond
+                    // e.g. benching an ADD takes about 0.25ns.
+                    (0, true) => write!(output, "{:06.2}", n / base as f64).unwrap(),
+                    (0, false) => write!(output, "{:.2}", n / base as f64).unwrap(),
+                    (_, true) => write!(output, "{:03}", n as usize / base).unwrap(),
+                    _ => write!(output, "{}", n as usize / base).unwrap(),
+                }
+                if pow != 0 {
+                    output.push(sep);
+                }
+                trailing = true;
+            }
+            n %= base as f64;
+        }
+
+        output
     }
 }
 
@@ -144,6 +175,13 @@ impl TestRunnerOutput for Pretty {
                 self.style_ok.render(),
                 self.style_ok.render_reset()
             ),
+            TestResult::Benchmarked { ns_iter_summ, .. } => format!(
+                "{}BENCH          {:>14} ns/iter (+/- {}){}",
+                self.style_bench.render(),
+                Self::fmt_thousands_sep(ns_iter_summ.median, ','),
+                Self::fmt_thousands_sep(ns_iter_summ.max - ns_iter_summ.min, ','),
+                self.style_bench.render_reset()
+            ),
             TestResult::Failed { .. } => format!(
                 "{}FAILED{}",
                 self.style_failed.render(),
@@ -199,8 +237,8 @@ impl TestRunnerOutput for Pretty {
         writeln!(out).unwrap();
         writeln!(
             out,
-            "test result: {}; {} passed; {} failed; {} ignored; {} filtered out; finished in {:.3}s",
-            overall, result.passed, result.failed, result.ignored, result.filtered_out, result.exec_time.as_secs_f64()
+            "test result: {}; {} passed; {} failed; {} ignored; {} measured; {} filtered out; finished in {:.3}s",
+            overall, result.passed, result.failed, result.ignored, result.measured, result.filtered_out, result.exec_time.as_secs_f64()
         )
         .unwrap();
         writeln!(out).unwrap();

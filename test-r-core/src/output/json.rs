@@ -32,40 +32,59 @@ impl TestRunnerOutput for Json {
         result: &TestResult,
     ) {
         let event = match result {
-            TestResult::Passed { .. } => "ok",
-            TestResult::Failed { .. } => "failed",
-            TestResult::Ignored { .. } => "ignored",
+            TestResult::Passed { .. } => Some("ok"),
+            TestResult::Failed { .. } => Some("failed"),
+            TestResult::Ignored { .. } => Some("ignored"),
+            TestResult::Benchmarked { .. } => None,
         };
 
-        let mut stdout_lines = result
-            .captured_output()
-            .iter()
-            .filter_map(|line| match line {
-                CapturedOutput::Stdout { line, .. } => Some(line.clone()),
-                CapturedOutput::Stderr { .. } => None,
-            })
-            .collect::<Vec<_>>();
+        if let Some(event) = event {
+            let mut stdout_lines = result
+                .captured_output()
+                .iter()
+                .filter_map(|line| match line {
+                    CapturedOutput::Stdout { line, .. } => Some(line.clone()),
+                    CapturedOutput::Stderr { .. } => None,
+                })
+                .collect::<Vec<_>>();
 
-        let extra = match result.failure_message() {
-            Some(msg) => {
-                stdout_lines.push(format!("Error: {msg}"));
-                let stdout = stdout_lines.join("\n");
-
-                format!(r#", "stdout": "{}"#, escape8259::escape(stdout))
-            }
-            None => {
-                if self.show_output {
+            let extra = match result.failure_message() {
+                Some(msg) => {
+                    stdout_lines.push(format!("Error: {msg}"));
                     let stdout = stdout_lines.join("\n");
+
                     format!(r#", "stdout": "{}"#, escape8259::escape(stdout))
-                } else {
-                    "".to_string()
                 }
-            }
-        };
-        println!(
-            r#"{{ "type": "test", "event": "{event}", "name": "{}"{extra} }}"#,
-            escape8259::escape(test.fully_qualified_name())
-        );
+                None => {
+                    if self.show_output {
+                        let stdout = stdout_lines.join("\n");
+                        format!(r#", "stdout": "{}"#, escape8259::escape(stdout))
+                    } else {
+                        "".to_string()
+                    }
+                }
+            };
+            println!(
+                r#"{{ "type": "test", "event": "{event}", "name": "{}"{extra} }}"#,
+                escape8259::escape(test.fully_qualified_name())
+            );
+        } else if let TestResult::Benchmarked {
+            ns_iter_summ, mb_s, ..
+        } = result
+        {
+            let median = ns_iter_summ.median;
+            let deviation = ns_iter_summ.max - ns_iter_summ.min;
+            let mbps = if *mb_s == 0 {
+                String::new()
+            } else {
+                format!(r#", "mib_per_second": {}"#, mb_s)
+            };
+
+            println!(
+                r#"{{ "type": "bench", "name": "{}", "median": {median}, "deviation": {deviation}{mbps} }}"#,
+                escape8259::escape(test.fully_qualified_name()),
+            );
+        }
     }
 
     fn finished_suite(

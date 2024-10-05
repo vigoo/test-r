@@ -1,4 +1,5 @@
 use crate::args::Arguments;
+use crate::bench::Bencher;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
 use crate::internal::{
@@ -152,6 +153,7 @@ fn test_thread(
                     let response = IpcResponse::TestFinished {
                         result: (&result).into(),
                     };
+
                     let msg = encode_to_vec(&response, bincode::config::standard())
                         .expect("Failed to encode IPC response");
                     let message_size = (msg.len() as u16).to_le_bytes();
@@ -187,13 +189,25 @@ pub(crate) fn run_sync_test_function(
     dependency_view: Box<dyn internal::DependencyView + Send + Sync>,
 ) -> TestResult {
     let start = Instant::now();
-    let result = catch_unwind(AssertUnwindSafe(move || match test_fn {
-        TestFunction::Sync(test_fn) => test_fn(dependency_view),
+    match test_fn {
+        TestFunction::Sync(test_fn) => {
+            let result = catch_unwind(AssertUnwindSafe(move || test_fn(dependency_view)));
+            TestResult::from_result(should_panic, start.elapsed(), result)
+        }
+        TestFunction::SyncBench(bench_fn) => {
+            let mut bencher = Bencher::new();
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                bench_fn(&mut bencher, dependency_view);
+                bencher
+                    .summary()
+                    .expect("iter() was not called in bench function")
+            }));
+            TestResult::from_summary(should_panic, start.elapsed(), result, bencher.bytes)
+        }
         _ => {
             panic!("Async tests are not supported in sync mode, enable the 'tokio' feature")
         }
-    }));
-    TestResult::from_result(should_panic, start.elapsed(), result)
+    }
 }
 
 struct Worker {
@@ -285,6 +299,7 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
+                        //eprintln!("[WORKER OUT] {line}");
                         out_lines_clone
                             .lock()
                             .unwrap()
@@ -304,6 +319,7 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
+                        //eprintln!("[WORKER ERR] {line}");
                         err_lines_clone
                             .lock()
                             .unwrap()

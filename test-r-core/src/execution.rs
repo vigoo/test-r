@@ -214,12 +214,7 @@ impl<'a> TestSuiteExecution<'a> {
                 result
             } else {
                 let guard = self.sequential_lock.lock_sync(self.is_sequential);
-                if let Some(test) = self.tests.pop() {
-                    let deps = HashMap::new();
-                    Some((test, deps, guard))
-                } else {
-                    None
-                }
+                self.tests.pop().map(|test| (test, dependency_map, guard))
             };
             if result.is_none() && self.is_materialized() && !locked {
                 self.drop_deps();
@@ -250,7 +245,8 @@ impl<'a> TestSuiteExecution<'a> {
         let total_count = tests.len();
         let is_sequential = props
             .iter()
-            .any(|prop| matches!(prop, RegisteredTestSuiteProperty::Sequential { .. }));
+            .any(|prop| matches!(prop, RegisteredTestSuiteProperty::Sequential { .. }))
+            || tests.iter().any(|test| test.run.is_bench());
         Self {
             crate_and_module: String::new(),
             dependencies: deps,
@@ -303,6 +299,10 @@ impl<'a> TestSuiteExecution<'a> {
         let crate_and_module = test.crate_and_module();
         if self.crate_and_module == crate_and_module {
             self.tests.push(test);
+
+            if test.run.is_bench() {
+                self.is_sequential = true;
+            }
         } else {
             let mut found = false;
             for inner in &mut self.inner {
@@ -474,13 +474,14 @@ impl<'a> Debug for TestSuiteExecution<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "'{}' {}",
+            "'{}' {} [{}]",
             self.crate_and_module,
             self.props
                 .iter()
                 .map(|x| format!("{x:?}"))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            if self.is_sequential { "S" } else { "P" }
         )?;
         writeln!(f, "  deps:")?;
         for dep in &self.dependencies {
@@ -547,7 +548,7 @@ impl SequentialExecutionLock {
 
     pub fn is_locked_sync(&self) -> bool {
         if let Some(mutex) = &self.sync_mutex {
-            mutex.try_lock().is_some()
+            mutex.try_lock().is_none()
         } else {
             false
         }

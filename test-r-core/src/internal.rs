@@ -1,6 +1,8 @@
 use crate::args::Arguments;
+use crate::bench::{AsyncBencher, Bencher};
+use crate::stats::Summary;
 use std::any::Any;
-use std::cmp::Ordering;
+use std::cmp::{max, Ordering};
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::hash::Hash;
@@ -12,6 +14,9 @@ use std::time::{Duration, SystemTime};
 #[allow(clippy::type_complexity)]
 pub enum TestFunction {
     Sync(Arc<dyn Fn(Box<dyn DependencyView + Send + Sync>) + Send + Sync + 'static>),
+    SyncBench(
+        Arc<dyn Fn(&mut Bencher, Box<dyn DependencyView + Send + Sync>) + Send + Sync + 'static>,
+    ),
     Async(
         Arc<
             dyn (Fn(
@@ -22,6 +27,23 @@ pub enum TestFunction {
                 + 'static,
         >,
     ),
+    AsyncBench(
+        Arc<
+            dyn Fn(&mut AsyncBencher, Box<dyn DependencyView + Send + Sync>)
+                + Send
+                + Sync
+                + 'static,
+        >,
+    ),
+}
+
+impl TestFunction {
+    pub fn is_bench(&self) -> bool {
+        matches!(
+            self,
+            TestFunction::SyncBench(_) | TestFunction::AsyncBench(_)
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,6 +326,11 @@ pub(crate) fn filter_registered_tests<'a>(
                     .map(|filter| filter_test(registered_test, filter, args.exact))
                     .unwrap_or(false)
         })
+        .filter(|registered_tests| {
+            (args.bench && registered_tests.run.is_bench())
+                || (args.test && !registered_tests.run.is_bench())
+                || (!args.bench && !args.test)
+        })
         .copied()
         .collect::<Vec<_>>()
 }
@@ -362,6 +389,12 @@ pub enum TestResult {
         captured: Vec<CapturedOutput>,
         exec_time: Duration,
     },
+    Benchmarked {
+        captured: Vec<CapturedOutput>,
+        exec_time: Duration,
+        ns_iter_summ: Summary,
+        mb_s: usize,
+    },
     Failed {
         panic: Box<dyn std::any::Any + Send>,
         captured: Vec<CapturedOutput>,
@@ -377,6 +410,15 @@ impl TestResult {
         TestResult::Passed {
             captured: Vec::new(),
             exec_time,
+        }
+    }
+
+    pub fn benchmarked(exec_time: Duration, ns_iter_summ: Summary, mb_s: usize) -> Self {
+        TestResult::Benchmarked {
+            captured: Vec::new(),
+            exec_time,
+            ns_iter_summ,
+            mb_s,
         }
     }
 
@@ -396,6 +438,10 @@ impl TestResult {
 
     pub(crate) fn is_passed(&self) -> bool {
         matches!(self, TestResult::Passed { .. })
+    }
+
+    pub(crate) fn is_benchmarked(&self) -> bool {
+        matches!(self, TestResult::Benchmarked { .. })
     }
 
     pub(crate) fn is_failed(&self) -> bool {
@@ -421,6 +467,7 @@ impl TestResult {
             TestResult::Passed { captured, .. } => captured,
             TestResult::Failed { captured, .. } => captured,
             TestResult::Ignored { captured, .. } => captured,
+            TestResult::Benchmarked { captured, .. } => captured,
         }
     }
 
@@ -436,6 +483,10 @@ impl TestResult {
             } => *captured_ref = captured,
             TestResult::Ignored {
                 captured: captured_ref,
+            } => *captured_ref = captured,
+            TestResult::Benchmarked {
+                captured: captured_ref,
+                ..
             } => *captured_ref = captured,
         }
     }
@@ -453,25 +504,49 @@ impl TestResult {
                     TestResult::failed(elapsed, Box::new("Test did not panic as expected"))
                 }
             }
-            Err(panic) => match should_panic {
-                ShouldPanic::WithMessage(expected) => {
-                    let failure = TestResult::failed(elapsed, panic);
-                    let message = failure.failure_message();
+            Err(panic) => Self::from_panic(should_panic, elapsed, panic),
+        }
+    }
 
-                    match message {
-                        Some(message) if message.contains(expected) => TestResult::passed(elapsed),
-                        _ => TestResult::failed(
-                            elapsed,
-                            Box::new(format!(
-                                "Test panicked with unexpected message: {}",
-                                message.unwrap_or_default()
-                            )),
-                        ),
-                    }
+    pub(crate) fn from_summary(
+        should_panic: &ShouldPanic,
+        elapsed: Duration,
+        result: Result<Summary, Box<dyn Any + Send>>,
+        bytes: u64,
+    ) -> Self {
+        match result {
+            Ok(summary) => {
+                let ns_iter = max(summary.median as u64, 1);
+                let mb_s = bytes * 1000 / ns_iter;
+                TestResult::benchmarked(elapsed, summary, mb_s as usize)
+            }
+            Err(panic) => Self::from_panic(should_panic, elapsed, panic),
+        }
+    }
+
+    fn from_panic(
+        should_panic: &ShouldPanic,
+        elapsed: Duration,
+        panic: Box<dyn Any + Send>,
+    ) -> Self {
+        match should_panic {
+            ShouldPanic::WithMessage(expected) => {
+                let failure = TestResult::failed(elapsed, panic);
+                let message = failure.failure_message();
+
+                match message {
+                    Some(message) if message.contains(expected) => TestResult::passed(elapsed),
+                    _ => TestResult::failed(
+                        elapsed,
+                        Box::new(format!(
+                            "Test panicked with unexpected message: {}",
+                            message.unwrap_or_default()
+                        )),
+                    ),
                 }
-                ShouldPanic::Yes => TestResult::passed(elapsed),
-                ShouldPanic::No => TestResult::failed(elapsed, panic),
-            },
+            }
+            ShouldPanic::Yes => TestResult::passed(elapsed),
+            ShouldPanic::No => TestResult::failed(elapsed, panic),
         }
     }
 }
@@ -495,6 +570,10 @@ impl SuiteResult {
             .iter()
             .filter(|(_, result)| result.is_passed())
             .count();
+        let measured = results
+            .iter()
+            .filter(|(_, result)| result.is_benchmarked())
+            .count();
         let failed = results
             .iter()
             .filter(|(_, result)| result.is_failed())
@@ -509,14 +588,14 @@ impl SuiteResult {
             passed,
             failed,
             ignored,
-            measured: 0,
+            measured,
             filtered_out,
             exec_time,
         }
     }
 }
 
-pub trait DependencyView {
+pub trait DependencyView: Debug {
     fn get(&self, name: &str) -> Option<Arc<dyn Any + Send + Sync>>;
 }
 

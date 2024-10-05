@@ -1,4 +1,5 @@
 use crate::internal::{CapturedOutput, TestResult};
+use crate::stats::Summary;
 use bincode::{Decode, Encode};
 use interprocess::local_socket::{
     GenericFilePath, GenericNamespaced, Name, NameType, ToFsName, ToNsName,
@@ -17,8 +18,18 @@ pub enum IpcCommand {
 
 #[derive(Debug, Encode, Decode)]
 pub enum SerializableTestResult {
-    Passed { exec_time: Duration },
-    Failed { exec_time: Duration, panic: String },
+    Passed {
+        exec_time: Duration,
+    },
+    Benchmarked {
+        exec_time: Duration,
+        ns_iter_summ: Summary,
+        mb_s: usize,
+    },
+    Failed {
+        exec_time: Duration,
+        panic: String,
+    },
     Ignored,
 }
 
@@ -43,6 +54,16 @@ impl From<&TestResult> for SerializableTestResult {
             TestResult::Passed { exec_time, .. } => SerializableTestResult::Passed {
                 exec_time: *exec_time,
             },
+            TestResult::Benchmarked {
+                exec_time,
+                ns_iter_summ,
+                mb_s,
+                ..
+            } => SerializableTestResult::Benchmarked {
+                exec_time: *exec_time,
+                ns_iter_summ: *ns_iter_summ,
+                mb_s: *mb_s,
+            },
             TestResult::Failed { exec_time, .. } => SerializableTestResult::Failed {
                 exec_time: *exec_time,
                 panic: result.failure_message().unwrap_or_default().to_string(),
@@ -60,6 +81,11 @@ impl From<SerializableTestResult> for TestResult {
                 TestResult::failed(exec_time, Box::new(panic))
             }
             SerializableTestResult::Ignored => TestResult::ignored(),
+            SerializableTestResult::Benchmarked {
+                exec_time,
+                ns_iter_summ,
+                mb_s,
+            } => TestResult::benchmarked(exec_time, ns_iter_summ, mb_s),
         }
     }
 }

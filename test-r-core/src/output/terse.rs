@@ -32,6 +32,7 @@ impl TestRunnerOutput for Terse {
     ) {
         match result {
             TestResult::Passed { .. } => print!("."),
+            TestResult::Benchmarked { .. } => print!("B"),
             TestResult::Failed { .. } => print!("F"),
             TestResult::Ignored { .. } => print!("i"),
         };

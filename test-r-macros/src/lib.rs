@@ -11,7 +11,16 @@ use syn::{
 use test_r_core::internal::ShouldPanic;
 
 #[proc_macro_attribute]
-pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
+    test_impl(attr, item, false)
+}
+
+#[proc_macro_attribute]
+pub fn bench(attr: TokenStream, item: TokenStream) -> TokenStream {
+    test_impl(attr, item, true)
+}
+
+fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStream {
     let ast: ItemFn = syn::parse(item).expect("test ast");
     let test_name = ast.sig.ident.clone();
     let test_name_str = test_name.to_string();
@@ -38,9 +47,31 @@ pub fn test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     );
 
     let is_async = ast.sig.asyncness.is_some();
-    let (dep_getters, _dep_names) = get_dependency_params(&ast);
+    let (dep_getters, _dep_names) = get_dependency_params(&ast, is_bench);
 
-    let register_call = if is_async {
+    let register_call = if is_bench {
+        if is_async {
+            quote! {
+                  test_r::core::register_test(
+                      #test_name_str,
+                      module_path!(),
+                      #is_ignored,
+                      #should_panic,
+                      test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|bencher, deps| Box::pin(async move { #test_name(bencher, #(#dep_getters),*).await })))
+                  );
+            }
+        } else {
+            quote! {
+                test_r::core::register_test(
+                    #test_name_str,
+                    module_path!(),
+                    #is_ignored,
+                    #should_panic,
+                    test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|bencher, deps| #test_name(bencher, #(#dep_getters),*)))
+                );
+            }
+        }
+    } else if is_async {
         quote! {
               test_r::core::register_test(
                   #test_name_str,
@@ -165,7 +196,7 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
     );
 
     let is_async = ast.sig.asyncness.is_some();
-    let (dep_getters, dep_names) = get_dependency_params(&ast);
+    let (dep_getters, dep_names) = get_dependency_params(&ast, false);
 
     let register_call = if is_async {
         quote! {
@@ -384,29 +415,34 @@ fn merge_type_path(dep_type: &TypePath) -> String {
 
 fn get_dependency_params(
     ast: &ItemFn,
+    is_bench: bool,
 ) -> (Vec<proc_macro2::TokenStream>, Vec<proc_macro2::TokenStream>) {
     let mut dep_getters = Vec::new();
     let mut dep_names = Vec::new();
-    for param in &ast.sig.inputs {
-        let dep_type = match param {
-            FnArg::Receiver(_) => {
-                panic!("Test functions cannot have a self parameter")
-            }
-            FnArg::Typed(typ) => get_dependency_param_from_pat_type(typ),
-        };
-        let dep_name_str = merge_type_path(&dep_type);
 
-        let getter_ident = Ident::new(
-            &format!("test_r_get_dep_{}", dep_name_str),
-            Span::call_site(),
-        );
+    for (idx, param) in ast.sig.inputs.iter().enumerate() {
+        if !is_bench || idx > 0 {
+            // TODO: verify that the first bench arg is a Bencher/AsyncBencher
+            let dep_type = match param {
+                FnArg::Receiver(_) => {
+                    panic!("Test functions cannot have a self parameter")
+                }
+                FnArg::Typed(typ) => get_dependency_param_from_pat_type(typ),
+            };
+            let dep_name_str = merge_type_path(&dep_type);
 
-        dep_getters.push(quote! {
-            &#getter_ident(&deps)
-        });
-        dep_names.push(quote! {
-            #dep_name_str.to_string()
-        });
+            let getter_ident = Ident::new(
+                &format!("test_r_get_dep_{}", dep_name_str),
+                Span::call_site(),
+            );
+
+            dep_getters.push(quote! {
+                &#getter_ident(&deps)
+            });
+            dep_names.push(quote! {
+                #dep_name_str.to_string()
+            });
+        }
     }
     (dep_getters, dep_names)
 }

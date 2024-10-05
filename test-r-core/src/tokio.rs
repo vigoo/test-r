@@ -222,6 +222,12 @@ async fn run_test(
                     .await;
                 TestResult::from_result(&test.should_panic, start.elapsed(), result)
             }
+            TestFunction::SyncBench(_) => {
+                todo!()
+            }
+            TestFunction::AsyncBench(_) => {
+                todo!()
+            }
         }
     }
 }

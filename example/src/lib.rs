@@ -2,7 +2,8 @@ test_r::enable!();
 
 #[cfg(test)]
 mod tests {
-    use test_r::test;
+    use test_r::core::bench::Bencher;
+    use test_r::{bench, test, test_dep};
 
     #[test]
     fn it_does_work() {
@@ -16,6 +17,26 @@ mod tests {
         println!("Print from 'this_too'");
         let result = 2 + 2;
         assert_eq!(result, 4);
+    }
+
+    #[bench]
+    fn bench1(b: &mut Bencher) {
+        b.iter(|| 10 + 11);
+    }
+
+    pub struct Dep1 {
+        pub value: i32,
+    }
+
+    #[test_dep]
+    fn create_dep1() -> Dep1 {
+        println!("Creating Dep1 for bench2");
+        Dep1 { value: 10 }
+    }
+
+    #[bench]
+    fn bench2(b: &mut Bencher, dep1: &Dep1) {
+        b.iter(|| dep1.value + 11);
     }
 }
 

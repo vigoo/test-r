@@ -105,15 +105,27 @@ impl TestRunnerOutput for JUnit {
                     .with_attribute(("time", exec_time.as_secs_f64().to_string().as_str()))
                     .write_inner_content(|writer| {
                         for (test, result) in results {
+                            let classname = match result {
+                                TestResult::Benchmarked { .. } => {
+                                    format!("benchmark::{}", test.crate_and_module())
+                                }
+                                _ => test.crate_and_module(),
+                            };
+
                             let testcase = writer
                                 .create_element("testcase")
                                 .with_attribute(("name", test.name.as_str()))
-                                .with_attribute(("classname", test.crate_and_module().as_str()));
+                                .with_attribute(("classname", classname.as_str()));
 
                             match result {
                                 TestResult::Passed {
                                     exec_time,
                                     captured,
+                                }
+                                | TestResult::Benchmarked {
+                                    exec_time,
+                                    captured,
+                                    ..
                                 } => {
                                     if captured.is_empty() || !self.show_output {
                                         testcase
