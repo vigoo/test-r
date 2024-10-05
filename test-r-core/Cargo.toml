@@ -3,6 +3,10 @@ name = "test-r-core"
 version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0"
+description = "Test framework for Rust (core module)"
+homepage = "https://github.com/vigoo/test-r"
+repository = "https://github.com/vigoo/test-r"
+readme = "../README.md"
 
 [lib]
 
