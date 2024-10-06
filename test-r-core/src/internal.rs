@@ -87,6 +87,13 @@ pub enum FlakinessControl {
     RetryKnownFlaky(usize),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptureControl {
+    Default,
+    AlwaysCapture,
+    NeverCapture,
+}
+
 #[derive(Clone)]
 pub struct RegisteredTest {
     pub name: String,
@@ -98,6 +105,7 @@ pub struct RegisteredTest {
     pub test_type: TestType,
     pub timeout: Option<Duration>,
     pub flakiness_control: FlakinessControl,
+    pub capture_control: CaptureControl,
 }
 
 impl RegisteredTest {
@@ -397,6 +405,7 @@ fn add_generated_tests(
         test_type: test.test_type,
         timeout: None,
         flakiness_control: FlakinessControl::None,
+        capture_control: CaptureControl::Default,
     }));
 }
 

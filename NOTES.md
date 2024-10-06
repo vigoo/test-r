@@ -6,7 +6,6 @@ https://github.com/rust-lang/rust/tree/master/library/test
 https://github.com/rust-lang/rust/issues/105424
 
 # Todo
-- Capture/no-capture controlled by attributes
 - Support tests returning `Result<>` 
 - Tags
 - Make sure some 3rd party golden testing framework works, or add our own (https://crates.io/crates/goldenfile)
@@ -24,6 +23,6 @@ Ready to integrate, before release:
 Later:
 - per-test report/ensure-time with attributes
 - Support `#[should_panic]` in dynamic tests
-- Support flaky, non_flaky, timeout, ensure-time, and report-time in dynamic tests
+- Support always_capture, never_capture, flaky, non_flaky, timeout, ensure-time, and report-time in dynamic tests
 - More detailed benchmark stats output 
 - Prettier pretty output
