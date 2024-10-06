@@ -665,6 +665,7 @@ dependencies = [
 name = "test-r-example"
 version = "0.0.1"
 dependencies = [
+ "rand",
  "test-r",
 ]
 
@@ -672,6 +673,7 @@ dependencies = [
 name = "test-r-example-tokio"
 version = "0.0.1"
 dependencies = [
+ "rand",
  "test-r",
  "tokio",
  "tracing",

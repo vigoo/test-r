@@ -13,16 +13,16 @@ use std::time::{Duration, SystemTime};
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
 pub enum TestFunction {
-    Sync(Arc<dyn Fn(Box<dyn DependencyView + Send + Sync>) + Send + Sync + 'static>),
+    Sync(Arc<dyn Fn(Arc<dyn DependencyView + Send + Sync>) + Send + Sync + 'static>),
     SyncBench(
-        Arc<dyn Fn(&mut Bencher, Box<dyn DependencyView + Send + Sync>) + Send + Sync + 'static>,
+        Arc<dyn Fn(&mut Bencher, Arc<dyn DependencyView + Send + Sync>) + Send + Sync + 'static>,
     ),
     #[cfg(feature = "tokio")]
     Async(
         Arc<
             dyn (Fn(
-                    Box<dyn DependencyView + Send + Sync>,
-                ) -> Pin<Box<dyn Future<Output = ()> + Send>>)
+                    Arc<dyn DependencyView + Send + Sync>,
+                ) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>)
                 + Send
                 + Sync
                 + 'static,
@@ -33,7 +33,7 @@ pub enum TestFunction {
         Arc<
             dyn for<'a> Fn(
                     &'a mut crate::bench::AsyncBencher,
-                    Box<dyn DependencyView + Send + Sync>,
+                    Arc<dyn DependencyView + Send + Sync>,
                 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
                 + Send
                 + Sync
@@ -80,6 +80,13 @@ impl TestType {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlakinessControl {
+    None,
+    ProveNonFlaky(usize),
+    RetryKnownFlaky(usize),
+}
+
 #[derive(Clone)]
 pub struct RegisteredTest {
     pub name: String,
@@ -90,6 +97,7 @@ pub struct RegisteredTest {
     pub run: TestFunction,
     pub test_type: TestType,
     pub timeout: Option<Duration>,
+    pub flakiness_control: FlakinessControl,
 }
 
 impl RegisteredTest {
@@ -138,7 +146,7 @@ pub enum DependencyConstructor {
     Sync(
         Arc<
             dyn (Fn(
-                    Box<dyn DependencyView + Send + Sync>,
+                    Arc<dyn DependencyView + Send + Sync>,
                 ) -> Arc<dyn std::any::Any + Send + Sync + 'static>)
                 + Send
                 + Sync
@@ -148,7 +156,7 @@ pub enum DependencyConstructor {
     Async(
         Arc<
             dyn (Fn(
-                    Box<dyn DependencyView + Send + Sync>,
+                    Arc<dyn DependencyView + Send + Sync>,
                 )
                     -> Pin<Box<dyn Future<Output = Arc<dyn std::any::Any + Send + Sync>> + Send>>)
                 + Send
@@ -282,7 +290,7 @@ impl DynamicTestRegistration {
         &mut self,
         name: impl AsRef<str>,
         test_type: TestType,
-        run: impl Fn(Box<dyn DependencyView + Send + Sync>) + Send + Sync + 'static,
+        run: impl Fn(Arc<dyn DependencyView + Send + Sync>) + Send + Sync + 'static,
     ) {
         self.tests.push(GeneratedTest {
             name: name.as_ref().to_string(),
@@ -296,7 +304,9 @@ impl DynamicTestRegistration {
         &mut self,
         name: impl AsRef<str>,
         test_type: TestType,
-        run: impl (Fn(Box<dyn DependencyView + Send + Sync>) -> Pin<Box<dyn Future<Output = ()> + Send>>)
+        run: impl (Fn(
+                Arc<dyn DependencyView + Send + Sync>,
+            ) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>)
             + Send
             + Sync
             + 'static,
@@ -386,6 +396,7 @@ fn add_generated_tests(
         run: test.run,
         test_type: test.test_type,
         timeout: None,
+        flakiness_control: FlakinessControl::None,
     }));
 }
 
@@ -649,7 +660,7 @@ pub trait DependencyView: Debug {
     fn get(&self, name: &str) -> Option<Arc<dyn Any + Send + Sync>>;
 }
 
-impl DependencyView for Box<dyn DependencyView + Send + Sync> {
+impl DependencyView for Arc<dyn DependencyView + Send + Sync> {
     fn get(&self, name: &str) -> Option<Arc<dyn Any + Send + Sync>> {
         self.as_ref().get(name)
     }

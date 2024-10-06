@@ -1,6 +1,8 @@
 pub use test_r_macro::add_test;
 pub use test_r_macro::bench;
+pub use test_r_macro::flaky;
 pub use test_r_macro::inherit_test_dep;
+pub use test_r_macro::non_flaky;
 pub use test_r_macro::sequential;
 pub use test_r_macro::test;
 pub use test_r_macro::test_dep;
@@ -15,11 +17,12 @@ pub use test_r_core::bench::Bencher;
 pub mod core {
     use std::time::Duration;
     pub use test_r_core::internal::{
-        DependencyConstructor, DependencyView, DynamicTestRegistration, GeneratedTest, ShouldPanic,
-        TestFunction, TestGeneratorFunction, TestType,
+        DependencyConstructor, DependencyView, DynamicTestRegistration, FlakinessControl,
+        GeneratedTest, ShouldPanic, TestFunction, TestGeneratorFunction, TestType,
     };
     pub use test_r_core::*;
 
+    #[allow(clippy::too_many_arguments)]
     pub fn register_test(
         name: &str,
         module_path: &str,
@@ -27,6 +30,7 @@ pub mod core {
         should_panic: ShouldPanic,
         test_type: TestType,
         timeout: Option<Duration>,
+        flakiness_control: FlakinessControl,
         run: TestFunction,
     ) {
         let (crate_name, module_path) = split_module_path(module_path);
@@ -43,6 +47,7 @@ pub mod core {
                 run,
                 test_type,
                 timeout,
+                flakiness_control,
             });
     }
 

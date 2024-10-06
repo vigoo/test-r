@@ -6,7 +6,6 @@ https://github.com/rust-lang/rust/tree/master/library/test
 https://github.com/rust-lang/rust/issues/105424
 
 # Todo
-- Flaky/non-flaky attributes
 - Capture/no-capture controlled by attributes
 - Support tests returning `Result<>` 
 - Tags
@@ -25,6 +24,6 @@ Ready to integrate, before release:
 Later:
 - per-test report/ensure-time with attributes
 - Support `#[should_panic]` in dynamic tests
-- Support timeout, ensure-time, and report-time in dynamic tests
+- Support flaky, non_flaky, timeout, ensure-time, and report-time in dynamic tests
 - More detailed benchmark stats output 
 - Prettier pretty output
