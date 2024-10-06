@@ -115,7 +115,7 @@ impl<'a> TestSuiteExecution<'a> {
                     self.idx += 1;
                     Some(TestExecution {
                         test,
-                        deps: Box::new(deps),
+                        deps: Arc::new(deps),
                         index,
                         _seq_lock: seq_lock,
                     })
@@ -132,7 +132,7 @@ impl<'a> TestSuiteExecution<'a> {
                 self.idx += 1;
                 Some(TestExecution {
                     test,
-                    deps: Box::new(deps),
+                    deps: Arc::new(deps),
                     index,
                     _seq_lock: seq_lock,
                 })
@@ -396,8 +396,8 @@ impl<'a> TestSuiteExecution<'a> {
         let sorted_dependencies = self.sorted_dependencies();
         for dep in &sorted_dependencies {
             let materialized_dep = match &dep.constructor {
-                DependencyConstructor::Sync(cons) => cons(Box::new(dependency_map.clone())),
-                DependencyConstructor::Async(cons) => cons(Box::new(dependency_map.clone())).await,
+                DependencyConstructor::Sync(cons) => cons(Arc::new(dependency_map.clone())),
+                DependencyConstructor::Async(cons) => cons(Arc::new(dependency_map.clone())).await,
             };
             deps.insert(dep.name.clone(), materialized_dep.clone());
             dependency_map.insert(dep.name.clone(), materialized_dep);
@@ -416,7 +416,7 @@ impl<'a> TestSuiteExecution<'a> {
         let sorted_dependencies = self.sorted_dependencies();
         for dep in &sorted_dependencies {
             let materialized_dep = match &dep.constructor {
-                DependencyConstructor::Sync(cons) => cons(Box::new(dependency_map.clone())),
+                DependencyConstructor::Sync(cons) => cons(Arc::new(dependency_map.clone())),
                 DependencyConstructor::Async(_cons) => {
                     panic!("Async dependencies are not supported in sync mode")
                 }
@@ -519,7 +519,7 @@ impl DependencyView for HashMap<String, Arc<dyn Any + Send + Sync>> {
 
 pub struct TestExecution<'a> {
     pub test: &'a RegisteredTest,
-    pub deps: Box<dyn DependencyView + Send + Sync>,
+    pub deps: Arc<dyn DependencyView + Send + Sync>,
     pub index: usize,
     _seq_lock: SequentialExecutionLockGuard,
 }

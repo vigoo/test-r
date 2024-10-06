@@ -3,7 +3,8 @@ use crate::bench::AsyncBencher;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
 use crate::internal::{
-    generate_tests, get_ensure_time, CapturedOutput, RegisteredTest, TestFunction, TestResult,
+    generate_tests, get_ensure_time, CapturedOutput, FlakinessControl, RegisteredTest,
+    TestFunction, TestResult,
 };
 use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
 use crate::output::{test_runner_output, TestRunnerOutput};
@@ -12,7 +13,9 @@ use futures::FutureExt;
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::tokio::{Listener, Stream};
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions};
+use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -204,10 +207,45 @@ async fn pick_next<'a>(
     execution.pick_next().await
 }
 
+async fn run_with_flakiness_control<F, R>(
+    flakiness_control: &FlakinessControl,
+    test: F,
+) -> Result<(), R>
+where
+    F: Fn(Instant) -> Pin<Box<dyn Future<Output = Result<(), R>> + Send + Sync>> + Send + Sync,
+{
+    match flakiness_control {
+        FlakinessControl::None => {
+            let start = Instant::now();
+            test(start).await
+        }
+        FlakinessControl::ProveNonFlaky(tries) => {
+            for _ in 0..*tries {
+                let start = Instant::now();
+                test(start).await?;
+            }
+            Ok(())
+        }
+        FlakinessControl::RetryKnownFlaky(max_retries) => {
+            let mut tries = 1;
+            loop {
+                let start = Instant::now();
+                let result = test(start).await;
+
+                if result.is_err() && tries < *max_retries {
+                    tries += 1;
+                } else {
+                    break result;
+                }
+            }
+        }
+    }
+}
+
 async fn run_test(
     include_ignored: bool,
     ensure_time: Option<TimeThreshold>,
-    dependency_view: Box<dyn internal::DependencyView + Send + Sync>,
+    dependency_view: Arc<dyn internal::DependencyView + Send + Sync>,
     test: &RegisteredTest,
     worker: &mut Option<Worker>,
 ) -> TestResult {
@@ -221,10 +259,12 @@ async fn run_test(
             TestFunction::Sync(_) => {
                 let test_fn = test.run.clone();
                 let should_panic = test.should_panic.clone();
+                let flakiness_control = test.flakiness_control.clone();
                 let handle = spawn_blocking(move || {
                     crate::sync::run_sync_test_function(
                         &should_panic,
                         ensure_time,
+                        &flakiness_control,
                         &test_fn,
                         dependency_view,
                     )
@@ -234,36 +274,50 @@ async fn run_test(
                 })
             }
             TestFunction::Async(test_fn) => {
-                let result = AssertUnwindSafe(Box::pin(async {
-                    match &test.timeout {
-                        None => test_fn(dependency_view).await,
-                        Some(duration) => {
-                            if tokio::time::timeout(*duration, test_fn(dependency_view))
-                                .await
-                                .is_err()
-                            {
-                                panic!("Test timed out")
+                let timeout = test.timeout;
+                let test_fn = test_fn.clone();
+                let result = run_with_flakiness_control(&test.flakiness_control, |start| {
+                    let dependency_view = dependency_view.clone();
+                    let test_fn = test_fn.clone();
+                    Box::pin(async move {
+                        AssertUnwindSafe(Box::pin(async move {
+                            match timeout {
+                                None => test_fn(dependency_view).await,
+                                Some(duration) => {
+                                    if tokio::time::timeout(duration, test_fn(dependency_view))
+                                        .await
+                                        .is_err()
+                                    {
+                                        panic!("Test timed out")
+                                    }
+                                }
+                            };
+                            if let Some(ensure_time) = ensure_time {
+                                let elapsed = start.elapsed();
+                                if ensure_time.is_critical(&elapsed) {
+                                    panic!(
+                                        "Test run time exceeds critical threshold: {:?}",
+                                        elapsed
+                                    );
+                                }
                             }
-                        }
-                    };
-                    if let Some(ensure_time) = ensure_time {
-                        let elapsed = start.elapsed();
-                        if ensure_time.is_critical(&elapsed) {
-                            panic!("Test run time exceeds critical threshold: {:?}", elapsed);
-                        }
-                    }
-                }))
-                .catch_unwind()
+                        }))
+                        .catch_unwind()
+                        .await
+                    })
+                })
                 .await;
                 TestResult::from_result(&test.should_panic, start.elapsed(), result)
             }
             TestFunction::SyncBench(_) => {
                 let test_fn = test.run.clone();
                 let should_panic = test.should_panic.clone();
+                let flakiness_control = test.flakiness_control.clone();
                 let handle = spawn_blocking(move || {
                     crate::sync::run_sync_test_function(
                         &should_panic,
                         ensure_time,
+                        &flakiness_control,
                         &test_fn,
                         dependency_view,
                     )
