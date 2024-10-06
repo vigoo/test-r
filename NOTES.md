@@ -6,9 +6,6 @@ https://github.com/rust-lang/rust/tree/master/library/test
 https://github.com/rust-lang/rust/issues/105424
 
 # Todo
-- Support `#[timeout(duration)]`
-- Support `--shuffle`
-- Support `--shuffle-seed`
 - Flaky/non-flaky attributes
 - Capture/no-capture controlled by attributes
 - Support tests returning `Result<>` 

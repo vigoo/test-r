@@ -1,8 +1,9 @@
+use rand::prelude::{SliceRandom, StdRng};
+use rand::SeedableRng;
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
-
 use topological_sort::TopologicalSort;
 
 use crate::args::Arguments;
@@ -32,7 +33,9 @@ impl<'a> TestSuiteExecution<'a> {
         tests: &'a [&'a RegisteredTest],
         props: &'a [RegisteredTestSuiteProperty],
     ) -> Self {
-        let filtered_tests = filter_registered_tests(arguments, tests);
+        let mut filtered_tests = filter_registered_tests(arguments, tests);
+        Self::shuffle(arguments, &mut filtered_tests);
+        filtered_tests.reverse();
 
         if filtered_tests.is_empty() {
             Self::root(
@@ -62,6 +65,13 @@ impl<'a> TestSuiteExecution<'a> {
             }
 
             root
+        }
+    }
+
+    fn shuffle(arguments: &Arguments, tests: &mut Vec<&'a RegisteredTest>) {
+        if let Some(seed) = arguments.shuffle_seed {
+            let mut rng = StdRng::seed_from_u64(seed);
+            tests.shuffle(&mut rng);
         }
     }
 

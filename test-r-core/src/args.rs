@@ -133,7 +133,13 @@ impl Arguments {
     /// the application exits. If help is requested (`-h` or `--help`), a help
     /// message is shown and the application exits, too.
     pub fn from_args() -> Self {
-        Parser::parse()
+        let mut result: Self = Parser::parse();
+        if result.shuffle && result.shuffle_seed.is_none() {
+            // Setting a specific shuffle seed so all spawned workers use the same
+            result.shuffle_seed = Some(rand::random());
+            result.shuffle = false;
+        }
+        result
     }
 
     /// Renders the arguments as a list of strings that can be passed to a subprocess
