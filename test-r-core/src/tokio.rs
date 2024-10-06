@@ -163,6 +163,7 @@ async fn test_thread(
 
                 output.start_running_test(next.test, next.index, count);
                 let result = run_test(
+                    args.nocapture,
                     args.include_ignored,
                     ensure_time,
                     next.deps,
@@ -243,6 +244,7 @@ where
 }
 
 async fn run_test(
+    nocapture: bool,
     include_ignored: bool,
     ensure_time: Option<TimeThreshold>,
     dependency_view: Arc<dyn internal::DependencyView + Send + Sync>,
@@ -252,7 +254,7 @@ async fn run_test(
     if test.is_ignored && !include_ignored {
         TestResult::ignored()
     } else if let Some(worker) = worker.as_mut() {
-        worker.run_test(test).await
+        worker.run_test(nocapture, test).await
     } else {
         let start = Instant::now();
         match &test.run {
@@ -362,7 +364,7 @@ struct Worker {
 }
 
 impl Worker {
-    pub async fn run_test(&mut self, test: &RegisteredTest) -> TestResult {
+    pub async fn run_test(&mut self, nocapture: bool, test: &RegisteredTest) -> TestResult {
         // Send IPC command and wait for IPC response, and in the meantime read from the stdout/stderr channels
         let cmd = IpcCommand::RunTest {
             name: test.name.clone(),
@@ -398,9 +400,13 @@ impl Worker {
 
         let IpcResponse::TestFinished { result } = response;
 
-        let out_lines: Vec<_> = self.out_lines.lock().await.drain(..).collect();
-        let err_lines: Vec<_> = self.err_lines.lock().await.drain(..).collect();
-        result.into_test_result(out_lines, err_lines)
+        if test.capture_control.requires_capturing(!nocapture) {
+            let out_lines: Vec<_> = self.out_lines.lock().await.drain(..).collect();
+            let err_lines: Vec<_> = self.err_lines.lock().await.drain(..).collect();
+            result.into_test_result(out_lines, err_lines)
+        } else {
+            result.into_test_result(Vec::new(), Vec::new())
+        }
     }
 }
 

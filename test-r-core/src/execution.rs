@@ -101,6 +101,18 @@ impl<'a> TestSuiteExecution<'a> {
         !self.dependencies.is_empty() || self.inner.iter().any(|inner| inner.has_dependencies())
     }
 
+    /// Returns true if there are any tests that require capturing, based on the given default setting
+    /// and the per-test CaptureControl overrides.
+    pub fn requires_capturing(&self, capture_by_default: bool) -> bool {
+        self.tests
+            .iter()
+            .any(|test| test.capture_control.requires_capturing(capture_by_default))
+            || self
+                .inner
+                .iter()
+                .any(|inner| inner.requires_capturing(capture_by_default))
+    }
+
     #[cfg(feature = "tokio")]
     pub async fn pick_next(&mut self) -> Option<TestExecution<'a>> {
         if self.is_empty() {

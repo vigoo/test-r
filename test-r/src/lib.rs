@@ -1,7 +1,9 @@
 pub use test_r_macro::add_test;
+pub use test_r_macro::always_capture;
 pub use test_r_macro::bench;
 pub use test_r_macro::flaky;
 pub use test_r_macro::inherit_test_dep;
+pub use test_r_macro::never_capture;
 pub use test_r_macro::non_flaky;
 pub use test_r_macro::sequential;
 pub use test_r_macro::test;
@@ -17,8 +19,9 @@ pub use test_r_core::bench::Bencher;
 pub mod core {
     use std::time::Duration;
     pub use test_r_core::internal::{
-        DependencyConstructor, DependencyView, DynamicTestRegistration, FlakinessControl,
-        GeneratedTest, ShouldPanic, TestFunction, TestGeneratorFunction, TestType,
+        CaptureControl, DependencyConstructor, DependencyView, DynamicTestRegistration,
+        FlakinessControl, GeneratedTest, ShouldPanic, TestFunction, TestGeneratorFunction,
+        TestType,
     };
     pub use test_r_core::*;
 
@@ -31,6 +34,7 @@ pub mod core {
         test_type: TestType,
         timeout: Option<Duration>,
         flakiness_control: FlakinessControl,
+        capture_control: CaptureControl,
         run: TestFunction,
     ) {
         let (crate_name, module_path) = split_module_path(module_path);
@@ -48,6 +52,7 @@ pub mod core {
                 test_type,
                 timeout,
                 flakiness_control,
+                capture_control,
             });
     }
 

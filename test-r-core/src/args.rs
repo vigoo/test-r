@@ -292,7 +292,9 @@ impl Arguments {
         execution: &TestSuiteExecution,
         output: Arc<dyn TestRunnerOutput>,
     ) {
-        if self.nocapture || self.ipc.is_some() {
+        let requires_capturing = execution.requires_capturing(!self.nocapture);
+
+        if !requires_capturing || self.ipc.is_some() {
             // If there is no need to capture the output, there are no restrictions to check and apply
             // If this is an IPC worker, we don't need to do anything either, as the top level test runner already sets the proper arguments
         } else {

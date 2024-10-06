@@ -2,7 +2,7 @@
 mod tests {
     use rand::Rng;
     use std::time::Duration;
-    use test_r::{flaky, non_flaky, test};
+    use test_r::{always_capture, flaky, never_capture, non_flaky, test};
 
     #[test]
     fn other_module_test_works() {
@@ -13,6 +13,7 @@ mod tests {
 
     #[test]
     #[flaky(10)]
+    #[always_capture]
     fn flaky_test() {
         println!("Print from flaky test");
         let mut rng = rand::thread_rng();
@@ -23,6 +24,7 @@ mod tests {
 
     #[test]
     #[non_flaky(10)]
+    #[never_capture]
     fn non_flaky_test() {
         println!("Print from non_flaky test");
         let result = 2 + 2;

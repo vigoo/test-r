@@ -1,4 +1,5 @@
 [workspace]
+dependencies_update = true
 
 [[package]]
 name = "test-r-example"

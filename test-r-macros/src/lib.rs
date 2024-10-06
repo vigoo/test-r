@@ -87,6 +87,23 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
         }
     };
 
+    let always_capture_attr = ast
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("always_capture"));
+    let never_capture_attr = ast
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("never_capture"));
+    let capture_control = match (always_capture_attr, never_capture_attr) {
+        (None, None) => quote! { test_r::core::CaptureControl::Default },
+        (Some(_), Some(_)) => {
+            panic!("Cannot have both #[always_capture] and #[never_capture] attributes")
+        }
+        (Some(_), None) => quote! { test_r::core::CaptureControl::AlwaysCapture },
+        (None, Some(_)) => quote! { test_r::core::CaptureControl::NeverCapture },
+    };
+
     let register_ident = Ident::new(
         &format!("test_r_register_{}", test_name_str),
         test_name.span(),
@@ -110,6 +127,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                       test_r::core::TestType::from_path(file!()),
                       None,
                       test_r::core::FlakinessControl::None,
+                      #capture_control,
                       test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|bencher, deps| Box::pin(async move { #test_name(bencher, #(#dep_getters),*).await })))
                   );
             }
@@ -123,6 +141,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                     test_r::core::TestType::from_path(file!()),
                     None,
                     test_r::core::FlakinessControl::None,
+                    #capture_control,
                     test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|bencher, deps| #test_name(bencher, #(#dep_getters),*)))
                 );
             }
@@ -137,6 +156,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                   test_r::core::TestType::from_path(file!()),
                   #timeout,
                   #flakiness_control,
+                  #capture_control,
                   test_r::core::TestFunction::Async(std::sync::Arc::new(|deps| Box::pin(async move { #test_name(#(#dep_getters),*).await })))
               );
         }
@@ -154,6 +174,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                 test_r::core::TestType::from_path(file!()),
                 None,
                 #flakiness_control,
+                #capture_control,
                 test_r::core::TestFunction::Sync(std::sync::Arc::new(|deps| #test_name(#(#dep_getters),*)))
             );
         }
@@ -480,6 +501,16 @@ pub fn flaky(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn non_flaky(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn always_capture(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn never_capture(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
