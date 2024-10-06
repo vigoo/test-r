@@ -1,4 +1,4 @@
-use crate::args::Arguments;
+use crate::args::{Arguments, TimeThreshold};
 use crate::bench::Bencher;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
@@ -88,8 +88,8 @@ fn test_thread(
     count: usize,
 ) -> Vec<(RegisteredTest, TestResult)> {
     let mut worker = spawn_worker_if_needed(&args);
-    let mut connection = if let Some(name) = args.ipc {
-        let name = ipc_name(name);
+    let mut connection = if let Some(ref name) = args.ipc {
+        let name = ipc_name(name.clone());
         let stream = Stream::connect(name).expect("Failed to connect to IPC socket");
         Some(stream)
     } else {
@@ -144,7 +144,18 @@ fn test_thread(
                 } else if let Some(worker) = worker.as_mut() {
                     worker.run_test(next.test)
                 } else {
-                    run_sync_test_function(&next.test.should_panic, &next.test.run, next.deps)
+                    let ensure_time = match next.test.test_type {
+                        internal::TestType::UnitTest => Some(args.unit_test_threshold()),
+                        internal::TestType::IntegrationTest => {
+                            Some(args.integration_test_threshold())
+                        }
+                    };
+                    run_sync_test_function(
+                        &next.test.should_panic,
+                        ensure_time,
+                        &next.test.run,
+                        next.deps,
+                    )
                 };
 
                 output.finished_running_test(next.test, next.index, count, &result);
@@ -185,13 +196,22 @@ fn pick_next<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> Option<TestE
 #[allow(unreachable_patterns)]
 pub(crate) fn run_sync_test_function(
     should_panic: &ShouldPanic,
+    ensure_time: Option<TimeThreshold>,
     test_fn: &TestFunction,
     dependency_view: Box<dyn internal::DependencyView + Send + Sync>,
 ) -> TestResult {
     let start = Instant::now();
     match test_fn {
         TestFunction::Sync(test_fn) => {
-            let result = catch_unwind(AssertUnwindSafe(move || test_fn(dependency_view)));
+            let result = catch_unwind(AssertUnwindSafe(move || {
+                test_fn(dependency_view);
+                if let Some(ensure_time) = ensure_time {
+                    let elapsed = start.elapsed();
+                    if ensure_time.is_critical(&elapsed) {
+                        panic!("Test run time exceeds critical threshold: {:?}", elapsed);
+                    }
+                }
+            }));
             TestResult::from_result(should_panic, start.elapsed(), result)
         }
         TestFunction::SyncBench(bench_fn) => {

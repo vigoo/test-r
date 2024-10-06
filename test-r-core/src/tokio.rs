@@ -1,4 +1,4 @@
-use crate::args::Arguments;
+use crate::args::{Arguments, TimeThreshold};
 use crate::bench::AsyncBencher;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
@@ -104,8 +104,8 @@ async fn test_thread(
     results: Arc<Mutex<Vec<(RegisteredTest, TestResult)>>>,
 ) {
     let mut worker = spawn_worker_if_needed(&args).await;
-    let mut connection = if let Some(name) = args.ipc {
-        let name = ipc_name(name);
+    let mut connection = if let Some(ref name) = args.ipc {
+        let name = ipc_name(name.clone());
         let stream = Stream::connect(name)
             .await
             .expect("Failed to connect to IPC socket");
@@ -154,9 +154,20 @@ async fn test_thread(
             if !skip {
                 expected_test = None;
 
+                let ensure_time = match next.test.test_type {
+                    internal::TestType::UnitTest => Some(args.unit_test_threshold()),
+                    internal::TestType::IntegrationTest => Some(args.integration_test_threshold()),
+                };
+
                 output.start_running_test(next.test, next.index, count);
-                let result =
-                    run_test(args.include_ignored, next.deps, next.test, &mut worker).await;
+                let result = run_test(
+                    args.include_ignored,
+                    ensure_time,
+                    next.deps,
+                    next.test,
+                    &mut worker,
+                )
+                .await;
                 output.finished_running_test(next.test, next.index, count, &result);
 
                 if let Some(connection) = &mut connection {
@@ -196,6 +207,7 @@ async fn pick_next<'a>(
 
 async fn run_test(
     include_ignored: bool,
+    ensure_time: Option<TimeThreshold>,
     dependency_view: Box<dyn internal::DependencyView + Send + Sync>,
     test: &RegisteredTest,
     worker: &mut Option<Worker>,
@@ -211,23 +223,42 @@ async fn run_test(
                 let test_fn = test.run.clone();
                 let should_panic = test.should_panic.clone();
                 let handle = spawn_blocking(move || {
-                    crate::sync::run_sync_test_function(&should_panic, &test_fn, dependency_view)
+                    crate::sync::run_sync_test_function(
+                        &should_panic,
+                        ensure_time,
+                        &test_fn,
+                        dependency_view,
+                    )
                 });
                 handle.await.unwrap_or_else(|join_error| {
                     TestResult::failed(start.elapsed(), Box::new(join_error))
                 })
             }
             TestFunction::Async(test_fn) => {
-                let result = AssertUnwindSafe(test_fn(dependency_view))
-                    .catch_unwind()
-                    .await;
+                let result = AssertUnwindSafe(Box::pin(async {
+                    let result = test_fn(dependency_view).await;
+                    if let Some(ensure_time) = ensure_time {
+                        let elapsed = start.elapsed();
+                        if ensure_time.is_critical(&elapsed) {
+                            panic!("Test run time exceeds critical threshold: {:?}", elapsed);
+                        }
+                    }
+                    result
+                }))
+                .catch_unwind()
+                .await;
                 TestResult::from_result(&test.should_panic, start.elapsed(), result)
             }
             TestFunction::SyncBench(_) => {
                 let test_fn = test.run.clone();
                 let should_panic = test.should_panic.clone();
                 let handle = spawn_blocking(move || {
-                    crate::sync::run_sync_test_function(&should_panic, &test_fn, dependency_view)
+                    crate::sync::run_sync_test_function(
+                        &should_panic,
+                        ensure_time,
+                        &test_fn,
+                        dependency_view,
+                    )
                 });
                 handle.await.unwrap_or_else(|join_error| {
                     TestResult::failed(start.elapsed(), Box::new(join_error))

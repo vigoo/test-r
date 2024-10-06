@@ -1,5 +1,7 @@
 test_r::enable!();
 
+mod other;
+
 #[cfg(test)]
 mod tests {
     use test_r::core::bench::Bencher;
