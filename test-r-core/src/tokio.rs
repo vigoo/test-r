@@ -365,11 +365,16 @@ struct Worker {
     _err_handle: JoinHandle<()>,
     out_lines: Arc<Mutex<Vec<CapturedOutput>>>,
     err_lines: Arc<Mutex<Vec<CapturedOutput>>>,
+    capture_enabled: Arc<Mutex<bool>>,
     connection: Stream,
 }
 
 impl Worker {
     pub async fn run_test(&mut self, nocapture: bool, test: &RegisteredTest) -> TestResult {
+        let mut capture_enabled = self.capture_enabled.lock().await;
+        *capture_enabled = test.capture_control.requires_capturing(!nocapture);
+        drop(capture_enabled);
+
         // Send IPC command and wait for IPC response, and in the meantime read from the stdout/stderr channels
         let cmd = IpcCommand::RunTest {
             name: test.name.clone(),
@@ -449,8 +454,10 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
 
         let out_lines = Arc::new(Mutex::new(Vec::new()));
         let err_lines = Arc::new(Mutex::new(Vec::new()));
+        let capture_enabled = Arc::new(Mutex::new(true));
 
         let out_lines_clone = out_lines.clone();
+        let capture_enabled_clone = capture_enabled.clone();
         let out_handle = spawn(async move {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
@@ -459,14 +466,19 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                 .await
                 .expect("Failed to read from worker stdout")
             {
-                out_lines_clone
-                    .lock()
-                    .await
-                    .push(CapturedOutput::stdout(line));
+                if *capture_enabled_clone.lock().await {
+                    out_lines_clone
+                        .lock()
+                        .await
+                        .push(CapturedOutput::stdout(line));
+                } else {
+                    println!("{line}");
+                }
             }
         });
 
         let err_lines_clone = err_lines.clone();
+        let capture_enabled_clone = capture_enabled.clone();
         let err_handle = spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
@@ -475,10 +487,14 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                 .await
                 .expect("Failed to read from worker stderr")
             {
-                err_lines_clone
-                    .lock()
-                    .await
-                    .push(CapturedOutput::stdout(line));
+                if *capture_enabled_clone.lock().await {
+                    err_lines_clone
+                        .lock()
+                        .await
+                        .push(CapturedOutput::stderr(line));
+                } else {
+                    eprintln!("{line}");
+                }
             }
         });
 
@@ -495,6 +511,7 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
             out_lines,
             err_lines,
             connection,
+            capture_enabled,
         })
     } else {
         None
