@@ -5,6 +5,7 @@ pub use test_r_macro::sequential;
 pub use test_r_macro::test;
 pub use test_r_macro::test_dep;
 pub use test_r_macro::test_gen;
+pub use test_r_macro::timeout;
 pub use test_r_macro::uses_test_r as enable;
 
 #[cfg(feature = "tokio")]
@@ -12,6 +13,7 @@ pub use test_r_core::bench::AsyncBencher;
 pub use test_r_core::bench::Bencher;
 
 pub mod core {
+    use std::time::Duration;
     pub use test_r_core::internal::{
         DependencyConstructor, DependencyView, DynamicTestRegistration, GeneratedTest, ShouldPanic,
         TestFunction, TestGeneratorFunction, TestType,
@@ -24,6 +26,7 @@ pub mod core {
         is_ignored: bool,
         should_panic: ShouldPanic,
         test_type: TestType,
+        timeout: Option<Duration>,
         run: TestFunction,
     ) {
         let (crate_name, module_path) = split_module_path(module_path);
@@ -39,6 +42,7 @@ pub mod core {
                 should_panic,
                 run,
                 test_type,
+                timeout,
             });
     }
 

@@ -3,7 +3,8 @@ use crate::bench::Bencher;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
 use crate::internal::{
-    generate_tests_sync, CapturedOutput, RegisteredTest, ShouldPanic, TestFunction, TestResult,
+    generate_tests_sync, get_ensure_time, CapturedOutput, RegisteredTest, ShouldPanic,
+    TestFunction, TestResult,
 };
 use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
 use crate::output::{test_runner_output, TestRunnerOutput};
@@ -144,12 +145,7 @@ fn test_thread(
                 } else if let Some(worker) = worker.as_mut() {
                     worker.run_test(next.test)
                 } else {
-                    let ensure_time = match next.test.test_type {
-                        internal::TestType::UnitTest => Some(args.unit_test_threshold()),
-                        internal::TestType::IntegrationTest => {
-                            Some(args.integration_test_threshold())
-                        }
-                    };
+                    let ensure_time = get_ensure_time(&args, next.test);
                     run_sync_test_function(
                         &next.test.should_panic,
                         ensure_time,

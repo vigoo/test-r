@@ -2,7 +2,9 @@ use crate::args::{Arguments, TimeThreshold};
 use crate::bench::AsyncBencher;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
-use crate::internal::{generate_tests, CapturedOutput, RegisteredTest, TestFunction, TestResult};
+use crate::internal::{
+    generate_tests, get_ensure_time, CapturedOutput, RegisteredTest, TestFunction, TestResult,
+};
 use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
 use crate::output::{test_runner_output, TestRunnerOutput};
 use bincode::{decode_from_slice, encode_to_vec};
@@ -154,10 +156,7 @@ async fn test_thread(
             if !skip {
                 expected_test = None;
 
-                let ensure_time = match next.test.test_type {
-                    internal::TestType::UnitTest => Some(args.unit_test_threshold()),
-                    internal::TestType::IntegrationTest => Some(args.integration_test_threshold()),
-                };
+                let ensure_time = get_ensure_time(&args, next.test);
 
                 output.start_running_test(next.test, next.index, count);
                 let result = run_test(
@@ -236,14 +235,23 @@ async fn run_test(
             }
             TestFunction::Async(test_fn) => {
                 let result = AssertUnwindSafe(Box::pin(async {
-                    let result = test_fn(dependency_view).await;
+                    match &test.timeout {
+                        None => test_fn(dependency_view).await,
+                        Some(duration) => {
+                            if tokio::time::timeout(*duration, test_fn(dependency_view))
+                                .await
+                                .is_err()
+                            {
+                                panic!("Test timed out")
+                            }
+                        }
+                    };
                     if let Some(ensure_time) = ensure_time {
                         let elapsed = start.elapsed();
                         if ensure_time.is_critical(&elapsed) {
                             panic!("Test run time exceeds critical threshold: {:?}", elapsed);
                         }
                     }
-                    result
                 }))
                 .catch_unwind()
                 .await;

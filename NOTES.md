@@ -23,9 +23,11 @@ Ready to integrate, before release:
 - Tests for tests
 - Provide a nicer assertion macro (or at least recommend a 3rd party that works well)
 - Align terse output more with https://github.com/rust-lang/rust/blob/master/library/test/src/formatters/terse.rs
-
+- Code cleanup / remove all TODOs
 
 Later:
+- per-test report/ensure-time with attributes
 - Support `#[should_panic]` in dynamic tests
+- Support timeout, ensure-time, and report-time in dynamic tests
 - More detailed benchmark stats output 
 - Prettier pretty output

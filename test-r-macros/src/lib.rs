@@ -41,6 +41,22 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
         }
     };
 
+    let timeout_attr = ast
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("timeout"));
+    let timeout = timeout_attr
+        .map(|attr| {
+            let timeout = attr
+                .parse_args::<syn::LitInt>()
+                .expect("timeout attribute's parameter must be an integer (timeout milliseconds)");
+            let timeout = timeout
+                .base10_parse::<u64>()
+                .expect("timeout attribute's parameter must be an integer (timeout milliseconds)");
+            quote! { Some(std::time::Duration::from_millis(#timeout)) }
+        })
+        .unwrap_or(quote! { None });
+
     let register_ident = Ident::new(
         &format!("test_r_register_{}", test_name_str),
         test_name.span(),
@@ -50,6 +66,10 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
     let (dep_getters, _dep_names) = get_dependency_params(&ast, is_bench);
 
     let register_call = if is_bench {
+        if timeout_attr.is_some() {
+            panic!("Benchmarks cannot have a timeout attribute")
+        }
+
         if is_async {
             quote! {
                   test_r::core::register_test(
@@ -58,6 +78,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                       #is_ignored,
                       #should_panic,
                       test_r::core::TestType::from_path(file!()),
+                      None,
                       test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|bencher, deps| Box::pin(async move { #test_name(bencher, #(#dep_getters),*).await })))
                   );
             }
@@ -69,6 +90,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                     #is_ignored,
                     #should_panic,
                     test_r::core::TestType::from_path(file!()),
+                    None,
                     test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|bencher, deps| #test_name(bencher, #(#dep_getters),*)))
                 );
             }
@@ -81,10 +103,15 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                   #is_ignored,
                   #should_panic,
                   test_r::core::TestType::from_path(file!()),
+                  #timeout,
                   test_r::core::TestFunction::Async(std::sync::Arc::new(|deps| Box::pin(async move { #test_name(#(#dep_getters),*).await })))
               );
         }
     } else {
+        if timeout_attr.is_some() {
+            panic!("The #[timeout()] attribute is only supported for async tests");
+        }
+
         quote! {
             test_r::core::register_test(
                 #test_name_str,
@@ -92,6 +119,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                 #is_ignored,
                 #should_panic,
                 test_r::core::TestType::from_path(file!()),
+                None,
                 test_r::core::TestFunction::Sync(std::sync::Arc::new(|deps| #test_name(#(#dep_getters),*)))
             );
         }
@@ -404,6 +432,11 @@ pub fn add_test(input: TokenStream) -> TokenStream {
     };
 
     result.into()
+}
+
+#[proc_macro_attribute]
+pub fn timeout(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
 }
 
 fn merge_type_path(dep_type: &TypePath) -> String {

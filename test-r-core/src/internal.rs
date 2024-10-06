@@ -1,4 +1,4 @@
-use crate::args::Arguments;
+use crate::args::{Arguments, TimeThreshold};
 use crate::bench::Bencher;
 use crate::stats::Summary;
 use std::any::Any;
@@ -89,6 +89,7 @@ pub struct RegisteredTest {
     pub should_panic: ShouldPanic,
     pub run: TestFunction,
     pub test_type: TestType,
+    pub timeout: Option<Duration>,
 }
 
 impl RegisteredTest {
@@ -384,6 +385,7 @@ fn add_generated_tests(
         should_panic: ShouldPanic::No,
         run: test.run,
         test_type: test.test_type,
+        timeout: None,
     }));
 }
 
@@ -393,11 +395,11 @@ pub(crate) async fn generate_tests(generators: &[RegisteredTestGenerator]) -> Ve
     for generator in generators {
         match &generator.run {
             TestGeneratorFunction::Sync(generator_fn) => {
-                let tests = (generator_fn)();
+                let tests = generator_fn();
                 add_generated_tests(&mut result, generator, tests);
             }
             TestGeneratorFunction::Async(generator_fn) => {
-                let tests = (generator_fn)().await;
+                let tests = generator_fn().await;
                 add_generated_tests(&mut result, generator, tests);
             }
         }
@@ -419,6 +421,17 @@ pub(crate) fn generate_tests_sync(generators: &[RegisteredTestGenerator]) -> Vec
         }
     }
     result
+}
+
+pub(crate) fn get_ensure_time(args: &Arguments, test: &RegisteredTest) -> Option<TimeThreshold> {
+    if args.ensure_time {
+        match test.test_type {
+            TestType::UnitTest => Some(args.unit_test_threshold()),
+            TestType::IntegrationTest => Some(args.integration_test_threshold()),
+        }
+    } else {
+        None
+    }
 }
 
 pub enum TestResult {

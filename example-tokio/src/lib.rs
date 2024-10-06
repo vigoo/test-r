@@ -60,7 +60,7 @@ mod inner {
 
     #[cfg(test)]
     mod tests {
-        use test_r::test;
+        use test_r::{test, timeout};
         use tokio::io::AsyncWriteExt;
 
         #[test]
@@ -102,6 +102,22 @@ mod inner {
                 .await
                 .unwrap();
             tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            let result = 2 + 2;
+            assert_eq!(result, 4);
+        }
+
+        #[test]
+        #[timeout(3000)]
+        async fn sleeping_test_3_timeout() {
+            let _ = tokio::io::stdout()
+                .write(b"Start sleeping in sleeping test 3\n")
+                .await
+                .unwrap();
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            let _ = tokio::io::stdout()
+                .write(b"Finished sleeping in sleeping test 3\n")
+                .await
+                .unwrap();
             let result = 2 + 2;
             assert_eq!(result, 4);
         }
