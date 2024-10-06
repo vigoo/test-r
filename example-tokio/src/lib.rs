@@ -2,6 +2,8 @@ test_r::enable!();
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+    use std::fmt::{Debug, Display, Formatter};
     use test_r::test;
     use tokio::io::AsyncWriteExt;
 
@@ -53,6 +55,34 @@ mod tests {
             .await
             .unwrap();
         panic!("something else");
+    }
+
+    struct CustomError;
+
+    impl Debug for CustomError {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "CustomError")
+        }
+    }
+
+    impl Display for CustomError {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "Failed with custom error")
+        }
+    }
+
+    impl Error for CustomError {}
+
+    #[test]
+    async fn result_based_test_ok() -> Result<String, std::io::Error> {
+        println!("Print from succeeding result based test");
+        Ok("Success".to_string())
+    }
+
+    #[test]
+    async fn result_based_test_err() -> Result<String, CustomError> {
+        println!("Print from failing result based test");
+        Err(CustomError)
     }
 }
 

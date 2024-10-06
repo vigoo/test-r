@@ -157,7 +157,14 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                   #timeout,
                   #flakiness_control,
                   #capture_control,
-                  test_r::core::TestFunction::Async(std::sync::Arc::new(|deps| Box::pin(async move { #test_name(#(#dep_getters),*).await })))
+                  test_r::core::TestFunction::Async(std::sync::Arc::new(
+                    move |deps| {
+                        Box::pin(async move {
+                            let result = #test_name(#(#dep_getters),*).await;
+                            Box::new(result) as Box<dyn test_r::core::TestReturnValue>
+                        })
+                    }
+                ))
               );
         }
     } else {
@@ -175,7 +182,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                 None,
                 #flakiness_control,
                 #capture_control,
-                test_r::core::TestFunction::Sync(std::sync::Arc::new(|deps| #test_name(#(#dep_getters),*)))
+                test_r::core::TestFunction::Sync(std::sync::Arc::new(|deps| Box::new(#test_name(#(#dep_getters),*))))
             );
         }
     };

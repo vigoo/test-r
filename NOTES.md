@@ -6,7 +6,7 @@ https://github.com/rust-lang/rust/tree/master/library/test
 https://github.com/rust-lang/rust/issues/105424
 
 # Todo
-- Support tests returning `Result<>` 
+- Fix always_capture/never_capture semantics
 - Tags
 - Make sure some 3rd party golden testing framework works, or add our own (https://crates.io/crates/goldenfile)
 - Support property based testing (with an existing library) (https://crates.io/crates/proptest or https://crates.io/crates/quickcheck)

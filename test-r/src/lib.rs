@@ -21,7 +21,7 @@ pub mod core {
     pub use test_r_core::internal::{
         CaptureControl, DependencyConstructor, DependencyView, DynamicTestRegistration,
         FlakinessControl, GeneratedTest, ShouldPanic, TestFunction, TestGeneratorFunction,
-        TestType,
+        TestReturnValue, TestType,
     };
     pub use test_r_core::*;
 
