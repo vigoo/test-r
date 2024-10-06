@@ -3,7 +3,7 @@ use crate::bench::Bencher;
 use crate::stats::Summary;
 use std::any::Any;
 use std::cmp::{max, Ordering};
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::hash::Hash;
 use std::pin::Pin;
@@ -13,7 +13,14 @@ use std::time::{Duration, SystemTime};
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
 pub enum TestFunction {
-    Sync(Arc<dyn Fn(Arc<dyn DependencyView + Send + Sync>) + Send + Sync + 'static>),
+    Sync(
+        Arc<
+            dyn Fn(Arc<dyn DependencyView + Send + Sync>) -> Box<dyn TestReturnValue>
+                + Send
+                + Sync
+                + 'static,
+        >,
+    ),
     SyncBench(
         Arc<dyn Fn(&mut Bencher, Arc<dyn DependencyView + Send + Sync>) + Send + Sync + 'static>,
     ),
@@ -22,7 +29,8 @@ pub enum TestFunction {
         Arc<
             dyn (Fn(
                     Arc<dyn DependencyView + Send + Sync>,
-                ) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>)
+                )
+                    -> Pin<Box<dyn Future<Output = Box<dyn TestReturnValue>> + Send + Sync>>)
                 + Send
                 + Sync
                 + 'static,
@@ -54,6 +62,22 @@ impl TestFunction {
             self,
             TestFunction::SyncBench(_) | TestFunction::AsyncBench(_)
         )
+    }
+}
+
+pub trait TestReturnValue {
+    fn as_result(&self) -> Result<(), String>;
+}
+
+impl TestReturnValue for () {
+    fn as_result(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+impl<T, E: Display> TestReturnValue for Result<T, E> {
+    fn as_result(&self) -> Result<(), String> {
+        self.as_ref().map(|_| ()).map_err(|e| e.to_string())
     }
 }
 
@@ -304,34 +328,43 @@ impl DynamicTestRegistration {
         self.tests
     }
 
-    pub fn add_sync_test(
+    pub fn add_sync_test<R: TestReturnValue + 'static>(
         &mut self,
         name: impl AsRef<str>,
         test_type: TestType,
-        run: impl Fn(Arc<dyn DependencyView + Send + Sync>) + Send + Sync + 'static,
+        run: impl Fn(Arc<dyn DependencyView + Send + Sync>) -> R + Send + Sync + Clone + 'static,
     ) {
         self.tests.push(GeneratedTest {
             name: name.as_ref().to_string(),
-            run: TestFunction::Sync(Arc::new(run)),
+            run: TestFunction::Sync(Arc::new(move |deps| {
+                Box::new(run(deps)) as Box<dyn TestReturnValue>
+            })),
             test_type,
         });
     }
 
     #[cfg(feature = "tokio")]
-    pub fn add_async_test(
+    pub fn add_async_test<R: TestReturnValue + 'static>(
         &mut self,
         name: impl AsRef<str>,
         test_type: TestType,
         run: impl (Fn(
                 Arc<dyn DependencyView + Send + Sync>,
-            ) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>>)
+            ) -> Pin<Box<dyn Future<Output = R> + Send + Sync>>)
             + Send
             + Sync
+            + Clone
             + 'static,
     ) {
         self.tests.push(GeneratedTest {
             name: name.as_ref().to_string(),
-            run: TestFunction::Async(Arc::new(run)),
+            run: TestFunction::Async(Arc::new(move |deps| {
+                let run = run.clone();
+                Box::pin(async move {
+                    let r = run(deps).await;
+                    Box::new(r) as Box<dyn TestReturnValue>
+                })
+            })),
             test_type,
         });
     }

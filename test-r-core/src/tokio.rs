@@ -283,16 +283,21 @@ async fn run_test(
                     let test_fn = test_fn.clone();
                     Box::pin(async move {
                         AssertUnwindSafe(Box::pin(async move {
-                            match timeout {
+                            let result = match timeout {
                                 None => test_fn(dependency_view).await,
                                 Some(duration) => {
-                                    if tokio::time::timeout(duration, test_fn(dependency_view))
-                                        .await
-                                        .is_err()
-                                    {
-                                        panic!("Test timed out")
+                                    let result =
+                                        tokio::time::timeout(duration, test_fn(dependency_view))
+                                            .await;
+                                    match result {
+                                        Ok(result) => result,
+                                        Err(_) => panic!("Test timed out"),
                                     }
                                 }
+                            };
+                            match result.as_result() {
+                                Ok(_) => (),
+                                Err(message) => panic!("{message}"),
                             };
                             if let Some(ensure_time) = ensure_time {
                                 let elapsed = start.elapsed();

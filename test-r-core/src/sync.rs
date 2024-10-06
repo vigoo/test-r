@@ -236,7 +236,10 @@ pub(crate) fn run_sync_test_function(
             let result = run_with_flakiness_control(flakiness_control, move |start| {
                 let dependency_view = dependency_view.clone();
                 catch_unwind(AssertUnwindSafe(move || {
-                    test_fn(dependency_view);
+                    let result = test_fn(dependency_view).as_result();
+                    if let Err(failure) = result {
+                        panic!("{failure}");
+                    }
                     if let Some(ensure_time) = ensure_time {
                         let elapsed = start.elapsed();
                         if ensure_time.is_critical(&elapsed) {

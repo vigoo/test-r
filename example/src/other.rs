@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
     use rand::Rng;
+    use std::error::Error;
+    use std::fmt::{Debug, Display, Formatter};
     use std::time::Duration;
     use test_r::{always_capture, flaky, never_capture, non_flaky, test};
 
@@ -30,5 +32,33 @@ mod tests {
         let result = 2 + 2;
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(result, 4);
+    }
+
+    #[test]
+    fn result_based_test_ok() -> Result<String, std::io::Error> {
+        println!("Print from succeeding result based test");
+        Ok("Success".to_string())
+    }
+
+    struct CustomError;
+
+    impl Debug for CustomError {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "CustomError")
+        }
+    }
+
+    impl Display for CustomError {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "Failed with custom error")
+        }
+    }
+
+    impl Error for CustomError {}
+
+    #[test]
+    fn result_based_test_err() -> Result<String, CustomError> {
+        println!("Print from failing result based test");
+        Err(CustomError)
     }
 }
