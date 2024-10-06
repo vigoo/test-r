@@ -143,7 +143,7 @@ fn test_thread(
                         captured: Vec::new(),
                     }
                 } else if let Some(worker) = worker.as_mut() {
-                    worker.run_test(next.test)
+                    worker.run_test(args.nocapture, next.test)
                 } else {
                     let ensure_time = get_ensure_time(&args, next.test);
                     run_sync_test_function(
@@ -274,7 +274,7 @@ struct Worker {
 }
 
 impl Worker {
-    pub fn run_test(&mut self, test: &RegisteredTest) -> TestResult {
+    pub fn run_test(&mut self, nocapture: bool, test: &RegisteredTest) -> TestResult {
         // Send IPC command and wait for IPC response, and in the meantime read from the stdout/stderr channels
         let cmd = IpcCommand::RunTest {
             name: test.name.clone(),
@@ -306,9 +306,13 @@ impl Worker {
 
         let IpcResponse::TestFinished { result } = response;
 
-        let out_lines: Vec<_> = self.out_lines.lock().unwrap().drain(..).collect();
-        let err_lines: Vec<_> = self.err_lines.lock().unwrap().drain(..).collect();
-        result.into_test_result(out_lines, err_lines)
+        if test.capture_control.requires_capturing(!nocapture) {
+            let out_lines: Vec<_> = self.out_lines.lock().unwrap().drain(..).collect();
+            let err_lines: Vec<_> = self.err_lines.lock().unwrap().drain(..).collect();
+            result.into_test_result(out_lines, err_lines)
+        } else {
+            result.into_test_result(Vec::new(), Vec::new())
+        }
     }
 }
 

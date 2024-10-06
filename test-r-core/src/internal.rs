@@ -94,6 +94,16 @@ pub enum CaptureControl {
     NeverCapture,
 }
 
+impl CaptureControl {
+    pub fn requires_capturing(&self, default: bool) -> bool {
+        match self {
+            CaptureControl::Default => default,
+            CaptureControl::AlwaysCapture => true,
+            CaptureControl::NeverCapture => false,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct RegisteredTest {
     pub name: String,
