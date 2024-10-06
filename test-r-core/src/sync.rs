@@ -273,11 +273,16 @@ struct Worker {
     err_handle: JoinHandle<()>,
     out_lines: Arc<Mutex<Vec<CapturedOutput>>>,
     err_lines: Arc<Mutex<Vec<CapturedOutput>>>,
+    capture_enabled: Arc<Mutex<bool>>,
     connection: Stream,
 }
 
 impl Worker {
     pub fn run_test(&mut self, nocapture: bool, test: &RegisteredTest) -> TestResult {
+        let mut capture_enabled = self.capture_enabled.lock().unwrap();
+        *capture_enabled = test.capture_control.requires_capturing(!nocapture);
+        drop(capture_enabled);
+
         // Send IPC command and wait for IPC response, and in the meantime read from the stdout/stderr channels
         let cmd = IpcCommand::RunTest {
             name: test.name.clone(),
@@ -309,13 +314,9 @@ impl Worker {
 
         let IpcResponse::TestFinished { result } = response;
 
-        if test.capture_control.requires_capturing(!nocapture) {
-            let out_lines: Vec<_> = self.out_lines.lock().unwrap().drain(..).collect();
-            let err_lines: Vec<_> = self.err_lines.lock().unwrap().drain(..).collect();
-            result.into_test_result(out_lines, err_lines)
-        } else {
-            result.into_test_result(Vec::new(), Vec::new())
-        }
+        let out_lines: Vec<_> = self.out_lines.lock().unwrap().drain(..).collect();
+        let err_lines: Vec<_> = self.err_lines.lock().unwrap().drain(..).collect();
+        result.into_test_result(out_lines, err_lines)
     }
 }
 
@@ -353,18 +354,24 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
 
         let out_lines = Arc::new(Mutex::new(Vec::new()));
         let err_lines = Arc::new(Mutex::new(Vec::new()));
+        let capture_enabled = Arc::new(Mutex::new(true));
 
         let out_lines_clone = out_lines.clone();
+        let capture_enabled_clone = capture_enabled.clone();
         let out_handle = spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
                         //eprintln!("[WORKER OUT] {line}");
-                        out_lines_clone
-                            .lock()
-                            .unwrap()
-                            .push(CapturedOutput::stdout(line));
+                        if *capture_enabled_clone.lock().unwrap() {
+                            out_lines_clone
+                                .lock()
+                                .unwrap()
+                                .push(CapturedOutput::stdout(line));
+                        } else {
+                            println!("{line}");
+                        }
                     }
                     Err(error) => {
                         eprintln!("Failed to read from worker stdout: {error}");
@@ -375,16 +382,21 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
         });
 
         let err_lines_clone = err_lines.clone();
+        let capture_enabled_clone = capture_enabled.clone();
         let err_handle = spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
                         //eprintln!("[WORKER ERR] {line}");
-                        err_lines_clone
-                            .lock()
-                            .unwrap()
-                            .push(CapturedOutput::stderr(line));
+                        if *capture_enabled_clone.lock().unwrap() {
+                            err_lines_clone
+                                .lock()
+                                .unwrap()
+                                .push(CapturedOutput::stderr(line));
+                        } else {
+                            eprintln!("{line}");
+                        }
                     }
                     Err(error) => {
                         eprintln!("Failed to read from worker stdout: {error}");
@@ -403,6 +415,7 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
             err_handle,
             out_lines,
             err_lines,
+            capture_enabled,
             connection,
         })
     } else {
