@@ -213,7 +213,7 @@ async fn run_with_flakiness_control<F, R>(
     test: F,
 ) -> Result<(), R>
 where
-    F: Fn(Instant) -> Pin<Box<dyn Future<Output = Result<(), R>> + Send + Sync>> + Send + Sync,
+    F: Fn(Instant) -> Pin<Box<dyn Future<Output = Result<(), R>> + Send>> + Send + Sync,
 {
     match flakiness_control {
         FlakinessControl::None => {

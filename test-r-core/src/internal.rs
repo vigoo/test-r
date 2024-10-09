@@ -30,7 +30,7 @@ pub enum TestFunction {
             dyn (Fn(
                     Arc<dyn DependencyView + Send + Sync>,
                 )
-                    -> Pin<Box<dyn Future<Output = Box<dyn TestReturnValue>> + Send + Sync>>)
+                    -> Pin<Box<dyn Future<Output = Box<dyn TestReturnValue>> + Send>>)
                 + Send
                 + Sync
                 + 'static,
