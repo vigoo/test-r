@@ -26,11 +26,11 @@ impl TestRunnerOutput for IpcWorkerOutput {
 
     fn finished_suite(
         &self,
-        _registered_tests: &[&RegisteredTest],
+        _registered_tests: &[RegisteredTest],
         _results: &[(RegisteredTest, TestResult)],
         _exec_time: Duration,
     ) {
     }
 
-    fn test_list(&self, _registered_tests: &[&RegisteredTest]) {}
+    fn test_list(&self, _registered_tests: &[RegisteredTest]) {}
 }

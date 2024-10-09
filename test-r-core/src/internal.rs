@@ -29,8 +29,7 @@ pub enum TestFunction {
         Arc<
             dyn (Fn(
                     Arc<dyn DependencyView + Send + Sync>,
-                )
-                    -> Pin<Box<dyn Future<Output = Box<dyn TestReturnValue>> + Send>>)
+                ) -> Pin<Box<dyn Future<Output = Box<dyn TestReturnValue>>>>)
                 + Send
                 + Sync
                 + 'static,
@@ -208,6 +207,7 @@ pub enum DependencyConstructor {
     ),
 }
 
+#[derive(Clone)]
 pub struct RegisteredDependency {
     pub name: String, // TODO: Should we use TypeId here?
     pub crate_name: String,
@@ -407,10 +407,10 @@ pub(crate) fn filter_test(test: &RegisteredTest, filter: &str, exact: bool) -> b
     }
 }
 
-pub(crate) fn filter_registered_tests<'a>(
+pub(crate) fn filter_registered_tests(
     args: &Arguments,
-    registered_tests: &'a [&'a RegisteredTest],
-) -> Vec<&'a RegisteredTest> {
+    registered_tests: &[RegisteredTest],
+) -> Vec<RegisteredTest> {
     registered_tests
         .iter()
         .filter(|registered_test| {
@@ -429,7 +429,7 @@ pub(crate) fn filter_registered_tests<'a>(
         .filter(|registered_test| {
             !args.exclude_should_panic || registered_test.should_panic == ShouldPanic::No
         })
-        .copied()
+        .cloned()
         .collect::<Vec<_>>()
 }
 
@@ -675,7 +675,7 @@ pub struct SuiteResult {
 
 impl SuiteResult {
     pub fn from_test_results(
-        registered_tests: &[&RegisteredTest],
+        registered_tests: &[RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
         exec_time: Duration,
     ) -> Self {

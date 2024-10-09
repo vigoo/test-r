@@ -12,12 +12,12 @@ use crate::internal::{
     RegisteredTest, RegisteredTestSuiteProperty,
 };
 
-pub(crate) struct TestSuiteExecution<'a> {
+pub(crate) struct TestSuiteExecution {
     crate_and_module: String,
-    dependencies: Vec<&'a RegisteredDependency>,
-    tests: Vec<&'a RegisteredTest>,
-    props: Vec<&'a RegisteredTestSuiteProperty>,
-    inner: Vec<TestSuiteExecution<'a>>,
+    dependencies: Vec<RegisteredDependency>,
+    tests: Vec<RegisteredTest>,
+    props: Vec<RegisteredTestSuiteProperty>,
+    inner: Vec<TestSuiteExecution>,
     materialized_dependencies: HashMap<String, Arc<dyn Any + Send + Sync>>,
     sequential_lock: SequentialExecutionLock,
     remaining_count: usize,
@@ -26,12 +26,12 @@ pub(crate) struct TestSuiteExecution<'a> {
     skip_creating_dependencies: bool,
 }
 
-impl<'a> TestSuiteExecution<'a> {
+impl TestSuiteExecution {
     pub fn construct(
         arguments: &Arguments,
-        dependencies: &'a [RegisteredDependency],
-        tests: &'a [&'a RegisteredTest],
-        props: &'a [RegisteredTestSuiteProperty],
+        dependencies: &[RegisteredDependency],
+        tests: &[RegisteredTest],
+        props: &[RegisteredTestSuiteProperty],
     ) -> Self {
         let mut filtered_tests = filter_registered_tests(arguments, tests);
         Self::shuffle(arguments, &mut filtered_tests);
@@ -42,33 +42,35 @@ impl<'a> TestSuiteExecution<'a> {
                 dependencies
                     .iter()
                     .filter(|dep| dep.crate_name.is_empty() && dep.module_path.is_empty())
+                    .cloned()
                     .collect::<Vec<_>>(),
                 Vec::new(),
                 props
                     .iter()
                     .filter(|dep| dep.crate_name().is_empty() && dep.module_path().is_empty())
+                    .cloned()
                     .collect::<Vec<_>>(),
             )
         } else {
             let mut root = Self::root(Vec::new(), Vec::new(), Vec::new());
 
             for prop in props {
-                root.add_prop(prop);
+                root.add_prop(prop.clone());
             }
 
             for dep in dependencies {
-                root.add_dependency(dep);
+                root.add_dependency(dep.clone());
             }
 
             for test in filtered_tests {
-                root.add_test(test);
+                root.add_test(test.clone());
             }
 
             root
         }
     }
 
-    fn shuffle(arguments: &Arguments, tests: &mut Vec<&'a RegisteredTest>) {
+    fn shuffle(arguments: &Arguments, tests: &mut [RegisteredTest]) {
         if let Some(seed) = arguments.shuffle_seed {
             let mut rng = StdRng::seed_from_u64(seed);
             tests.shuffle(&mut rng);
@@ -114,7 +116,7 @@ impl<'a> TestSuiteExecution<'a> {
     }
 
     #[cfg(feature = "tokio")]
-    pub async fn pick_next(&mut self) -> Option<TestExecution<'a>> {
+    pub async fn pick_next(&mut self) -> Option<TestExecution> {
         if self.is_empty() {
             None
         } else {
@@ -126,7 +128,7 @@ impl<'a> TestSuiteExecution<'a> {
                     let index = self.idx;
                     self.idx += 1;
                     Some(TestExecution {
-                        test,
+                        test: test.clone(),
                         deps: Arc::new(deps),
                         index,
                         _seq_lock: seq_lock,
@@ -137,13 +139,13 @@ impl<'a> TestSuiteExecution<'a> {
         }
     }
 
-    pub fn pick_next_sync(&mut self) -> Option<TestExecution<'a>> {
+    pub fn pick_next_sync(&mut self) -> Option<TestExecution> {
         match self.pick_next_internal_sync(&HashMap::new()) {
             Some((test, deps, seq_lock)) => {
                 let index = self.idx;
                 self.idx += 1;
                 Some(TestExecution {
-                    test,
+                    test: test.clone(),
                     deps: Arc::new(deps),
                     index,
                     _seq_lock: seq_lock,
@@ -159,7 +161,7 @@ impl<'a> TestSuiteExecution<'a> {
         &mut self,
         materialized_parent_deps: &HashMap<String, Arc<dyn Any + Send + Sync>>,
     ) -> Option<(
-        &'a RegisteredTest,
+        RegisteredTest,
         HashMap<String, Arc<dyn Any + Send + Sync>>,
         SequentialExecutionLockGuard,
     )> {
@@ -206,7 +208,7 @@ impl<'a> TestSuiteExecution<'a> {
         &mut self,
         materialized_parent_deps: &HashMap<String, Arc<dyn Any + Send + Sync>>,
     ) -> Option<(
-        &'a RegisteredTest,
+        RegisteredTest,
         HashMap<String, Arc<dyn Any + Send + Sync>>,
         SequentialExecutionLockGuard,
     )> {
@@ -260,9 +262,9 @@ impl<'a> TestSuiteExecution<'a> {
     }
 
     fn root(
-        deps: Vec<&'a RegisteredDependency>,
-        tests: Vec<&'a RegisteredTest>,
-        props: Vec<&'a RegisteredTestSuiteProperty>,
+        deps: Vec<RegisteredDependency>,
+        tests: Vec<RegisteredTest>,
+        props: Vec<RegisteredTestSuiteProperty>,
     ) -> Self {
         let total_count = tests.len();
         let is_sequential = props
@@ -284,7 +286,7 @@ impl<'a> TestSuiteExecution<'a> {
         }
     }
 
-    fn add_dependency(&mut self, dep: &'a RegisteredDependency) {
+    fn add_dependency(&mut self, dep: RegisteredDependency) {
         let crate_and_module = dep.crate_and_module();
         if self.crate_and_module == crate_and_module {
             self.dependencies.push(dep);
@@ -292,7 +294,7 @@ impl<'a> TestSuiteExecution<'a> {
             let mut found = false;
             for inner in &mut self.inner {
                 if Self::is_prefix_of(&inner.crate_and_module, &crate_and_module) {
-                    inner.add_dependency(dep);
+                    inner.add_dependency(dep.clone());
                     found = true;
                     break;
                 }
@@ -317,10 +319,10 @@ impl<'a> TestSuiteExecution<'a> {
         }
     }
 
-    fn add_test(&mut self, test: &'a RegisteredTest) {
+    fn add_test(&mut self, test: RegisteredTest) {
         let crate_and_module = test.crate_and_module();
         if self.crate_and_module == crate_and_module {
-            self.tests.push(test);
+            self.tests.push(test.clone());
 
             if test.run.is_bench() {
                 self.is_sequential = true;
@@ -329,7 +331,7 @@ impl<'a> TestSuiteExecution<'a> {
             let mut found = false;
             for inner in &mut self.inner {
                 if Self::is_prefix_of(&inner.crate_and_module, &crate_and_module) {
-                    inner.add_test(test);
+                    inner.add_test(test.clone());
                     found = true;
                     break;
                 }
@@ -356,7 +358,7 @@ impl<'a> TestSuiteExecution<'a> {
         self.remaining_count += 1;
     }
 
-    fn add_prop(&mut self, prop: &'a RegisteredTestSuiteProperty) {
+    fn add_prop(&mut self, prop: RegisteredTestSuiteProperty) {
         let crate_and_module = prop.crate_and_module();
         if self.crate_and_module == crate_and_module {
             if matches!(prop, RegisteredTestSuiteProperty::Sequential { .. }) {
@@ -367,7 +369,7 @@ impl<'a> TestSuiteExecution<'a> {
             let mut found = false;
             for inner in &mut self.inner {
                 if Self::is_prefix_of(&inner.crate_and_module, &crate_and_module) {
-                    inner.add_prop(prop);
+                    inner.add_prop(prop.clone());
                     found = true;
                     break;
                 }
@@ -440,20 +442,20 @@ impl<'a> TestSuiteExecution<'a> {
         dependency_map
     }
 
-    fn sorted_dependencies(&self) -> Vec<&'a RegisteredDependency> {
+    fn sorted_dependencies(&self) -> Vec<&RegisteredDependency> {
         let mut ts: TopologicalSort<&RegisteredDependency> = TopologicalSort::new();
         for dep in &self.dependencies {
             let mut added = false;
             for dep_dep_name in &dep.dependencies {
                 if let Some(dep_dep) = self.dependencies.iter().find(|d| &d.name == dep_dep_name) {
-                    ts.add_dependency(*dep_dep, *dep);
+                    ts.add_dependency(dep_dep, dep);
                     added = true;
                 } else {
                     // otherwise it is expected to come from the parent level
                 }
             }
             if !added {
-                ts.insert(*dep);
+                ts.insert(dep);
             }
         }
         let mut result = Vec::with_capacity(self.dependencies.len());
@@ -492,7 +494,7 @@ impl<'a> TestSuiteExecution<'a> {
     }
 }
 
-impl<'a> Debug for TestSuiteExecution<'a> {
+impl Debug for TestSuiteExecution {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
@@ -529,8 +531,8 @@ impl DependencyView for HashMap<String, Arc<dyn Any + Send + Sync>> {
     }
 }
 
-pub struct TestExecution<'a> {
-    pub test: &'a RegisteredTest,
+pub struct TestExecution {
+    pub test: RegisteredTest,
     pub deps: Arc<dyn DependencyView + Send + Sync>,
     pub index: usize,
     _seq_lock: SequentialExecutionLockGuard,

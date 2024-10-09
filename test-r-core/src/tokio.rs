@@ -22,7 +22,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::spawn;
 use tokio::sync::Mutex;
-use tokio::task::{spawn_blocking, JoinHandle};
+use tokio::task::{spawn_blocking, spawn_local, JoinHandle, JoinSet, LocalSet};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -47,9 +47,10 @@ async fn async_test_runner() {
 
     let generated_tests = generate_tests(&registered_test_generators).await;
 
-    let all_tests: Vec<&RegisteredTest> = registered_tests
+    let all_tests: Vec<RegisteredTest> = registered_tests
         .iter()
-        .chain(generated_tests.as_slice())
+        .cloned()
+        .chain(generated_tests)
         .collect();
 
     if args.list {
@@ -76,26 +77,37 @@ async fn async_test_runner() {
         let start = Instant::now();
         output.start_suite(count);
 
-        tokio_scoped::scope(|s| {
-            let execution = Arc::new(Mutex::new(execution));
-            let threads = args.test_threads().get();
-            for _ in 0..threads {
-                let execution_clone = execution.clone();
-                let output_clone = output.clone();
-                let args_clone = args.clone();
-                let results_clone = results.clone();
-                s.spawn(async move {
-                    test_thread(
-                        args_clone,
-                        execution_clone,
-                        output_clone,
-                        count,
-                        results_clone,
-                    )
+        let execution = Arc::new(Mutex::new(execution));
+        let mut join_set = JoinSet::new();
+        let threads = args.test_threads().get();
+
+        for _ in 0..threads {
+            let execution_clone = execution.clone();
+            let output_clone = output.clone();
+            let args_clone = args.clone();
+            let results_clone = results.clone();
+            let handle = tokio::runtime::Handle::current();
+            join_set.spawn_blocking(move || {
+                handle.block_on(LocalSet::new().run_until(async move {
+                    spawn_local(async move {
+                        test_thread(
+                            args_clone,
+                            execution_clone,
+                            output_clone,
+                            count,
+                            results_clone,
+                        )
+                        .await
+                    })
                     .await
-                });
-            }
-        });
+                    .unwrap()
+                }))
+            });
+        }
+
+        while let Some(res) = join_set.join_next().await {
+            res.expect("Failed to join task");
+        }
 
         output.finished_suite(&all_tests, &results.lock().await, start.elapsed());
     }
@@ -103,7 +115,7 @@ async fn async_test_runner() {
 
 async fn test_thread(
     args: Arguments,
-    execution: Arc<Mutex<TestSuiteExecution<'_>>>,
+    execution: Arc<Mutex<TestSuiteExecution>>,
     output: Arc<dyn TestRunnerOutput>,
     count: usize,
     results: Arc<Mutex<Vec<(RegisteredTest, TestResult)>>>,
@@ -159,19 +171,19 @@ async fn test_thread(
             if !skip {
                 expected_test = None;
 
-                let ensure_time = get_ensure_time(&args, next.test);
+                let ensure_time = get_ensure_time(&args, &next.test);
 
-                output.start_running_test(next.test, next.index, count);
+                output.start_running_test(&next.test, next.index, count);
                 let result = run_test(
                     args.nocapture,
                     args.include_ignored,
                     ensure_time,
                     next.deps,
-                    next.test,
+                    &next.test,
                     &mut worker,
                 )
                 .await;
-                output.finished_running_test(next.test, next.index, count, &result);
+                output.finished_running_test(&next.test, next.index, count, &result);
 
                 if let Some(connection) = &mut connection {
                     let response = IpcResponse::TestFinished {
@@ -196,14 +208,12 @@ async fn test_thread(
     }
 }
 
-async fn is_done<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> bool {
+async fn is_done<'a>(execution: &Arc<Mutex<TestSuiteExecution>>) -> bool {
     let execution = execution.lock().await;
     execution.is_done()
 }
 
-async fn pick_next<'a>(
-    execution: &Arc<Mutex<TestSuiteExecution<'a>>>,
-) -> Option<TestExecution<'a>> {
+async fn pick_next<'a>(execution: &Arc<Mutex<TestSuiteExecution>>) -> Option<TestExecution> {
     let mut execution = execution.lock().await;
     execution.pick_next().await
 }
@@ -213,7 +223,7 @@ async fn run_with_flakiness_control<F, R>(
     test: F,
 ) -> Result<(), R>
 where
-    F: Fn(Instant) -> Pin<Box<dyn Future<Output = Result<(), R>> + Send>> + Send + Sync,
+    F: Fn(Instant) -> Pin<Box<dyn Future<Output = Result<(), R>>>> + Send + Sync,
 {
     match flakiness_control {
         FlakinessControl::None => {

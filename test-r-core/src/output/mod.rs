@@ -23,11 +23,11 @@ pub trait TestRunnerOutput: Send + Sync {
     );
     fn finished_suite(
         &self,
-        registered_tests: &[&RegisteredTest],
+        registered_tests: &[RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
         exec_time: Duration,
     );
-    fn test_list(&self, registered_tests: &[&RegisteredTest]);
+    fn test_list(&self, registered_tests: &[RegisteredTest]);
 
     fn warning(&self, message: &str) {
         eprintln!("{}", message);

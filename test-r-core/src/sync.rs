@@ -31,9 +31,10 @@ pub fn test_runner() {
 
     let generated_tests = generate_tests_sync(&registered_test_generators);
 
-    let all_tests: Vec<&RegisteredTest> = registered_tests
+    let all_tests: Vec<RegisteredTest> = registered_tests
         .iter()
-        .chain(generated_tests.as_slice())
+        .cloned()
+        .chain(generated_tests)
         .collect();
 
     if args.list {
@@ -57,28 +58,26 @@ pub fn test_runner() {
         let count = execution.remaining();
         let mut results = Vec::with_capacity(count);
 
-        std::thread::scope(|s| {
-            let start = Instant::now();
-            output.start_suite(count);
+        let start = Instant::now();
+        output.start_suite(count);
 
-            let execution = Arc::new(Mutex::new(execution));
-            let threads = args.test_threads().get();
-            let mut handles = Vec::with_capacity(threads);
-            for _ in 0..threads {
-                let execution_clone = execution.clone();
-                let output_clone = output.clone();
-                let args_clone = args.clone();
-                handles.push(
-                    s.spawn(move || test_thread(args_clone, execution_clone, output_clone, count)),
-                );
-            }
+        let execution = Arc::new(Mutex::new(execution));
+        let threads = args.test_threads().get();
+        let mut handles = Vec::with_capacity(threads);
+        for _ in 0..threads {
+            let execution_clone = execution.clone();
+            let output_clone = output.clone();
+            let args_clone = args.clone();
+            handles.push(spawn(move || {
+                test_thread(args_clone, execution_clone, output_clone, count)
+            }));
+        }
 
-            for handle in handles {
-                results.extend(handle.join().unwrap());
-            }
+        for handle in handles {
+            results.extend(handle.join().unwrap());
+        }
 
-            output.finished_suite(&all_tests, &results, start.elapsed());
-        });
+        output.finished_suite(&all_tests, &results, start.elapsed());
     }
 }
 
@@ -136,16 +135,16 @@ fn test_thread(
             if !skip {
                 expected_test = None;
 
-                output.start_running_test(next.test, next.index, count);
+                output.start_running_test(&next.test, next.index, count);
 
                 let result = if next.test.is_ignored && !args.include_ignored {
                     TestResult::Ignored {
                         captured: Vec::new(),
                     }
                 } else if let Some(worker) = worker.as_mut() {
-                    worker.run_test(args.nocapture, next.test)
+                    worker.run_test(args.nocapture, &next.test)
                 } else {
-                    let ensure_time = get_ensure_time(&args, next.test);
+                    let ensure_time = get_ensure_time(&args, &next.test);
                     run_sync_test_function(
                         &next.test.should_panic,
                         ensure_time,
@@ -155,7 +154,7 @@ fn test_thread(
                     )
                 };
 
-                output.finished_running_test(next.test, next.index, count, &result);
+                output.finished_running_test(&next.test, next.index, count, &result);
 
                 if let Some(connection) = &mut connection {
                     let response = IpcResponse::TestFinished {
@@ -180,12 +179,12 @@ fn test_thread(
     results
 }
 
-fn is_done(execution: &Arc<Mutex<TestSuiteExecution<'_>>>) -> bool {
+fn is_done(execution: &Arc<Mutex<TestSuiteExecution>>) -> bool {
     let execution = execution.lock().unwrap();
     execution.is_done()
 }
 
-fn pick_next<'a>(execution: &Arc<Mutex<TestSuiteExecution<'a>>>) -> Option<TestExecution<'a>> {
+fn pick_next(execution: &Arc<Mutex<TestSuiteExecution>>) -> Option<TestExecution> {
     let mut execution = execution.lock().unwrap();
     execution.pick_next_sync()
 }

@@ -87,7 +87,7 @@ impl TestRunnerOutput for JUnit {
 
     fn finished_suite(
         &self,
-        registered_tests: &[&RegisteredTest],
+        registered_tests: &[RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
         exec_time: Duration,
     ) {
@@ -192,7 +192,7 @@ impl TestRunnerOutput for JUnit {
             .unwrap();
     }
 
-    fn test_list(&self, registered_tests: &[&RegisteredTest]) {
+    fn test_list(&self, registered_tests: &[RegisteredTest]) {
         let decl = Decl(BytesDecl::new("1.0", Some("UTF-8"), None));
         let mut writer = self.writer.lock().unwrap();
         writer.write_event(decl).unwrap();

@@ -112,7 +112,7 @@ impl TestRunnerOutput for Json {
 
     fn finished_suite(
         &self,
-        registered_tests: &[&RegisteredTest],
+        registered_tests: &[RegisteredTest],
         results: &[(RegisteredTest, TestResult)],
         exec_time: Duration,
     ) {
@@ -131,7 +131,7 @@ impl TestRunnerOutput for Json {
         ).expect("Failed to write to output");
     }
 
-    fn test_list(&self, registered_tests: &[&RegisteredTest]) {
+    fn test_list(&self, registered_tests: &[RegisteredTest]) {
         let mut out = self.target.lock().unwrap();
         writeln!(out, r#"["#).expect("Failed to write to output");
         for test in registered_tests {
