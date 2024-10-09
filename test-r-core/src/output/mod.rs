@@ -63,6 +63,15 @@ struct LogFile {
 
 impl LogFile {
     fn new(mut path: PathBuf, merged: bool) -> Self {
+        let cwd = std::env::current_dir().unwrap();
+        if path.is_relative() {
+            path = cwd.join(path);
+        }
+
+        if !path.parent().unwrap().exists() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+
         if !merged {
             // Because of https://github.com/rust-lang/rust/issues/105424 we have to generate a unique log file name
             // otherwise the core test runner will overwrite it
