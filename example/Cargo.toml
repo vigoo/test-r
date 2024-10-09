@@ -16,6 +16,6 @@ name = "tests"
 harness = false
 
 [dependencies]
-test-r = { version = "0.0.3", path = "../test-r", default-features = false }
+test-r = { version = "0.0.4", path = "../test-r", default-features = false }
 
 rand = "0.8"
