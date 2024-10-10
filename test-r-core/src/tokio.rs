@@ -88,7 +88,7 @@ async fn async_test_runner() {
             let results_clone = results.clone();
 
             join_set.spawn_blocking(move || {
-                let child_runtime = tokio::runtime::Builder::new_multi_thread()
+                let child_runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .unwrap();
