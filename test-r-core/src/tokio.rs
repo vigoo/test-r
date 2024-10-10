@@ -78,7 +78,7 @@ async fn async_test_runner() {
         output.start_suite(count);
 
         let execution = Arc::new(Mutex::new(execution));
-        let mut join_set = JoinSet::new();
+         let mut join_set = JoinSet::new();
         let threads = args.test_threads().get();
 
         for _ in 0..threads {
@@ -86,16 +86,31 @@ async fn async_test_runner() {
             let output_clone = output.clone();
             let args_clone = args.clone();
             let results_clone = results.clone();
-            let handle = tokio::runtime::Handle::current();
+
             join_set.spawn_blocking(move || {
-                handle.block_on(test_thread(
+                let child_runtime = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                child_runtime.block_on(test_thread(
                     args_clone,
                     execution_clone,
                     output_clone,
                     count,
                     results_clone,
-                ))
+                ));
             });
+
+            // let handle = tokio::runtime::Handle::current();
+            // join_set.spawn_blocking(move || {
+            //     handle.block_on(test_thread(
+            //         args_clone,
+            //         execution_clone,
+            //         output_clone,
+            //         count,
+            //         results_clone,
+            //     ))
+            // });
         }
 
         while let Some(res) = join_set.join_next().await {
