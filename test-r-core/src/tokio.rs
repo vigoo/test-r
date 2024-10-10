@@ -22,7 +22,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::spawn;
 use tokio::sync::Mutex;
-use tokio::task::{spawn_blocking, spawn_local, JoinHandle, JoinSet, LocalSet};
+use tokio::task::{spawn_blocking, JoinHandle, JoinSet};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -88,20 +88,13 @@ async fn async_test_runner() {
             let results_clone = results.clone();
             let handle = tokio::runtime::Handle::current();
             join_set.spawn_blocking(move || {
-                handle.block_on(LocalSet::new().run_until(async move {
-                    spawn_local(async move {
-                        test_thread(
-                            args_clone,
-                            execution_clone,
-                            output_clone,
-                            count,
-                            results_clone,
-                        )
-                        .await
-                    })
-                    .await
-                    .unwrap()
-                }))
+                handle.block_on(test_thread(
+                    args_clone,
+                    execution_clone,
+                    output_clone,
+                    count,
+                    results_clone,
+                ))
             });
         }
 
