@@ -92,13 +92,13 @@ async fn async_test_runner() {
                     .enable_all()
                     .build()
                     .unwrap();
-                child_runtime.block_on(test_thread(
+                child_runtime.block_on(async { test_thread(
                     args_clone,
                     execution_clone,
                     output_clone,
                     count,
                     results_clone,
-                ));
+                ).await });
             });
 
             // let handle = tokio::runtime::Handle::current();
