@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## `test-r` - [0.0.10](https://github.com/vigoo/test-r/compare/test-r-v0.0.9...test-r-v0.0.10) - 2024-10-11
+
+### Other
+- tag_suite macro
+
+## `test-r-macro` - [0.0.10](https://github.com/vigoo/test-r/compare/test-r-macro-v0.0.9...test-r-macro-v0.0.10) - 2024-10-11
+
+### Other
+- tag_suite macro
+
 ## `test-r` - [0.0.9](https://github.com/vigoo/test-r/compare/test-r-v0.0.8...test-r-v0.0.9) - 2024-10-11
 
 ### Other
