@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## `test-r` - [0.0.8](https://github.com/vigoo/test-r/compare/test-r-v0.0.7...test-r-v0.0.8) - 2024-10-11
+
+### Other
+- Tag support on suites
+- Tag support
+
+## `test-r-core` - [0.0.8](https://github.com/vigoo/test-r/compare/test-r-core-v0.0.7...test-r-core-v0.0.8) - 2024-10-11
+
+### Other
+- Tag support on suites
+- Tag support
+- Show fully qualified test name in the stdout/err header
+
+## `test-r-macro` - [0.0.8](https://github.com/vigoo/test-r/compare/test-r-macro-v0.0.7...test-r-macro-v0.0.8) - 2024-10-11
+
+### Other
+- Tag support on suites
+- Tag support
+
 ## `test-r` - [0.0.7](https://github.com/vigoo/test-r/compare/test-r-v0.0.6...test-r-v0.0.7) - 2024-10-10
 
 ### Other
