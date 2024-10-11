@@ -1,3 +1,5 @@
+use test_r::tag_suite;
+
 #[cfg(test)]
 #[test_r::tag(a)]
 mod tests {
@@ -63,3 +65,5 @@ mod tests {
         Err(CustomError)
     }
 }
+
+tag_suite!(tests, b);

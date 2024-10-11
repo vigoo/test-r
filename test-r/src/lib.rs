@@ -7,6 +7,7 @@ pub use test_r_macro::never_capture;
 pub use test_r_macro::non_flaky;
 pub use test_r_macro::sequential;
 pub use test_r_macro::tag;
+pub use test_r_macro::tag_suite;
 pub use test_r_macro::test;
 pub use test_r_macro::test_dep;
 pub use test_r_macro::test_gen;

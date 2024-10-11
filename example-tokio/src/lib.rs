@@ -305,7 +305,6 @@ pub mod deps {
         mod inner {
             use crate::deps::tests::Dep2;
             use crate::deps::Dep1;
-            use std::sync::Arc;
             use test_r::{inherit_test_dep, tag, test, test_dep};
             use tracing::info;
 

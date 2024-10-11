@@ -578,6 +578,44 @@ pub fn tag(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+#[proc_macro]
+pub fn tag_suite(input: TokenStream) -> TokenStream {
+    let params = parse_macro_input!(input with Punctuated::<Ident, Token![,]>::parse_terminated);
+
+    if params.len() != 2 {
+        panic!("tag_suite! expects exactly 2 identifiers as parameters: the name of the suite module and the tag");
+    }
+
+    let mod_name_str = params[0].to_string();
+    let tag_str = params[1].to_string();
+
+    let random = rand::random::<u64>();
+    let register_ident = Ident::new(
+        &format!("test_r_register_mod_{}_tag_{}", mod_name_str, random),
+        Span::call_site(),
+    );
+
+    let tag = quote! { #tag_str.to_string() };
+
+    let register_call = quote! {
+          test_r::core::register_suite_tag(
+              #mod_name_str,
+              module_path!(),
+              #tag
+          );
+    };
+
+    let result = quote! {
+        #[cfg(test)]
+        #[test_r::ctor::ctor]
+        fn #register_ident() {
+             #register_call
+        }
+    };
+
+    result.into()
+}
+
 fn merge_type_path(dep_type: &TypePath) -> String {
     let merged_ident = dep_type
         .path
