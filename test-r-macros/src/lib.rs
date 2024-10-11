@@ -104,6 +104,19 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
         (None, Some(_)) => quote! { test_r::core::CaptureControl::NeverCapture },
     };
 
+    let tag_attrs = ast
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("tag"))
+        .map(|attr| {
+            let tag = attr
+                .parse_args::<syn::Ident>()
+                .expect("tag attribute's parameter must be a identifier");
+            let tag_str = tag.to_string();
+            quote! { #tag_str.to_string() }
+        });
+    let tags = quote! { vec![#(#tag_attrs),*] };
+
     let register_ident = Ident::new(
         &format!("test_r_register_{}", test_name_str),
         test_name.span(),
@@ -128,6 +141,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                       None,
                       test_r::core::FlakinessControl::None,
                       #capture_control,
+                      #tags,
                       test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|bencher, deps| Box::pin(async move { #test_name(bencher, #(#dep_getters),*).await })))
                   );
             }
@@ -142,6 +156,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                     None,
                     test_r::core::FlakinessControl::None,
                     #capture_control,
+                    #tags,
                     test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|bencher, deps| #test_name(bencher, #(#dep_getters),*)))
                 );
             }
@@ -157,6 +172,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                   #timeout,
                   #flakiness_control,
                   #capture_control,
+                  #tags,
                   test_r::core::TestFunction::Async(std::sync::Arc::new(
                     move |deps| {
                         Box::pin(async move {
@@ -182,6 +198,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                 None,
                 #flakiness_control,
                 #capture_control,
+                #tags,
                 test_r::core::TestFunction::Sync(std::sync::Arc::new(|deps| Box::new(#test_name(#(#dep_getters),*))))
             );
         }
@@ -518,6 +535,11 @@ pub fn always_capture(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn never_capture(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn tag(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 

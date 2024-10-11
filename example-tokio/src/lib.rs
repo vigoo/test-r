@@ -90,10 +90,11 @@ mod inner {
 
     #[cfg(test)]
     mod tests {
-        use test_r::{test, timeout};
+        use test_r::{tag, test, timeout};
         use tokio::io::AsyncWriteExt;
 
         #[test]
+        #[tag(a)]
         async fn inner_test_works() {
             let _ = tokio::io::stdout()
                 .write(b"Print from inner test\n")
@@ -158,10 +159,12 @@ mod inner {
 pub mod flakiness {
     use rand::Rng;
     use std::time::Duration;
-    use test_r::{flaky, non_flaky, test};
+    use test_r::{flaky, non_flaky, tag, test};
 
     #[test]
     #[flaky(10)]
+    #[tag(a)]
+    #[tag(b)]
     fn flaky_test() {
         println!("Print from flaky test");
         let mut rng = rand::thread_rng();
@@ -172,6 +175,7 @@ pub mod flakiness {
 
     #[test]
     #[non_flaky(10)]
+    #[tag(a)]
     fn non_flaky_test() {
         println!("Print from non_flaky test");
         let result = 2 + 2;
@@ -302,7 +306,7 @@ pub mod deps {
             use crate::deps::tests::Dep2;
             use crate::deps::Dep1;
             use std::sync::Arc;
-            use test_r::{inherit_test_dep, test, test_dep};
+            use test_r::{inherit_test_dep, tag, test, test_dep};
             use tracing::info;
 
             inherit_test_dep!(Dep1);
@@ -328,6 +332,7 @@ pub mod deps {
 
             #[test]
             #[tracing::instrument]
+            #[tag(b)]
             async fn dep_test_inner_works_1(dep1: &Dep1) {
                 info!("Print from dep test inner 1");
                 assert_eq!(dep1.value, 10);

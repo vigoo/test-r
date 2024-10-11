@@ -6,6 +6,7 @@ pub use test_r_macro::inherit_test_dep;
 pub use test_r_macro::never_capture;
 pub use test_r_macro::non_flaky;
 pub use test_r_macro::sequential;
+pub use test_r_macro::tag;
 pub use test_r_macro::test;
 pub use test_r_macro::test_dep;
 pub use test_r_macro::test_gen;
@@ -35,6 +36,7 @@ pub mod core {
         timeout: Option<Duration>,
         flakiness_control: FlakinessControl,
         capture_control: CaptureControl,
+        tags: Vec<String>,
         run: TestFunction,
     ) {
         let (crate_name, module_path) = split_module_path(module_path);
@@ -53,6 +55,7 @@ pub mod core {
                 timeout,
                 flakiness_control,
                 capture_control,
+                tags,
             });
     }
 

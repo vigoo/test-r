@@ -139,6 +139,7 @@ pub struct RegisteredTest {
     pub timeout: Option<Duration>,
     pub flakiness_control: FlakinessControl,
     pub capture_control: CaptureControl,
+    pub tags: Vec<String>,
 }
 
 impl RegisteredTest {
@@ -400,7 +401,30 @@ impl RegisteredTestGenerator {
 pub static REGISTERED_TEST_GENERATORS: Mutex<Vec<RegisteredTestGenerator>> = Mutex::new(Vec::new());
 
 pub(crate) fn filter_test(test: &RegisteredTest, filter: &str, exact: bool) -> bool {
-    if exact {
+    if let Some(tag_list) = filter.strip_prefix(":tag:") {
+        if tag_list.is_empty() {
+            // Filtering for tags with NO TAGS
+            test.tags.is_empty()
+        } else {
+            let or_tags = tag_list.split('|').collect::<Vec<&str>>();
+            let mut result = false;
+            for or_tag in or_tags {
+                let and_tags = or_tag.split('&').collect::<Vec<&str>>();
+                let mut and_result = true;
+                for and_tag in and_tags {
+                    if !test.tags.contains(&and_tag.to_string()) {
+                        and_result = false;
+                        break;
+                    }
+                }
+                if and_result {
+                    result = true;
+                    break;
+                }
+            }
+            result
+        }
+    } else if exact {
         test.filterable_name() == filter
     } else {
         test.filterable_name().contains(filter)
@@ -449,6 +473,7 @@ fn add_generated_tests(
         timeout: None,
         flakiness_control: FlakinessControl::None,
         capture_control: CaptureControl::Default,
+        tags: Vec::new(),
     }));
 }
 
