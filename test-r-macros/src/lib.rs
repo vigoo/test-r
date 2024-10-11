@@ -276,7 +276,7 @@ pub fn inherit_test_dep(item: TokenStream) -> TokenStream {
     );
 
     let result = quote! {
-        fn #getter_ident<'a>(dependency_view: &'a impl test_r::core::DependencyView) -> Arc<#dep_type> {
+        fn #getter_ident<'a>(dependency_view: &'a impl test_r::core::DependencyView) -> std::sync::Arc<#dep_type> {
             super::#getter_ident(dependency_view)
         }
     };
