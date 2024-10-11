@@ -91,6 +91,19 @@ pub mod core {
         );
     }
 
+    pub fn register_suite_tag(name: &str, module_path: &str, tag: String) {
+        let (crate_name, module_path) = split_module_path(module_path);
+
+        internal::REGISTERED_TESTSUITE_PROPS.lock().unwrap().push(
+            internal::RegisteredTestSuiteProperty::Tag {
+                name: name.to_string(),
+                crate_name,
+                module_path,
+                tag,
+            },
+        );
+    }
+
     pub fn register_test_generator(
         name: &str,
         module_path: &str,

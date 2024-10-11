@@ -436,7 +436,7 @@ pub fn sequential(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let ast: ItemMod = syn::parse(item).expect("#[sequential] must be applied to a module");
 
     let register_ident = Ident::new(
-        &format!("test_r_register_mod_{}_props", ast.ident),
+        &format!("test_r_register_mod_{}_sequential", ast.ident),
         Span::call_site(),
     );
 
@@ -539,8 +539,43 @@ pub fn never_capture(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn tag(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+pub fn tag(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if let Ok(ast) = syn::parse::<ItemMod>(item.clone()) {
+        let random = rand::random::<u64>();
+        let register_ident = Ident::new(
+            &format!("test_r_register_mod_{}_tag_{}", ast.ident, random),
+            Span::call_site(),
+        );
+
+        let mod_name_str = ast.ident.to_string();
+
+        let tag = parse_macro_input!(attr as syn::Ident);
+        let tag_str = tag.to_string();
+        let tag = quote! { #tag_str.to_string() };
+
+        let register_call = quote! {
+              test_r::core::register_suite_tag(
+                  #mod_name_str,
+                  module_path!(),
+                  #tag
+              );
+        };
+
+        let result = quote! {
+            #[cfg(test)]
+            #[test_r::ctor::ctor]
+            fn #register_ident() {
+                 #register_call
+            }
+
+            #ast
+        };
+
+        result.into()
+    } else {
+        // applied to a test function
+        item
+    }
 }
 
 fn merge_type_path(dep_type: &TypePath) -> String {

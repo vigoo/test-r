@@ -686,6 +686,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
+ "rand",
  "syn",
  "test-r-core",
 ]

@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[test_r::tag(a)]
 mod tests {
     use rand::Rng;
     use std::error::Error;

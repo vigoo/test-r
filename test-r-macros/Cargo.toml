@@ -17,4 +17,5 @@ test-r-core = { version = "0.0.7", path = "../test-r-core" }
 heck = "0.5"
 proc-macro2 = "1"
 quote = "1"
+rand = "0.8"
 syn = { version = "2", features = ["full"] }

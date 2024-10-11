@@ -262,24 +262,33 @@ pub enum RegisteredTestSuiteProperty {
         crate_name: String,
         module_path: String,
     },
+    Tag {
+        name: String,
+        crate_name: String,
+        module_path: String,
+        tag: String,
+    },
 }
 
 impl RegisteredTestSuiteProperty {
     pub fn crate_name(&self) -> &String {
         match self {
             RegisteredTestSuiteProperty::Sequential { crate_name, .. } => crate_name,
+            RegisteredTestSuiteProperty::Tag { crate_name, .. } => crate_name,
         }
     }
 
     pub fn module_path(&self) -> &String {
         match self {
             RegisteredTestSuiteProperty::Sequential { module_path, .. } => module_path,
+            RegisteredTestSuiteProperty::Tag { module_path, .. } => module_path,
         }
     }
 
     pub fn name(&self) -> &String {
         match self {
             RegisteredTestSuiteProperty::Sequential { name, .. } => name,
+            RegisteredTestSuiteProperty::Tag { name, .. } => name,
         }
     }
 
@@ -429,6 +438,34 @@ pub(crate) fn filter_test(test: &RegisteredTest, filter: &str, exact: bool) -> b
     } else {
         test.filterable_name().contains(filter)
     }
+}
+
+pub(crate) fn apply_suite_tags(
+    tests: &[RegisteredTest],
+    props: &[RegisteredTestSuiteProperty],
+) -> Vec<RegisteredTest> {
+    let tag_props = props
+        .iter()
+        .filter_map(|prop| match prop {
+            RegisteredTestSuiteProperty::Tag { tag, .. } => {
+                let prefix = prop.crate_and_module();
+                Some((prefix, tag.clone()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut result = Vec::new();
+    for test in tests {
+        let mut test = test.clone();
+        for (prefix, tag) in &tag_props {
+            if &test.crate_and_module() == prefix {
+                test.tags.push(tag.clone());
+            }
+        }
+        result.push(test);
+    }
+    result
 }
 
 pub(crate) fn filter_registered_tests(
