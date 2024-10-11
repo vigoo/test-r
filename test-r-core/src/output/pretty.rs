@@ -67,7 +67,7 @@ impl Pretty {
     ) {
         for (test, result) in results {
             if !result.captured_output().is_empty() {
-                writeln!(out, "---- {} stdout/err ----", test.name).unwrap();
+                writeln!(out, "---- {} stdout/err ----", test.fully_qualified_name()).unwrap();
                 for line in result.captured_output() {
                     match line {
                         crate::internal::CapturedOutput::Stdout { line, .. } => {
