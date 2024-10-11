@@ -1,6 +1,6 @@
 [package]
 name = "test-r-macro"
-version = "0.0.8"
+version = "0.0.9"
 edition = "2021"
 license = "Apache-2.0"
 description = "Test framework for Rust (macros)"

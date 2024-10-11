@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "test-r"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "ctor",
  "test-r-core",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "test-r-macro"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "heck",
  "proc-macro2",
