@@ -1,5 +1,3 @@
-use test_r::tag_suite;
-
 test_r::enable!();
 
 mod other;
