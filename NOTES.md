@@ -6,7 +6,6 @@ https://github.com/rust-lang/rust/tree/master/library/test
 https://github.com/rust-lang/rust/issues/105424
 
 # Todo
-- Make sure some 3rd party golden testing framework works, or add our own (https://crates.io/crates/goldenfile)
 
 Ready to integrate, before release:
 - Initial documentation
@@ -16,6 +15,8 @@ Ready to integrate, before release:
 - Align terse output more with https://github.com/rust-lang/rust/blob/master/library/test/src/formatters/terse.rs
 - Code cleanup / remove all TODOs
 - Check if we can do some trick to run doctests with test-r (#cfg(doctest) imports?)
+- Pretty output: align passed / reported time columns
+- Dump worker stdout/err in case of ipc panic
 
 Later:
 - per-test report/ensure-time with attributes

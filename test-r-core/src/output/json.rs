@@ -73,12 +73,12 @@ impl TestRunnerOutput for Json {
                     stdout_lines.push(format!("Error: {msg}"));
                     let stdout = stdout_lines.join("\n");
 
-                    format!(r#", "stdout": "{}"#, escape8259::escape(stdout))
+                    format!(r#", "stdout": "{}""#, escape8259::escape(stdout))
                 }
                 None => {
                     if self.show_output {
                         let stdout = stdout_lines.join("\n");
-                        format!(r#", "stdout": "{}"#, escape8259::escape(stdout))
+                        format!(r#", "stdout": "{}""#, escape8259::escape(stdout))
                     } else {
                         "".to_string()
                     }
