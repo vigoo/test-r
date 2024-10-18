@@ -252,8 +252,8 @@ fn should_panic_message(attr: &syn::Attribute) -> ShouldPanic {
 pub fn uses_test_r(_item: TokenStream) -> TokenStream {
     r#"
         #[cfg(test)]
-        pub fn main() {
-            test_r::core::test_runner();
+        pub fn main() -> std::process::ExitCode {
+            test_r::core::test_runner()
         }
     "#
     .parse()

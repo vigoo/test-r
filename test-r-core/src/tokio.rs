@@ -3,7 +3,7 @@ use crate::bench::AsyncBencher;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
 use crate::internal::{
-    generate_tests, get_ensure_time, CapturedOutput, FlakinessControl, RegisteredTest,
+    generate_tests, get_ensure_time, CapturedOutput, FlakinessControl, RegisteredTest, SuiteResult,
     TestFunction, TestResult,
 };
 use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
@@ -16,7 +16,7 @@ use interprocess::local_socket::{GenericNamespaced, ListenerOptions};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
-use std::process::Stdio;
+use std::process::{ExitCode, Stdio};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -26,16 +26,16 @@ use tokio::task::{spawn_blocking, JoinHandle, JoinSet};
 use tokio::time::Instant;
 use uuid::Uuid;
 
-pub fn test_runner() {
+pub fn test_runner() -> ExitCode {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap()
-        .block_on(async_test_runner());
+        .block_on(async_test_runner())
 }
 
 #[allow(clippy::await_holding_lock)]
-async fn async_test_runner() {
+async fn async_test_runner() -> ExitCode {
     let mut args = Arguments::from_args();
     let output = test_runner_output(&args);
 
@@ -55,6 +55,7 @@ async fn async_test_runner() {
 
     if args.list {
         output.test_list(&all_tests);
+        ExitCode::SUCCESS
     } else {
         let mut execution = TestSuiteExecution::construct(
             &args,
@@ -102,7 +103,9 @@ async fn async_test_runner() {
             res.expect("Failed to join task");
         }
 
-        output.finished_suite(&all_tests, &results.lock().await, start.elapsed());
+        let results = results.lock().await;
+        output.finished_suite(&all_tests, &results, start.elapsed());
+        SuiteResult::exit_code(&results)
     }
 }
 

@@ -4,7 +4,7 @@ use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
 use crate::internal::{
     generate_tests_sync, get_ensure_time, CapturedOutput, FlakinessControl, RegisteredTest,
-    ShouldPanic, TestFunction, TestResult,
+    ShouldPanic, SuiteResult, TestFunction, TestResult,
 };
 use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
 use crate::output::{test_runner_output, TestRunnerOutput};
@@ -13,13 +13,13 @@ use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToNsName};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::{spawn, JoinHandle};
 use std::time::Instant;
 use uuid::Uuid;
 
-pub fn test_runner() {
+pub fn test_runner() -> ExitCode {
     let mut args = Arguments::from_args();
     let output = test_runner_output(&args);
 
@@ -39,6 +39,7 @@ pub fn test_runner() {
 
     if args.list {
         output.test_list(&all_tests);
+        ExitCode::SUCCESS
     } else {
         let mut execution = TestSuiteExecution::construct(
             &args,
@@ -78,6 +79,7 @@ pub fn test_runner() {
         }
 
         output.finished_suite(&all_tests, &results, start.elapsed());
+        SuiteResult::exit_code(&results)
     }
 }
 

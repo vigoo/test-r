@@ -7,6 +7,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::hash::Hash;
 use std::pin::Pin;
+use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -766,6 +767,14 @@ impl SuiteResult {
             measured,
             filtered_out,
             exec_time,
+        }
+    }
+
+    pub fn exit_code(results: &[(RegisteredTest, TestResult)]) -> ExitCode {
+        if results.iter().any(|(_, result)| result.is_failed()) {
+            ExitCode::from(101)
+        } else {
+            ExitCode::SUCCESS
         }
     }
 }
