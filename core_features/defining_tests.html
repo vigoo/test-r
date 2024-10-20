@@ -1,0 +1,351 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Defining tests - test-r</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('light')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded "><a href="../getting_started.html"><strong aria-hidden="true">1.</strong> Getting started</a></li><li class="chapter-item expanded "><a href="../core_features.html"><strong aria-hidden="true">2.</strong> Core features</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../core_features/defining_tests.html" class="active"><strong aria-hidden="true">2.1.</strong> Defining tests</a></li><li class="chapter-item expanded "><a href="../core_features/running_tests.html"><strong aria-hidden="true">2.2.</strong> Running tests</a></li><li class="chapter-item expanded "><a href="../core_features/test_output.html"><strong aria-hidden="true">2.3.</strong> Test output</a></li></ol></li><li class="chapter-item expanded "><a href="../advanced_features.html"><strong aria-hidden="true">3.</strong> Advanced features</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../advanced_features/dependency_injection.html"><strong aria-hidden="true">3.1.</strong> Dependency injection</a></li><li class="chapter-item expanded "><a href="../advanced_features/tags.html"><strong aria-hidden="true">3.2.</strong> Tags</a></li><li class="chapter-item expanded "><a href="../advanced_features/benches.html"><strong aria-hidden="true">3.3.</strong> Benches</a></li><li class="chapter-item expanded "><a href="../advanced_features/per_test_configuration.html"><strong aria-hidden="true">3.4.</strong> Per-test configuration</a></li><li class="chapter-item expanded "><a href="../advanced_features/flaky_tests.html"><strong aria-hidden="true">3.5.</strong> Flaky tests</a></li><li class="chapter-item expanded "><a href="../advanced_features/dynamic_test_generation.html"><strong aria-hidden="true">3.6.</strong> Dynamic test generation</a></li></ol></li><li class="chapter-item expanded "><a href="../how_to.html"><strong aria-hidden="true">4.</strong> How to</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../how_to/tracing.html"><strong aria-hidden="true">4.1.</strong> Tracing</a></li><li class="chapter-item expanded "><a href="../how_to/property_based_testing.html"><strong aria-hidden="true">4.2.</strong> Property based testing</a></li><li class="chapter-item expanded "><a href="../how_to/golden_tests.html"><strong aria-hidden="true">4.3.</strong> Golden tests</a></li><li class="chapter-item expanded "><a href="../how_to/run_tests_on_github_actions.html"><strong aria-hidden="true">4.4.</strong> GitHub Actions with JUnit</a></li></ol></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">test-r</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="defining-tests"><a class="header" href="#defining-tests">Defining tests</a></h1>
+<h2 id="enabling-the-test-r-harness"><a class="header" href="#enabling-the-test-r-harness">Enabling the test-r harness</a></h2>
+<p>Writing tests with <code>test-r</code> is very similar to writing tests with the built-in test framework, but there are a few differences.</p>
+<h3 id="disabling-the-built-in-test-harness"><a class="header" href="#disabling-the-built-in-test-harness">Disabling the built-in test harness</a></h3>
+<p>First, for every build target where <code>test-r</code> is going to be used, the built-in test harness must be disabled.</p>
+<p>This is done by putting <code>harness = false</code> in build target's section in <code>Cargo.toml</code>:</p>
+<pre><code class="language-toml">[lib]
+harness = false
+
+[[bin]]
+harness = false
+
+[[test]]
+name = "integ-test-1"
+harness = false
+
+[[test]]
+name = "integ-test-2"
+harness = false
+
+# ...
+</code></pre>
+<h3 id="mixing-test-r-and-the-built-in-test-harness"><a class="header" href="#mixing-test-r-and-the-built-in-test-harness">Mixing test-r and the built-in test harness</a></h3>
+<p>It is recommended to turn off running tests completely in the rest of the targets. For example if the crate produces both a library and an executable, and all the tests are in the library part, then put <code>test = false</code> in the <code>[[bin]]</code> section:</p>
+<pre><code class="language-toml">[[bin]]
+test = false
+
+[lib]
+harness = false
+</code></pre>
+<p>Without this, <code>cargo test</code> will run all the test harnesses including the one where the built-in harness is not disabled (<code>[[bin]]</code> in this case), which may fail on some unsupported command line arguments that the <code>test-r</code> harness accepts.</p>
+<p>If the intention is to use both <code>test-r</code> and the built-in test harness in the same crate, that's possible, but be careful with the command line arguments passed to <code>cargo test</code> as some of them may be only supported by the <em>unstable</em> version of the built-in test framework.</p>
+<h3 id="enabling-the-test-r-harness-1"><a class="header" href="#enabling-the-test-r-harness-1">Enabling the test-r harness</a></h3>
+<p>For every target where the built-in harness was disabled (with <code>harness = false</code>), we need to install <code>test-r</code>'s test runner instead. In other words, if the compilation is in <code>test</code> mode, we have to define a <code>main</code> function that runs the <code>test-r</code> test runner.</p>
+<p>This can be done by adding the following macro invocation at the root of the given build target:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[cfg(test)]
+test_r::enable!();
+<span class="boring">}</span></code></pre></pre>
+<ul>
+<li>For <code>[lib]</code> targets, this should be in <code>src/lib.rs</code> (or whatever crate root is specified)</li>
+<li>For <code>[[bin]]</code> targets, this should be in the <code>src/main.rs</code>, <code>src/bin/*.rs</code> files or the one explicitly set in the crate manifest, for each binary</li>
+<li>For <code>[[test]]</code> targets, this should be in the <code>tests/*.rs</code> files for each test</li>
+</ul>
+<h2 id="writing-tests"><a class="header" href="#writing-tests">Writing tests</a></h2>
+<p>Writing tests is done exactly the same way as with the built-in test framework, but with using <code>test-r</code>'s <code>#[test]</code> attribute instead of the built-in one. We recommend importing the test attribute with <code>use test_r::test;</code> so the actual test definitions look identical to the built-in ones, but it is not mandatory.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[cfg(test)]
+mod tests {
+    use test_r::test;
+
+    #[test]
+    fn test_lib_function() {
+        assert_eq!(lib_function(), 11);
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Within the test function itself any assertion macros from the standard library or any of the third-party assertion crates can be used. (All panics are caught and reported as test failures.)</p>
+<h2 id="writing-async-tests"><a class="header" href="#writing-async-tests">Writing async tests</a></h2>
+<p>The same <code>#[test]</code> attribute can be used for async tests as well. The test runner will automatically detect if the test function is async and run it accordingly.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[cfg(test)]
+mod tests {
+    use test_r::test;
+
+    #[test]
+    async fn test_async_function() {
+        assert_eq!(async_lib_function().await, 11);
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Support for async tests requires the <code>tokio</code> feature, which is enabled by default.</p>
+<div class="warning">
+There is a difference in how <code>test-r</code> runs async tests compared to how <code>#[tokio::test]</code> does. While tokio's test attribute spawns a new current-thread (by default) Tokio runtime for each test, <code>test-r</code> uses a single multi-threaded runtime to run all the tests. This is intentional, to allow <b>shared dependencies</b> that in some way depend on the runtime itself. 
+</div>
+<h2 id="tests-returning-result"><a class="header" href="#tests-returning-result">Tests returning Result</a></h2>
+<p>Tests in <code>test-r</code> can have a <code>Result&lt;_, _&gt;</code> return type. This makes it easier to chain multiple functions within the test that can return with an <code>Err</code>, no need to <code>unwrap</code> each. A test that returns a <code>Result::Err</code> will be marked as failed just like as if it had panicked.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[cfg(test)]
+mod tests {
+    use test_r::test;
+
+    #[test]
+    fn test_lib_function() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+        let result = lib_function()?;
+        assert_eq!(result, 11);
+        Ok(())
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="ignoring-tests"><a class="header" href="#ignoring-tests">Ignoring tests</a></h2>
+<p>The standard <code>#[ignore]</code> attribute can be used to mark a test as ignored.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test]
+#[ignore]
+fn ignored_test() {
+    assert!(false);
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Ignored tests can be run with the <code>--include-ignored</code> or <code>--ignored</code> flags, as explained in the <a href="running_tests.html">running tests page</a>.</p>
+<h2 id="testing-for-panics"><a class="header" href="#testing-for-panics">Testing for panics</a></h2>
+<p>The <code>#[should_panic]</code> attribute can be used to mark a test as expected to panic. The test will pass if it panics, and fail if it doesn't.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test]
+#[should_panic]
+fn panicking_test() {
+    panic!("This test is expected to panic");
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Optionally the <code>expected</code> argument can be used to only accept panics containing a specific message:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test]
+#[should_panic(expected = "expected to panic")]
+fn panicking_test() {
+    panic!("This test is expected to panic");
+}
+<span class="boring">}</span></code></pre></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../core_features.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../core_features/running_tests.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../core_features.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../core_features/running_tests.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

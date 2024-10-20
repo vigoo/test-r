@@ -1,0 +1,928 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>test-r</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('light')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded "><a href="getting_started.html"><strong aria-hidden="true">1.</strong> Getting started</a></li><li class="chapter-item expanded "><a href="core_features.html"><strong aria-hidden="true">2.</strong> Core features</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="core_features/defining_tests.html"><strong aria-hidden="true">2.1.</strong> Defining tests</a></li><li class="chapter-item expanded "><a href="core_features/running_tests.html"><strong aria-hidden="true">2.2.</strong> Running tests</a></li><li class="chapter-item expanded "><a href="core_features/test_output.html"><strong aria-hidden="true">2.3.</strong> Test output</a></li></ol></li><li class="chapter-item expanded "><a href="advanced_features.html"><strong aria-hidden="true">3.</strong> Advanced features</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="advanced_features/dependency_injection.html"><strong aria-hidden="true">3.1.</strong> Dependency injection</a></li><li class="chapter-item expanded "><a href="advanced_features/tags.html"><strong aria-hidden="true">3.2.</strong> Tags</a></li><li class="chapter-item expanded "><a href="advanced_features/benches.html"><strong aria-hidden="true">3.3.</strong> Benches</a></li><li class="chapter-item expanded "><a href="advanced_features/per_test_configuration.html"><strong aria-hidden="true">3.4.</strong> Per-test configuration</a></li><li class="chapter-item expanded "><a href="advanced_features/flaky_tests.html"><strong aria-hidden="true">3.5.</strong> Flaky tests</a></li><li class="chapter-item expanded "><a href="advanced_features/dynamic_test_generation.html"><strong aria-hidden="true">3.6.</strong> Dynamic test generation</a></li></ol></li><li class="chapter-item expanded "><a href="how_to.html"><strong aria-hidden="true">4.</strong> How to</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="how_to/tracing.html"><strong aria-hidden="true">4.1.</strong> Tracing</a></li><li class="chapter-item expanded "><a href="how_to/property_based_testing.html"><strong aria-hidden="true">4.2.</strong> Property based testing</a></li><li class="chapter-item expanded "><a href="how_to/golden_tests.html"><strong aria-hidden="true">4.3.</strong> Golden tests</a></li><li class="chapter-item expanded "><a href="how_to/run_tests_on_github_actions.html"><strong aria-hidden="true">4.4.</strong> GitHub Actions with JUnit</a></li></ol></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">test-r</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="getting-started-with-test-r"><a class="header" href="#getting-started-with-test-r">Getting started with <code>test-r</code></a></h1>
+<p><code>test-r</code> is a testing framework for Rust which is <em>almost</em> a drop-in replacement for built-in tests, but enables several advanced features such as dependency injection, dynamic test generation, custom tags, inline customization of the test execution and more.</p>
+<p>By replicating the built-in test framework's command line interface, <code>test-r</code> tests work seamlessly with IDEs like Visual Studio Code, IntelliJ IDEA, Zed, and others. <code>test-r</code> also implements many unstable features of the built-in test framework, such as customizable test output, reporting and ensuring execution time, shuffling test execution and running <code>#[bench]</code> benchmarks.</p>
+<p>To start using <code>test-r</code>, add it to the <code>dev-dependencies</code> section of your <code>Cargo.toml</code>:</p>
+<pre><code class="language-toml">[dev-dependencies]
+test-r = "1"
+</code></pre>
+<p>There are three additional steps to take when using <code>test-r</code> in place of the built-in tests:</p>
+<ol>
+<li>Disabling the built-in test harness for every build target where <code>test-r</code> will be used</li>
+<li>Enabling the <code>test-r</code> test harness by including its main function in every build target</li>
+<li>Import <code>test-r</code>'s custom <code>test</code> attribute where <code>#[test]</code> is used</li>
+</ol>
+<p>This is explained in details on the <a href="./core_features/defining_tests.html">Defining tests</a> page, but the example below demonstrates how to set up a simple crate to run tests with <code>test-r</code>.</p>
+<h2 id="example"><a class="header" href="#example">Example</a></h2>
+<p>The following <code>Cargo.toml</code> file sets up a simple library crate with <code>test-r</code>:</p>
+<pre><code class="language-toml">[package]
+name = "test-r-demo"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+harness = false # Disable the built-in test harness
+
+[dev-dependencies]
+test-r = "1"
+</code></pre>
+<p>And a simple <code>src/lib.rs</code> file defining a single public function and a test for it:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[cfg(test)]
+test_r::enable!(); // Enabling test-r's test harness (once per build target)
+
+pub fn lib_function() -&gt; u64 {
+    println!("lib_function called");
+    11
+}
+
+#[cfg(test)]
+mod tests {
+    use test_r::test; // Replacing the built-in #[test] attribute
+
+    use super::*;
+
+    #[test]
+    fn test_lib_function() {
+        assert_eq!(lib_function(), 11);
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="optional-crate-features"><a class="header" href="#optional-crate-features">Optional crate features</a></h2>
+<p>The <code>test-r</code> test framework with the default set of enabled features supports running both sync and async tests, using <a href="https://tokio.rs">Tokio</a> as the async runtime.
+It is possible to turn off the async support by disabling the <code>tokio</code> feature:</p>
+<pre><code class="language-toml">[dev-dependencies]
+test-r = { version = "1", default-features = false }
+</code></pre>
+<h2 id="real-world-usage"><a class="header" href="#real-world-usage">Real-world usage</a></h2>
+<p>This section lists known projects that use <code>test-r</code>:</p>
+<ul>
+<li><a href="https://golem.cloud">Golem Cloud</a> uses <code>test-r</code> for all its unit and integration tests. (<a href="https://github.com/golemcloud/">GitHub</a>)</li>
+</ul>
+<h2 id="what-is-not-supported"><a class="header" href="#what-is-not-supported">What is not supported?</a></h2>
+<p>The following features are not supported by <code>test-r</code>:</p>
+<ul>
+<li>Running <strong>doctests</strong></li>
+<li>Output capturing cannot be used together with parallel execution AND dependency injection. Any two of these three features can be chosen, but not all three at the same time.</li>
+</ul>
+<h2 id="acknowledgements"><a class="header" href="#acknowledgements">Acknowledgements</a></h2>
+<p>Most of <code>test-r</code>'s features were inspired by working with test frameworks in other languages, especially the <a href="https://zio.dev/reference/test/">ZIO Test</a> framework for Scala. The idea of replicating the built-in harness' command line interface came from the <a href="https://github.com/LukasKalbertodt/libtest-mimic/">libtest-mimic crate</a>. For some features that replicate built-in functionality, parts of the original <a href="https://github.com/rust-lang/rust/tree/master/library/test">libtest source code</a> have been reused.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="core-features"><a class="header" href="#core-features">Core features</a></h1>
+<p>This chapter covers the core features of <code>test-r</code>:</p>
+<ul>
+<li><a href="./core_features/defining_tests.html">Defining tests</a> using the <code>#[test]</code> attribute</li>
+<li><a href="./core_features/running_tests.html">Running tests</a> with the usual command line options</li>
+<li><a href="./core_features/test_output.html">Customizing the test output</a></li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="defining-tests"><a class="header" href="#defining-tests">Defining tests</a></h1>
+<h2 id="enabling-the-test-r-harness"><a class="header" href="#enabling-the-test-r-harness">Enabling the test-r harness</a></h2>
+<p>Writing tests with <code>test-r</code> is very similar to writing tests with the built-in test framework, but there are a few differences.</p>
+<h3 id="disabling-the-built-in-test-harness"><a class="header" href="#disabling-the-built-in-test-harness">Disabling the built-in test harness</a></h3>
+<p>First, for every build target where <code>test-r</code> is going to be used, the built-in test harness must be disabled.</p>
+<p>This is done by putting <code>harness = false</code> in build target's section in <code>Cargo.toml</code>:</p>
+<pre><code class="language-toml">[lib]
+harness = false
+
+[[bin]]
+harness = false
+
+[[test]]
+name = "integ-test-1"
+harness = false
+
+[[test]]
+name = "integ-test-2"
+harness = false
+
+# ...
+</code></pre>
+<h3 id="mixing-test-r-and-the-built-in-test-harness"><a class="header" href="#mixing-test-r-and-the-built-in-test-harness">Mixing test-r and the built-in test harness</a></h3>
+<p>It is recommended to turn off running tests completely in the rest of the targets. For example if the crate produces both a library and an executable, and all the tests are in the library part, then put <code>test = false</code> in the <code>[[bin]]</code> section:</p>
+<pre><code class="language-toml">[[bin]]
+test = false
+
+[lib]
+harness = false
+</code></pre>
+<p>Without this, <code>cargo test</code> will run all the test harnesses including the one where the built-in harness is not disabled (<code>[[bin]]</code> in this case), which may fail on some unsupported command line arguments that the <code>test-r</code> harness accepts.</p>
+<p>If the intention is to use both <code>test-r</code> and the built-in test harness in the same crate, that's possible, but be careful with the command line arguments passed to <code>cargo test</code> as some of them may be only supported by the <em>unstable</em> version of the built-in test framework.</p>
+<h3 id="enabling-the-test-r-harness-1"><a class="header" href="#enabling-the-test-r-harness-1">Enabling the test-r harness</a></h3>
+<p>For every target where the built-in harness was disabled (with <code>harness = false</code>), we need to install <code>test-r</code>'s test runner instead. In other words, if the compilation is in <code>test</code> mode, we have to define a <code>main</code> function that runs the <code>test-r</code> test runner.</p>
+<p>This can be done by adding the following macro invocation at the root of the given build target:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[cfg(test)]
+test_r::enable!();
+<span class="boring">}</span></code></pre></pre>
+<ul>
+<li>For <code>[lib]</code> targets, this should be in <code>src/lib.rs</code> (or whatever crate root is specified)</li>
+<li>For <code>[[bin]]</code> targets, this should be in the <code>src/main.rs</code>, <code>src/bin/*.rs</code> files or the one explicitly set in the crate manifest, for each binary</li>
+<li>For <code>[[test]]</code> targets, this should be in the <code>tests/*.rs</code> files for each test</li>
+</ul>
+<h2 id="writing-tests"><a class="header" href="#writing-tests">Writing tests</a></h2>
+<p>Writing tests is done exactly the same way as with the built-in test framework, but with using <code>test-r</code>'s <code>#[test]</code> attribute instead of the built-in one. We recommend importing the test attribute with <code>use test_r::test;</code> so the actual test definitions look identical to the built-in ones, but it is not mandatory.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[cfg(test)]
+mod tests {
+    use test_r::test;
+
+    #[test]
+    fn test_lib_function() {
+        assert_eq!(lib_function(), 11);
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Within the test function itself any assertion macros from the standard library or any of the third-party assertion crates can be used. (All panics are caught and reported as test failures.)</p>
+<h2 id="writing-async-tests"><a class="header" href="#writing-async-tests">Writing async tests</a></h2>
+<p>The same <code>#[test]</code> attribute can be used for async tests as well. The test runner will automatically detect if the test function is async and run it accordingly.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[cfg(test)]
+mod tests {
+    use test_r::test;
+
+    #[test]
+    async fn test_async_function() {
+        assert_eq!(async_lib_function().await, 11);
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Support for async tests requires the <code>tokio</code> feature, which is enabled by default.</p>
+<div class="warning">
+There is a difference in how <code>test-r</code> runs async tests compared to how <code>#[tokio::test]</code> does. While tokio's test attribute spawns a new current-thread (by default) Tokio runtime for each test, <code>test-r</code> uses a single multi-threaded runtime to run all the tests. This is intentional, to allow <b>shared dependencies</b> that in some way depend on the runtime itself. 
+</div>
+<h2 id="tests-returning-result"><a class="header" href="#tests-returning-result">Tests returning Result</a></h2>
+<p>Tests in <code>test-r</code> can have a <code>Result&lt;_, _&gt;</code> return type. This makes it easier to chain multiple functions within the test that can return with an <code>Err</code>, no need to <code>unwrap</code> each. A test that returns a <code>Result::Err</code> will be marked as failed just like as if it had panicked.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[cfg(test)]
+mod tests {
+    use test_r::test;
+
+    #[test]
+    fn test_lib_function() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+        let result = lib_function()?;
+        assert_eq!(result, 11);
+        Ok(())
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="ignoring-tests"><a class="header" href="#ignoring-tests">Ignoring tests</a></h2>
+<p>The standard <code>#[ignore]</code> attribute can be used to mark a test as ignored.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test]
+#[ignore]
+fn ignored_test() {
+    assert!(false);
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Ignored tests can be run with the <code>--include-ignored</code> or <code>--ignored</code> flags, as explained in the <a href="core_features/running_tests.html">running tests page</a>.</p>
+<h2 id="testing-for-panics"><a class="header" href="#testing-for-panics">Testing for panics</a></h2>
+<p>The <code>#[should_panic]</code> attribute can be used to mark a test as expected to panic. The test will pass if it panics, and fail if it doesn't.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test]
+#[should_panic]
+fn panicking_test() {
+    panic!("This test is expected to panic");
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Optionally the <code>expected</code> argument can be used to only accept panics containing a specific message:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test]
+#[should_panic(expected = "expected to panic")]
+fn panicking_test() {
+    panic!("This test is expected to panic");
+}
+<span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="running-tests"><a class="header" href="#running-tests">Running tests</a></h1>
+<p><code>test-r</code> replicates the command line interface of the built-in test harness, so every integration (scripts, IDE support, etc) should work just like without using <code>test-r</code>.
+This includes some of the unstable flags too, <code>test-r</code> let's use them without the need to enable the unstable features in the compiler.</p>
+<h2 id="cargo-test-parameters-vs-test-r-parameters"><a class="header" href="#cargo-test-parameters-vs-test-r-parameters">Cargo test parameters vs test-r parameters</a></h2>
+<p>The <code>cargo test</code> command takes some of its own options, a test name, and a list of arguments passed to the test harness itself:```</p>
+<pre><code>Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]
+</code></pre>
+<p>The paramters passed in <code>OPTIONS</code> select which test targets to build and run. See <a href="https://doc.rust-lang.org/cargo/commands/cargo-test.html">the official documentation</a> for more details.</p>
+<p><code>TESTNAME</code> is an optional parameter which selects which tests to run in each selected test target. How exactly it is interpreted depends on other options passed in the <code>ARGS</code> part.</p>
+<h2 id="choose-what-to-run"><a class="header" href="#choose-what-to-run">Choose what to run</a></h2>
+<h3 id="matching-on-test-names"><a class="header" href="#matching-on-test-names">Matching on test names</a></h3>
+<pre><code class="language-sh">cargo test hello
+</code></pre>
+<p>executes all tests that have the <code>hello</code> substring in their <strong>fully qualified name</strong> (module path + function name).</p>
+<pre><code class="language-sh">cargo test hello -- --exact
+</code></pre>
+<p>will only run the test that has the exact <strong>fully qualified name</strong> <code>hello</code>, which in this case means a function named <code>hello</code> in the root module.</p>
+<p>There is a special syntax to match on <strong>tags</strong>, <a href="core_features//advanced_features/tags.html">see the tags chapter</a> for more details.</p>
+<h3 id="ignored-tests"><a class="header" href="#ignored-tests">Ignored tests</a></h3>
+<p>Tests marked with the <code>#[ignore]</code> attribute are not run by default. To run them, use the <code>--include-ignored</code> flag.
+It is also possible to run <strong>only the ignored tests</strong> with the <code>--ignored</code> flag.</p>
+<h3 id="tests-expecting-panic"><a class="header" href="#tests-expecting-panic">Tests expecting panic</a></h3>
+<p>Tests using the <code>#[should_panic]</code> attribute are run by default, but can be skipped with the <code>--exclude-should-panic</code> flag.</p>
+<h3 id="tests-vs-benchmarks"><a class="header" href="#tests-vs-benchmarks">Tests vs benchmarks</a></h3>
+<p>The framework supports not only tests (defined with <code>#[test]</code>), but also benchmarks (defined with <code>#[bench]</code>). By default, the test runner executes both. It is possible to only run tests or benches with the <code>--test</code> and <code>--bench</code> flags.</p>
+<h3 id="skipping-some-tests"><a class="header" href="#skipping-some-tests">Skipping some tests</a></h3>
+<p>The <code>--skip</code> option can be used to skip some tests (just like if they were marked with <code>#[ignore]</code>). It can be used multiple times to mark multiple tests to skip.</p>
+<h2 id="parallelism"><a class="header" href="#parallelism">Parallelism</a></h2>
+<p>By default, the test runner uses as many threads as there are logical cores on the machine. This can be changed with the <code>--test-threads</code> flag.</p>
+<pre><code>cargo test -- --test-threads=1
+</code></pre>
+<p>Note that parallelism can be also controlled on the code level <strong>per test suite</strong> with the <code>#[sequential]</code> attribute. See the <a href="core_features//advanced_features/per_test_configuration.html">per-test configuration chapter</a> for more details.</p>
+<h2 id="shuffle"><a class="header" href="#shuffle">Shuffle</a></h2>
+<p>The test runner executes tests in definition order. To shuffle the order, use the <code>--shuffle</code> flag. To have a deterministic, but shuffled order, use the <code>--shuffle-seed</code> providing a numeric seed.</p>
+<h2 id="listing-tests"><a class="header" href="#listing-tests">Listing tests</a></h2>
+<p>It is possible to just list all the available tests, without executing anything with the --list command:</p>
+<pre><code class="language-sh">cargo test -- --list
+</code></pre>
+<h2 id="test-output"><a class="header" href="#test-output">Test output</a></h2>
+<p>There are various options controlling the <strong>output</strong> of the test runner. See the <a href="core_features//core_features/test_output.html">test output chapter</a> for more details.</p>
+<h2 id="debugging"><a class="header" href="#debugging">Debugging</a></h2>
+<p>Output capturing is implemented by forking one or more child processes and attaching to their standard output and error channels. This means that attaching a <strong>debugger</strong> to the parent process will not work as expected. When using a debugger, always pass the <code>--nocapture</code> flag to the test runner to disable output capturing, which guarantees that all the tests are executed in the single root process.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="test-output-1"><a class="header" href="#test-output-1">Test output</a></h1>
+<p>The default setting of <code>test-r</code> is to use the <strong>pretty</strong> format and capture test outputs.</p>
+<h2 id="output-format"><a class="header" href="#output-format">Output format</a></h2>
+<p>There are four supported output formats in <code>test-r</code>, which can be selected with the <code>--format</code> flag:</p>
+<ul>
+<li><code>pretty</code> (default) - human-readable output showing the progress and the final results in a verbose way</li>
+<li><code>terse</code> - human-readable output, only emitting a single character for each test during the test run</li>
+<li><code>json</code> - emits JSON messages during the test run, useful for integration with other tools like IDEs</li>
+<li><code>junit</code> - writes a JUnit XML test report, useful for generating browsable test reports</li>
+</ul>
+<p>When using the <code>pretty</code> (default) mode, the <code>--color</code> flag can be used to control whether the output should use colors or not:</p>
+<ul>
+<li><code>auto</code> (default) - colors are used if the terminal supports them</li>
+<li><code>always</code> - always use colors</li>
+<li><code>never</code> - do not use colors</li>
+</ul>
+<h2 id="capturing-the-test-output"><a class="header" href="#capturing-the-test-output">Capturing the test output</a></h2>
+<p>When <strong>output capturing</strong> is enabled, lines written to either the standard output or standard error channels are not shown immediately as the test runs. Instead, they are only shown if the test fails. This allows nicer visual tracking of the test progress and results.</p>
+<p>The following options control this behavior:</p>
+<ul>
+<li><code>--nocapture</code> - disables output capturing, showing the output of each test as it runs</li>
+<li><code>--show-output</code> - shows the output of all tests <strong>after they finish</strong>, regardless of whether they passed or failed</li>
+</ul>
+<p>Note that this global setting of output capturing can be overwritten on a per-test basis using the <code>#[always_capture]</code> and <code>#[never_capture]</code> attributes, as explained in the <a href="core_features//advanced_features/per_test_configuration.html">per-test configuration chapter</a>.</p>
+<div class="warning">
+When attaching a debugger, always pass the `--nocapture` flag to the test runner to disable output capturing, which guarantees that all the tests are executed in the single root process the debugger is attached to.
+</div>
+<div class="warning">
+Output capturing, parallel execution and shared test dependencies cannot be used together. The reason is that output capturing relies on forking child processes to capture their outputs, and the shared dependencies cannot be shared between these processes. If shared dependencies are used, and the <code>--nocapture</code> flag is not present, the test runner will emit a warning and fall back to single threaded execution. 
+</div>
+<h2 id="measuring-and-ensuring-execution-time"><a class="header" href="#measuring-and-ensuring-execution-time">Measuring and ensuring execution time</a></h2>
+<p>By default <code>test-r</code> follows the built-in test harness behavior and does not report test execution times. This can be changed by passing the <code>--report-time</code> flag. The <code>--ensure-time</code> flag not only reports these per-test execution times, but fails the test run if they exceed a pre-configured value. Learn more about this in <a href="https://doc.rust-lang.org/beta/unstable-book/compiler-flags/report-time.html">The Rust Unstable Book</a>.</p>
+<p>Note that <code>test-r</code> provides a nicer way to fail long running tests (but only if the <code>tokio</code> feature is enabled) using the <code>#[timeout(ms)]</code> attribute, as explained in the <a href="core_features//advanced_features/per_test_configuration.html">per-test configuration chapter</a>.</p>
+<h2 id="saving-the-output-to-a-log-file"><a class="header" href="#saving-the-output-to-a-log-file">Saving the output to a log file</a></h2>
+<p>The test output can be saved into a log file using the <code>--logfile &lt;path&gt;</code> flag. Because of the <a href="https://github.com/rust-lang/rust/issues/105424">issue described in the Rust issue tracker</a>, the test runner cannot directly use the provided path as other test harnesses would overwrite it. Instead, <code>test-r</code> interprets the provided path as a template, and appends a random UUID to its file name part for each generated log file. This allows saving multiple JUnit test reports, for example, into a single directory, where a test browser can pick them up from.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="advanced-features"><a class="header" href="#advanced-features">Advanced features</a></h1>
+<p>This chapter covers the advanced features of <code>test-r</code>, which are either not available at all using the built-in test harness,
+or at least being unstable.</p>
+<ul>
+<li><a href="./advanced_features/dependency_injection.html">Dependency injection</a> allows sharing dependencies between tests.</li>
+<li><a href="./advanced_features/tags.html">Tags</a> allow grouping tests and running only a subset of them.</li>
+<li><a href="./advanced_features/benches.html">Benches</a> are used to measure the performance of functions.</li>
+<li><a href="./advanced_features/per_test_configuration.html">Per-test configuration</a> allows customizing the test execution from the code, instead of using command line options.</li>
+<li><a href="./advanced_features/flaky_tests.html">Flaky tests</a> can be either retried, or executed multiple times to verify they aren't flaky</li>
+<li><a href="./advanced_features/dynamic_test_generation.html">Dynamic test generation</a> allows creating new tests from code</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="dependency-injection"><a class="header" href="#dependency-injection">Dependency injection</a></h1>
+<p>Tests can share dependencies in <code>test-r</code>. This is especially useful for integration tests where setting up the integration environment is expensive.</p>
+<h2 id="using-shared-dependencies"><a class="header" href="#using-shared-dependencies">Using shared dependencies</a></h2>
+<p>To <strong>use</strong> a shared dependency from a test, we simply need to add a reference parameter to the test function:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::test;
+
+struct SharedDependency {
+    value: i32,
+}
+
+struct OtherDependency {
+    value: i32,
+}
+
+#[test]
+fn test1(shared: &amp;SharedDependency) {
+    assert_eq!(shared.value, 42);
+}
+
+#[test]
+async fn test2(shared: &amp;SharedDependency, other: &amp;OtherDependency) {
+    assert_eq!(shared.value, other.value);
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The name of the parameters does not matter - test dependencies are indexed by their <strong>type</strong>. If a test needs multiple instances of the same type, a newtype wrapper can be used to distinguish them.</p>
+<h2 id="providing-shared-dependencies"><a class="header" href="#providing-shared-dependencies">Providing shared dependencies</a></h2>
+<p>Shared dependencies need to be provided for <strong>each test suite</strong>. A test suite in <code>test-r</code> is the enclosing <strong>module</strong> where the test functions are defined. It is possible to provide different values for the same dependency in different suites, but it is also possible to "import" provided dependencies from an outer suite. This flexibility allows for a wide range of uses cases, from defining singleton dependencies for a whole crate to detailed customization for specific tests.</p>
+<p>Test dependencies are provided by <strong>constructor functions</strong> annotated with <code>#[test_dep]</code>. The constructor function can be sync or async (if the <code>tokio</code> feature is enabled):</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::test_dep;
+
+#[test_dep]
+async fn shared_dependency() -&gt; SharedDependency {
+    SharedDependency { value: 42 }
+}
+
+#[test_dep]
+fn other_dependency() -&gt; OtherDependency {
+    OtherDependency { value: 42 }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Whether the dependency was created by a sync or async function does not matter - they can be used in both sync and async tests.</p>
+<h3 id="using-dependencies-provided-for-an-outer-test-suite"><a class="header" href="#using-dependencies-provided-for-an-outer-test-suite">Using dependencies provided for an outer test suite</a></h3>
+<p>As explained above, test dependencies must be provided in <strong>each test module</strong>. So if we want to use the same instances in an inner test suite, it has to be <strong>inherited</strong>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>mod inner {
+    use test_r::{inher_test_dep, test};
+    use super::SharedDependency;
+    
+    inherit_test_dep!(SharedDependency);
+    
+    #[test]
+    fn test3(shared: &amp;SharedDependency) {
+        assert_eq!(shared.value, 42);
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="dependency-graph"><a class="header" href="#dependency-graph">Dependency graph</a></h2>
+<p>Test dependency constructors can depend on other dependencies just like tests are. This allows defining a complex <strong>dependency graph</strong>, where each shared dependency is created in the correct order, and only when needed, and they got dropped as soon as no other test needs them.</p>
+<p>The following example defines a third dependency (based on the above examples) which requires the other two to get constructed:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>struct ThirdDependency {
+    value: i32,
+}
+
+#[test_dep]
+fn third_dependency(shared: &amp;SharedDependency, other: &amp;OtherDependency) -&gt; ThirdDependency {
+    ThirdDependency { value: shared.value + other.value }
+}
+<span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="tags"><a class="header" href="#tags">Tags</a></h1>
+<h2 id="assigning-tags"><a class="header" href="#assigning-tags">Assigning tags</a></h2>
+<p>Tests can be associated with an arbitrary number of <strong>tags</strong>. Each tag is global, and must be a valid Rust identifier.
+Tags can be assigned to tests using the <code>#[tag]</code> attribute:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{tag, test};
+
+#[tag(tag1)]
+#[tag(tag2)]
+#[test]
+fn tagged_test() {
+    assert!(true);
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="tagging-entire-test-suites"><a class="header" href="#tagging-entire-test-suites">Tagging entire test suites</a></h2>
+<p>It is possible to tag an entire <strong>test suite</strong>. This can be done by using the <code>#[tags]</code> attribute on the module containing the tests,
+or alternatively using the <code>tag_suite!</code> macro:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{tag, tag_suite, test};
+
+mod inner1;
+
+tag_suite!(inner1, tag1);
+
+#[tags(tag2)]
+mod inner2 {
+    // ...
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The <code>tag_suite!</code> macro is necessary because currently it is not possible to put attributes on non-inlined modules.</p>
+<h2 id="running-tagged-tests"><a class="header" href="#running-tagged-tests">Running tagged tests</a></h2>
+<p>The purpose of tagging tests is to run a subset of the crate's tests selected by tags. To select tests by tags, use the
+<code>:tag:</code> prefix when passing the <strong>test name</strong> to <code>cargo test</code>:</p>
+<pre><code class="language-sh">cargo test :tag:tag1
+</code></pre>
+<p>This example will run every test tagged as <code>tag1</code>, but no others.</p>
+<h3 id="selecting-untagged-tests"><a class="header" href="#selecting-untagged-tests">Selecting untagged tests</a></h3>
+<p>Sometimes it is useful to select all tests <strong>without a tag</strong>. This can be done by using the <code>:tag:</code> prefix with no tag name:</p>
+<pre><code class="language-sh">cargo test :tag:
+</code></pre>
+<h3 id="selecting-tests-by-multiple-tags"><a class="header" href="#selecting-tests-by-multiple-tags">Selecting tests by multiple tags</a></h3>
+<p>Multiple tags can be combined with the <code>|</code> (or) and <code>&amp;</code> (and) operators. The <code>&amp;</code> operator has higher precedence than <code>|</code>. So the following example:</p>
+<pre><code class="language-sh">cargo test ':tag:tag1|tag2&amp;tag3'
+</code></pre>
+<p>is going to run tests tagged as either <code>tag1</code> or both <code>tag2</code> and <code>tag3</code>.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="benches"><a class="header" href="#benches">Benches</a></h1>
+<p><code>test-r</code> provides a simple benchmark runner as well, very similar to the built-in one in unstable Rust. The main differences are that <code>test-r</code> allows defining async bench functions too (when the <code>tokio</code> feature is enabled), and that benchmark functions also support <a href="advanced_features/./dependency_injection.html">dependency injection</a>.</p>
+<h2 id="defining-benchmarks"><a class="header" href="#defining-benchmarks">Defining benchmarks</a></h2>
+<p>To define a benchmark, just use the <code>#[bench]</code> attribute instead of a <code>#[test]</code> attribute on a function that takes a mutable reference to a <code>Bencher</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{bench, Bencher};
+
+#[bench]
+fn bench1(b: &amp;mut Bencher) {
+    b.iter(|| 10 + 11);
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The benchmark framework will measure the performance of the function passed to the <code>iter</code> method on the bencher.</p>
+<p>If a benchmark needs <strong><a href="advanced_features/./dependency_injection.html">shared dependencies</a></strong>, they can be added as additional parameters to the benchmark function. The <code>&amp;mut Bencher</code> parameter must always be the first one.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{bench, Bencher};
+
+struct SharedDependency {
+    value: i32,
+}
+
+#[bench]
+fn bench2(b: &amp;mut Bencher, shared: &amp;SharedDependency) {
+    b.iter(|| shared.value + 11);
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="async-benchmarks"><a class="header" href="#async-benchmarks">Async benchmarks</a></h3>
+<p>When the <code>tokio</code> feature is enabled, benchmarks can be async too. Just use the <code>#[bench]</code> attribute on an async function that takes a mutable reference to an <code>AsyncBencher</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{bench, AsyncBencher};
+
+#[bench]
+async fn bench1(b: &amp;mut AsyncBencher) {
+    b.iter(|| Box::pin(async { 10 + 11 })).await;
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="running-benchmarks"><a class="header" href="#running-benchmarks">Running benchmarks</a></h2>
+<p>Benchmarks are run by default as part of <code>cargo test</code>, but they can be also separately executed using <code>cargo bench</code>, or by passing the <code>--bench</code> flag to <code>cargo test</code>.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="per-test-configuration"><a class="header" href="#per-test-configuration">Per-test configuration</a></h1>
+<p>Some aspects of the test runner can be enforced on a per-test or per-suite basis using special <strong>attributes</strong>, instead of relying on command line options.</p>
+<h2 id="enforce-sequential-execution"><a class="header" href="#enforce-sequential-execution">Enforce sequential execution</a></h2>
+<p>Parallelism of the test runner is normally controlled by the <code>--test-threads</code> command line argument. It is possible to enforce <strong>sequential execution</strong> for all tests within a <strong>test suite</strong> by putting the <code>#[sequential]</code> attribute on the module representing the suite:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{sequential, test};
+
+#[sequential]
+mod suite {
+    #[test]
+    fn test1() {
+        assert!(true);
+    }
+
+    #[test]
+    fn test2() {
+        assert!(true);
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The rest of the tests in the crate will still be parallelized based on the <code>--test-threads</code> argument.</p>
+<h2 id="always-or-never-capture-output"><a class="header" href="#always-or-never-capture-output">Always or never capture output</a></h2>
+<p>Two attributes can enforce capturing or not capturing the standard output and error of a test. Without these attributes, the runner will either capture (by default), or not (if the <code>--nocapture</code> command line argument is passed).</p>
+<p>When the <code>#[always_capture]</code> attribute is used on a <code>#[test]</code>, the output will be captured even if the <code>--nocapture</code> argument is passed. Conversely, the <code>#[never_capture]</code> attribute will prevent capturing the output even if the <code>--nocapture</code> argument is not passed.</p>
+<h2 id="timeout"><a class="header" href="#timeout">Timeout</a></h2>
+<p>The <code>#[timeout(duration)]</code> attribute can be used to enforce a timeout for a test. The timeout is specified in milliseconds as a number:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{test, timeout};
+
+#[timeout(1000)]
+#[test]
+async fn test1() {
+    tokio::time::sleep(std::time::Duration::from_secs(2));
+    assert!(true);
+}
+<span class="boring">}</span></code></pre></pre>
+<p>This feature only works when using the async test runner (enabled by the <code>tokio</code> feature).</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="working-with-flaky-tests"><a class="header" href="#working-with-flaky-tests">Working with flaky tests</a></h1>
+<p>Tests can be sometimes flaky, and only fail sporadically or depending on the environment or hardware they run on.</p>
+<p><code>test-r</code> provides two ways to handle flaky tests:</p>
+<h2 id="marking-tests-as-known-to-be-flaky"><a class="header" href="#marking-tests-as-known-to-be-flaky">Marking tests as known to be flaky</a></h2>
+<p>By using the <code>#[flaky(n)]</code> attribute, where <code>n</code> is a number, we acknowledge that a test is known to be flaky, and the test runner will retry it up to <code>n</code> times before marking it as failed.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{flaky, test};
+
+#[flaky(3)]
+#[test]
+fn flaky_test() {
+    assert!(false); // This test will fail 3 times before being marked as failed
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="ensuring-tests-are-not-flaky"><a class="header" href="#ensuring-tests-are-not-flaky">Ensuring tests are not flaky</a></h2>
+<p>The opposite appraoch is to ensure that a test is not flaky by running it multiple times. This can help in diagnosing flakiness and reproducing issues locally. The <code>#[non_flaky(n)]</code> attribute will run a test <code>n</code> times before marking it as succeeded.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{non_flaky, test};
+
+#[non_flaky(3)]
+#[test]
+fn non_flaky_test() {
+    assert!(true); // This test will pass 3 times before being marked as succeeded
+}
+<span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="dynamic-test-generation"><a class="header" href="#dynamic-test-generation">Dynamic test generation</a></h1>
+<p>Normally the test tree is static, defined compile time using <strong>modules</strong> representing test suites and <strong>functions</strong> annotated with <code>#[test]</code> defining test cases. Sometimes however it is useful to generate test cases runtime. <code>test-r</code> supports this using the <code>#[test_gen]</code> attribute.</p>
+<p>Test generators can be either sync or async (if the <code>tokio</code> feature is enabled). The generator function must take a single parameter, a mutable reference to <code>DynamicTestRegistration</code>. Dependency injection to the generator function is <strong>not supported</strong> currently, but the dynamically generated tests can use shared dependencies.</p>
+<p>The following two examples demonstrate generating sync and async tests using the <code>#[test_gen]</code> attribute:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{add_test, DynamicTestRegistration, TestType, test_gen};
+
+struct Dep1 {
+    value: i32,
+}
+
+struct Dep2 {
+    value: i32,
+}
+
+#[test_gen]
+fn gen_sync_tests(r: &amp;mut DynamicTestRegistration) {
+    println!("Generating some tests with dependencies in a sync generator");
+    for i in 0..10 {
+        add_test!(
+            r,
+            format!("test_{i}"),
+            TestType::UnitTest,
+            move |dep1: &amp;Dep1| {
+                println!("Running test {} using dep {}", i, dep1.value);
+                let s = i.to_string();
+                let i2 = s.parse::&lt;i32&gt;().unwrap();
+                assert_eq!(i, i2);
+            }
+        );
+    }
+}
+
+#[test_gen]
+async fn gen_async_tests(r: &amp;mut DynamicTestRegistration) {
+    println!("Generating some async tests with dependencies in a sync generator");
+    for i in 0..10 {
+        add_test!(
+            r,
+            format!("test_{i}"),
+            TestType::UnitTest,
+            move |dep1: &amp;Dep1, d2: &amp;Dep2| async {
+                println!("Running test {} using deps {} {}", i, dep1.value, d2.value);
+                let s = i.to_string();
+                let i2 = s.parse::&lt;i32&gt;().unwrap();
+                assert_eq!(i, i2);
+            }
+        );
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The generator functions are executed at the startup of the test runner, and all the generated tests are added to the test tree. The <strong>name</strong> of the generated tests must be unique. Each test is added to the <strong>test suite</strong> the generator function is defined in.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="how-to"><a class="header" href="#how-to">How to</a></h1>
+<p>This section contains a set of recommendations to solve various testing problems using a combination of <code>test-r</code> and other third party crates.</p>
+<ul>
+<li><a href="./how_to/tracing.html">Tracing</a> shows how to set up <a href="https://github.com/tokio-rs/tracing">Tokio tracing</a> for tests.</li>
+<li><a href="./how_to/property_based_testing.html">Property based testing</a> demonstrates how to use <a href="https://crates.io/crates/proptest">proptest</a> framework with <code>test-r</code>.</li>
+<li><a href="./how_to/golden_tests.html">Golden tests</a> are a way to compare the output of a test with a reference file.</li>
+<li><a href="./how_to/run_tests_on_github_actions.html">GitHub Actions with JUnit</a> explains how to run tests on GitHub Actions and show the results using the JUnit output format.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="tracing"><a class="header" href="#tracing">Tracing</a></h1>
+<p>Subscribers for <a href="https://github.com/tokio-rs/tracing">Tokio tracing</a> usually need to be set up once at the beginning of the application, and further calls to their initialization functions may cause panics.</p>
+<p>With <code>test-r</code>, the <a href="how_to/../advanced_features/dependency_injection.html">shared dependency feature</a> can be used to set up the tracing subscriber once before the first test is executed, and keep it alive until the end of the test run.</p>
+<p>The following example demonstrates this using the <code>tracing-subscriber</code> crate:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tracing_subscriber::fmt::format::FmtSpan;
+use test_r::{test_dep, test};
+
+struct Tracing;
+
+impl Tracing {
+    pub fn init() -&gt; Self {
+        tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer().pretty()
+        ).init();
+        Self
+    }
+}
+
+#[test_dep]
+fn tracing() -&gt; Tracing {
+    Tracing::init()
+}
+
+#[test]
+fn test1(_tracing: &amp;Tracing) {
+    tracing::info!("test1");
+}
+
+#[test]
+fn test2(_tracing: &amp;Tracing) {
+    tracing::info!("test2");
+}
+<span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="property-based-testing"><a class="header" href="#property-based-testing">Property based testing</a></h1>
+<h2 id="property-based-testing-using-the-proptest-crate"><a class="header" href="#property-based-testing-using-the-proptest-crate">Property based testing using the proptest crate</a></h2>
+<p>The <a href="https://crates.io/crates/proptest">proptest library</a> works well together with <code>test-r</code>. There is no special requirements, just make sure to import <code>test-r</code>'s <code>test</code> attribute before using the <code>proptest!</code> macro to define the property based tests.</p>
+<p>For example:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::test;
+use proptest::prelude::*;
+
+fn parse_date(s: &amp;str) -&gt; Option&lt;(u32, u32, u32)&gt; {
+    todo!()
+}
+
+proptest! {
+    #[test]
+    fn parses_all_valid_dates(s in "[0-9]{4}-[0-9]{2}-[0-9]{2}") {
+        parse_date(&amp;s);
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="golden-tests"><a class="header" href="#golden-tests">Golden tests</a></h1>
+<p>Golden tests are comparing a previously saved output for a given test with the current output. This can be very useful to verify backward compatibility, for example.
+There are several golden testing libraries available in the Rust ecosystem.</p>
+<p>The <code>test-r</code> crate does not provide a built-in support for golden tests, but it should work with most of these libraries.</p>
+<h2 id="golden-tests-with-the-goldenfile-crate"><a class="header" href="#golden-tests-with-the-goldenfile-crate">Golden tests with the goldenfile crate</a></h2>
+<p>The <a href="https://crates.io/crates/goldenfile">goldenfile</a> crate is proven to work well with <code>test-r</code>. For example the following helper function can be used to check the backward compatibility of reading serialized binary data with some custom serialize/deserialize functions requiring <a href="https://crates.io/crates/bincode">bincode</a> codecs:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use bincode::{Decode, Encode};
+use goldenfile::Mint;
+use test_r::test;
+
+fn serialize&lt;T: Encode&gt;(value: &amp;T) -&gt; Result&lt;Vec&lt;u8&gt;, bincode::Error&gt; {
+    todo!()
+}
+
+fn deserialize&lt;T: Decode&gt;(data: &amp;[u8]) -&gt; Result&lt;T, bincode::Error&gt; {
+    todo!()
+}
+
+fn is_deserializable&lt;T: Encode + Decode + PartialEq + Debug&gt;(old: &amp;Path, new: &amp;Path) {
+    let old = std::fs::read(old).unwrap();
+    let new = std::fs::read(new).unwrap();
+
+    // Both the old and the latest binary can be deserialized
+    let old_decoded: T = deserialize(&amp;old).unwrap();
+    let new_decoded: T = deserialize(&amp;new).unwrap();
+
+    // And they represent the same value
+    assert_eq!(old_decoded, new_decoded);
+}
+
+pub(crate) fn backward_compatible&lt;T: Encode + Decode + PartialEq + Debug + 'static&gt;(
+    name: impl AsRef&lt;str&gt;,
+    mint: &amp;mut Mint,
+    value: T,
+) {
+    let mut file = mint
+        .new_goldenfile_with_differ(
+            format!("{}.bin", name.as_ref()),
+            Box::new(is_deserializable::&lt;T&gt;),
+        )
+        .unwrap();
+    let encoded = serialize(&amp;value).unwrap();
+    file.write_all(&amp;encoded).unwrap();
+    file.flush().unwrap();
+}
+
+#[derive(Debug, PartialEq, Encode, Decode)]
+struct Example {
+    value: i32,
+}
+
+#[test]
+pub fn example() {
+    let mut mint = Mint::new("tests/goldenfiles");
+    backward_compatible("example1", &amp;mut mint, Example { value: 42 });
+}
+<span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="github-actions-with-junit"><a class="header" href="#github-actions-with-junit">GitHub Actions with JUnit</a></h1>
+<p>With <code>test-r</code> it is easy to generate JUnit test reports when running the tests on CI. Then the generated XMLs can be parsed by another GitHub Action step to provide a nicer test report in the GitHub UI.</p>
+<p>The following example shows how to run the tests with <code>test-r</code> and generate JUnit XMLs:</p>
+<pre><code class="language-shell">cargo test -- --format junit --logfile target/report.xml
+</code></pre>
+<p>This will generate one or more JUnit XML files in the <code>target</code> directory.</p>
+<p>The <a href="https://github.com/mikepenz/action-junit-report">action-junit-report</a> action can be used to parse the generated XMLs and show the results in the GitHub UI. The following example shows how to use it:</p>
+<pre><code class="language-yaml">  - name: Publish Test Report
+    uses: mikepenz/action-junit-report@v4
+    if: success() || failure() # always run even if the previous step fails
+    with:
+      report_paths: '**/target/report-*.xml'
+      detailed_summary: true
+      include_passed: true
+</code></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+    </div>
+    </body>
+</html>

@@ -1,0 +1,302 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Dependency injection - test-r</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('light')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded "><a href="../getting_started.html"><strong aria-hidden="true">1.</strong> Getting started</a></li><li class="chapter-item expanded "><a href="../core_features.html"><strong aria-hidden="true">2.</strong> Core features</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../core_features/defining_tests.html"><strong aria-hidden="true">2.1.</strong> Defining tests</a></li><li class="chapter-item expanded "><a href="../core_features/running_tests.html"><strong aria-hidden="true">2.2.</strong> Running tests</a></li><li class="chapter-item expanded "><a href="../core_features/test_output.html"><strong aria-hidden="true">2.3.</strong> Test output</a></li></ol></li><li class="chapter-item expanded "><a href="../advanced_features.html"><strong aria-hidden="true">3.</strong> Advanced features</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../advanced_features/dependency_injection.html" class="active"><strong aria-hidden="true">3.1.</strong> Dependency injection</a></li><li class="chapter-item expanded "><a href="../advanced_features/tags.html"><strong aria-hidden="true">3.2.</strong> Tags</a></li><li class="chapter-item expanded "><a href="../advanced_features/benches.html"><strong aria-hidden="true">3.3.</strong> Benches</a></li><li class="chapter-item expanded "><a href="../advanced_features/per_test_configuration.html"><strong aria-hidden="true">3.4.</strong> Per-test configuration</a></li><li class="chapter-item expanded "><a href="../advanced_features/flaky_tests.html"><strong aria-hidden="true">3.5.</strong> Flaky tests</a></li><li class="chapter-item expanded "><a href="../advanced_features/dynamic_test_generation.html"><strong aria-hidden="true">3.6.</strong> Dynamic test generation</a></li></ol></li><li class="chapter-item expanded "><a href="../how_to.html"><strong aria-hidden="true">4.</strong> How to</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../how_to/tracing.html"><strong aria-hidden="true">4.1.</strong> Tracing</a></li><li class="chapter-item expanded "><a href="../how_to/property_based_testing.html"><strong aria-hidden="true">4.2.</strong> Property based testing</a></li><li class="chapter-item expanded "><a href="../how_to/golden_tests.html"><strong aria-hidden="true">4.3.</strong> Golden tests</a></li><li class="chapter-item expanded "><a href="../how_to/run_tests_on_github_actions.html"><strong aria-hidden="true">4.4.</strong> GitHub Actions with JUnit</a></li></ol></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">test-r</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="dependency-injection"><a class="header" href="#dependency-injection">Dependency injection</a></h1>
+<p>Tests can share dependencies in <code>test-r</code>. This is especially useful for integration tests where setting up the integration environment is expensive.</p>
+<h2 id="using-shared-dependencies"><a class="header" href="#using-shared-dependencies">Using shared dependencies</a></h2>
+<p>To <strong>use</strong> a shared dependency from a test, we simply need to add a reference parameter to the test function:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::test;
+
+struct SharedDependency {
+    value: i32,
+}
+
+struct OtherDependency {
+    value: i32,
+}
+
+#[test]
+fn test1(shared: &amp;SharedDependency) {
+    assert_eq!(shared.value, 42);
+}
+
+#[test]
+async fn test2(shared: &amp;SharedDependency, other: &amp;OtherDependency) {
+    assert_eq!(shared.value, other.value);
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The name of the parameters does not matter - test dependencies are indexed by their <strong>type</strong>. If a test needs multiple instances of the same type, a newtype wrapper can be used to distinguish them.</p>
+<h2 id="providing-shared-dependencies"><a class="header" href="#providing-shared-dependencies">Providing shared dependencies</a></h2>
+<p>Shared dependencies need to be provided for <strong>each test suite</strong>. A test suite in <code>test-r</code> is the enclosing <strong>module</strong> where the test functions are defined. It is possible to provide different values for the same dependency in different suites, but it is also possible to "import" provided dependencies from an outer suite. This flexibility allows for a wide range of uses cases, from defining singleton dependencies for a whole crate to detailed customization for specific tests.</p>
+<p>Test dependencies are provided by <strong>constructor functions</strong> annotated with <code>#[test_dep]</code>. The constructor function can be sync or async (if the <code>tokio</code> feature is enabled):</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::test_dep;
+
+#[test_dep]
+async fn shared_dependency() -&gt; SharedDependency {
+    SharedDependency { value: 42 }
+}
+
+#[test_dep]
+fn other_dependency() -&gt; OtherDependency {
+    OtherDependency { value: 42 }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Whether the dependency was created by a sync or async function does not matter - they can be used in both sync and async tests.</p>
+<h3 id="using-dependencies-provided-for-an-outer-test-suite"><a class="header" href="#using-dependencies-provided-for-an-outer-test-suite">Using dependencies provided for an outer test suite</a></h3>
+<p>As explained above, test dependencies must be provided in <strong>each test module</strong>. So if we want to use the same instances in an inner test suite, it has to be <strong>inherited</strong>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>mod inner {
+    use test_r::{inher_test_dep, test};
+    use super::SharedDependency;
+    
+    inherit_test_dep!(SharedDependency);
+    
+    #[test]
+    fn test3(shared: &amp;SharedDependency) {
+        assert_eq!(shared.value, 42);
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="dependency-graph"><a class="header" href="#dependency-graph">Dependency graph</a></h2>
+<p>Test dependency constructors can depend on other dependencies just like tests are. This allows defining a complex <strong>dependency graph</strong>, where each shared dependency is created in the correct order, and only when needed, and they got dropped as soon as no other test needs them.</p>
+<p>The following example defines a third dependency (based on the above examples) which requires the other two to get constructed:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>struct ThirdDependency {
+    value: i32,
+}
+
+#[test_dep]
+fn third_dependency(shared: &amp;SharedDependency, other: &amp;OtherDependency) -&gt; ThirdDependency {
+    ThirdDependency { value: shared.value + other.value }
+}
+<span class="boring">}</span></code></pre></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../advanced_features.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../advanced_features/tags.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../advanced_features.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../advanced_features/tags.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>
