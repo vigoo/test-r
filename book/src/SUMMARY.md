@@ -1,0 +1,20 @@
+# Summary
+
+- [Getting started](./getting_started.md)
+- [Core features](./core_features.md)
+  - [Defining tests](./core_features/defining_tests.md)
+  - [Running tests](./core_features/running_tests.md)
+  - [Test output](./core_features/test_output.md)
+- [Advanced features](./advanced_features.md)
+  - [Dependency injection](./advanced_features/dependency_injection.md)
+  - [Tags](./advanced_features/tags.md)
+  - [Benches](./advanced_features/benches.md)
+  - [Per-test configuration](./advanced_features/per_test_configuration.md)
+  - [Flaky tests](./advanced_features/flaky_tests.md)
+  - [Dynamic test generation](./advanced_features/dynamic_test_generation.md)
+- [How to](./how_to.md)
+  - [Tracing](./how_to/tracing.md) 
+  - [Property based testing](./how_to/property_based_testing.md)
+  - [Golden tests](./how_to/golden_tests.md)
+  - [GitHub Actions with JUnit](./how_to/run_tests_on_github_actions.md)
+  

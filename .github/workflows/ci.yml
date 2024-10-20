@@ -4,6 +4,10 @@ on:
     branches:
       - master
   pull_request:
+
+permissions:
+  contents: write
+
 jobs:
   build-and-test:
     strategy:
@@ -30,3 +34,18 @@ jobs:
       - run: cargo clippy --no-deps --all-targets -- -Dwarnings
       - run: cargo fmt --all -- --check
       - run: cargo deny check
+
+  deploy-book:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: 'latest'
+      - run: mdbook build
+        working-directory: book
+      - uses: peaceiris/actions-gh-pages@v4
+        if: ${{ github.ref == 'refs/heads/master' }}
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./book/book
