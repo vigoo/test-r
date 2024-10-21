@@ -306,7 +306,10 @@ impl Arguments {
                 // because it can only be done through spawned workers
 
                 if execution.has_dependencies() {
-                    output.warning("Cannot run tests in parallel when tests have shared dependencies and output capturing is on. Using a single thread.");
+                    if execution.remaining() > 1 {
+                        // If there is only one test, the warning does not make sense
+                        output.warning("Cannot run tests in parallel when tests have shared dependencies and output capturing is on. Using a single thread.");
+                    }
                     self.test_threads = Some(1); // Falling back to single-threaded execution
                 }
             }
