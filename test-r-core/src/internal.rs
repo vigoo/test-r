@@ -816,6 +816,13 @@ impl CapturedOutput {
             CapturedOutput::Stderr { timestamp, .. } => *timestamp,
         }
     }
+
+    pub fn line(&self) -> &str {
+        match self {
+            CapturedOutput::Stdout { line, .. } => line,
+            CapturedOutput::Stderr { line, .. } => line,
+        }
+    }
 }
 
 impl PartialOrd for CapturedOutput {

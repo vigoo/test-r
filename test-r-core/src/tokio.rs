@@ -388,31 +388,29 @@ impl Worker {
             module_path: test.module_path.clone(),
         };
 
+        let dump_on_ipc_failure = self.dump_on_failure();
+
         let msg =
             encode_to_vec(&cmd, bincode::config::standard()).expect("Failed to encode IPC command");
         let message_size = (msg.len() as u16).to_le_bytes();
-        self.connection
-            .write_all(&message_size)
-            .await
-            .expect("Failed to write IPC message size");
-        self.connection
-            .write_all(&msg)
-            .await
-            .expect("Failed to write to IPC connection");
+        dump_on_ipc_failure
+            .run(self.connection.write_all(&message_size).await)
+            .await;
+        dump_on_ipc_failure
+            .run(self.connection.write_all(&msg).await)
+            .await;
 
         let mut response_size: [u8; 2] = [0, 0];
-        self.connection
-            .read_exact(&mut response_size)
-            .await
-            .expect("Failed to read IPC response size");
+        dump_on_ipc_failure
+            .run(self.connection.read_exact(&mut response_size).await)
+            .await;
         let mut response = vec![0; u16::from_le_bytes(response_size) as usize];
-        self.connection
-            .read_exact(&mut response)
-            .await
-            .expect("Failed to read IPC response");
-        let (response, _): (IpcResponse, usize) =
-            decode_from_slice(&response, bincode::config::standard())
-                .expect("Failed to decode IPC response");
+        dump_on_ipc_failure
+            .run(self.connection.read_exact(&mut response).await)
+            .await;
+        let (response, _): (IpcResponse, usize) = dump_on_ipc_failure
+            .run(decode_from_slice(&response, bincode::config::standard()))
+            .await;
 
         let IpcResponse::TestFinished { result } = response;
 
@@ -422,6 +420,38 @@ impl Worker {
             result.into_test_result(out_lines, err_lines)
         } else {
             result.into_test_result(Vec::new(), Vec::new())
+        }
+    }
+
+    fn dump_on_failure(&self) -> DumpOnFailure {
+        DumpOnFailure {
+            out_lines: self.out_lines.clone(),
+            err_lines: self.err_lines.clone(),
+        }
+    }
+}
+
+struct DumpOnFailure {
+    out_lines: Arc<Mutex<Vec<CapturedOutput>>>,
+    err_lines: Arc<Mutex<Vec<CapturedOutput>>>,
+}
+
+impl DumpOnFailure {
+    pub async fn run<T, E>(&self, result: Result<T, E>) -> T {
+        match result {
+            Ok(value) => value,
+            Err(_error) => {
+                let out_lines: Vec<_> = self.out_lines.lock().await.drain(..).collect();
+                let err_lines: Vec<_> = self.err_lines.lock().await.drain(..).collect();
+                let mut all_lines = [out_lines, err_lines].concat();
+                all_lines.sort();
+
+                for line in all_lines {
+                    eprintln!("{}", line.line());
+                }
+
+                std::process::exit(1);
+            }
         }
     }
 }
