@@ -32,25 +32,28 @@ impl TestSuiteExecution {
         dependencies: &[RegisteredDependency],
         tests: &[RegisteredTest],
         props: &[RegisteredTestSuiteProperty],
-    ) -> Self {
+    ) -> (Self, Vec<RegisteredTest>) {
         let tagged_tests = apply_suite_tags(tests, props);
         let mut filtered_tests = filter_registered_tests(arguments, &tagged_tests);
         Self::shuffle(arguments, &mut filtered_tests);
         filtered_tests.reverse();
 
         if filtered_tests.is_empty() {
-            Self::root(
-                dependencies
-                    .iter()
-                    .filter(|dep| dep.crate_name.is_empty() && dep.module_path.is_empty())
-                    .cloned()
-                    .collect::<Vec<_>>(),
+            (
+                Self::root(
+                    dependencies
+                        .iter()
+                        .filter(|dep| dep.crate_name.is_empty() && dep.module_path.is_empty())
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    Vec::new(),
+                    props
+                        .iter()
+                        .filter(|dep| dep.crate_name().is_empty() && dep.module_path().is_empty())
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                ),
                 Vec::new(),
-                props
-                    .iter()
-                    .filter(|dep| dep.crate_name().is_empty() && dep.module_path().is_empty())
-                    .cloned()
-                    .collect::<Vec<_>>(),
             )
         } else {
             let mut root = Self::root(Vec::new(), Vec::new(), Vec::new());
@@ -63,11 +66,11 @@ impl TestSuiteExecution {
                 root.add_dependency(dep.clone());
             }
 
-            for test in filtered_tests {
+            for test in filtered_tests.clone() {
                 root.add_test(test.clone());
             }
 
-            root
+            (root, filtered_tests)
         }
     }
 

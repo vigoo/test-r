@@ -31,8 +31,8 @@ impl Terse {
 }
 
 impl TestRunnerOutput for Terse {
-    fn start_suite(&self, count: usize) {
-        self.pretty.start_suite(count)
+    fn start_suite(&self, tests: &[RegisteredTest]) {
+        self.pretty.start_suite(tests)
     }
 
     fn start_running_test(&self, _test: &RegisteredTest, _idx: usize, _count: usize) {}
