@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub trait TestRunnerOutput: Send + Sync {
-    fn start_suite(&self, count: usize);
+    fn start_suite(&self, tests: &[RegisteredTest]);
     fn start_running_test(&self, test: &RegisteredTest, idx: usize, count: usize);
     fn finished_running_test(
         &self,

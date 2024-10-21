@@ -69,7 +69,7 @@ impl JUnit {
 }
 
 impl TestRunnerOutput for JUnit {
-    fn start_suite(&self, _count: usize) {
+    fn start_suite(&self, _tests: &[RegisteredTest]) {
         let decl = Decl(BytesDecl::new("1.0", Some("UTF-8"), None));
         self.writer.lock().unwrap().write_event(decl).unwrap();
     }

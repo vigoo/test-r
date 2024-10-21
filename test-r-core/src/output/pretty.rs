@@ -26,6 +26,9 @@ pub(crate) struct Pretty {
 struct PrettyImpl {
     color: ColorSetting,
     logfile: Option<LogFile>,
+    pub count: usize,
+    pub index_field_length: usize,
+    pub longest_name: usize,
 }
 
 impl Pretty {
@@ -52,7 +55,13 @@ impl Pretty {
             style_stderr: Style::new().fg_color(Some(AnsiColor::Yellow.into())),
             style_critical_time: Style::new().fg_color(Some(AnsiColor::Red.into())),
             style_warn_time: Style::new().fg_color(Some(AnsiColor::Yellow.into())),
-            lock: Mutex::new(PrettyImpl { color, logfile }),
+            lock: Mutex::new(PrettyImpl {
+                color,
+                logfile,
+                count: 0,
+                longest_name: 0,
+                index_field_length: 0,
+            }),
             show_output,
             report_time,
             unit_test_threshold,
@@ -185,27 +194,37 @@ impl Write for PrettyImpl {
 }
 
 impl TestRunnerOutput for Pretty {
-    fn start_suite(&self, count: usize) {
+    fn start_suite(&self, tests: &[RegisteredTest]) {
         let mut out = self.lock.lock().unwrap();
         writeln!(
             out,
             "{}Running {} tests{}",
             self.style_progress.render(),
-            count,
+            tests.len(),
             self.style_progress.render_reset(),
         )
         .unwrap();
         writeln!(out).unwrap();
+
+        out.count = tests.len();
+        out.longest_name = tests
+            .iter()
+            .map(|test| test.fully_qualified_name().len())
+            .max()
+            .unwrap_or(0);
+        out.index_field_length = format!("{}/{}", out.count, out.count).len();
     }
 
     fn start_running_test(&self, test: &RegisteredTest, idx: usize, count: usize) {
         let mut out = self.lock.lock().unwrap();
+        let index_field = format!("{}/{}", idx + 1, count);
+        let padding = " ".repeat(out.index_field_length - index_field.len());
         writeln!(
             out,
-            "{}[{}/{}]{} Running test: {}",
+            "{}[{}{}]{} Running test: {}",
             self.style_progress.render(),
-            idx + 1,
-            count,
+            padding,
+            index_field,
             self.style_progress.render_reset(),
             test.fully_qualified_name()
         )
@@ -273,12 +292,17 @@ impl TestRunnerOutput for Pretty {
                 self.style_ignored.render_reset()
             ),
         };
+
+        let index_field = format!("{}/{}", idx + 1, count);
+        let padding = " ".repeat(out.index_field_length - index_field.len());
+        let result_padding = " ".repeat(out.longest_name - test.fully_qualified_name().len() + 1);
+
         writeln!(
             out,
-            "{}[{}/{}]{} Finished test: {} {result}",
+            "{}[{}{}]{} Finished test: {}{result_padding}{result}",
             self.style_progress.render(),
-            idx + 1,
-            count,
+            padding,
+            index_field,
             self.style_progress.render_reset(),
             test.fully_qualified_name()
         )

@@ -11,7 +11,7 @@ impl IpcWorkerOutput {
 }
 
 impl TestRunnerOutput for IpcWorkerOutput {
-    fn start_suite(&self, _count: usize) {}
+    fn start_suite(&self, _tests: &[RegisteredTest]) {}
 
     fn start_running_test(&self, _test: &RegisteredTest, _idx: usize, _count: usize) {}
 

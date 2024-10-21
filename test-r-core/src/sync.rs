@@ -41,7 +41,7 @@ pub fn test_runner() -> ExitCode {
         output.test_list(&all_tests);
         ExitCode::SUCCESS
     } else {
-        let mut execution = TestSuiteExecution::construct(
+        let (mut execution, filtered_tests) = TestSuiteExecution::construct(
             &args,
             registered_dependency_constructors.as_slice(),
             &all_tests,
@@ -60,7 +60,7 @@ pub fn test_runner() -> ExitCode {
         let mut results = Vec::with_capacity(count);
 
         let start = Instant::now();
-        output.start_suite(count);
+        output.start_suite(&filtered_tests);
 
         let execution = Arc::new(Mutex::new(execution));
         let threads = args.test_threads().get();

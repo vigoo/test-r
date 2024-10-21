@@ -24,11 +24,12 @@ impl Json {
 }
 
 impl TestRunnerOutput for Json {
-    fn start_suite(&self, count: usize) {
+    fn start_suite(&self, tests: &[RegisteredTest]) {
         let mut out = self.target.lock().unwrap();
         writeln!(
             out,
-            r#"{{ "type": "suite", "event": "started", "test_count": {count} }}"#
+            r#"{{ "type": "suite", "event": "started", "test_count": {} }}"#,
+            tests.len()
         )
         .expect("Failed to write to output");
     }
