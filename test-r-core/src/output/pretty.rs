@@ -4,14 +4,14 @@ use crate::output::{LogFile, TestRunnerOutput};
 use anstyle::{AnsiColor, Style};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 pub(crate) struct Pretty {
-    style_ok: Style,
-    style_failed: Style,
-    style_ignored: Style,
-    style_bench: Style,
+    pub style_ok: Style,
+    pub style_failed: Style,
+    pub style_ignored: Style,
+    pub style_bench: Style,
     style_progress: Style,
     style_stderr: Style,
     style_critical_time: Style,
@@ -58,6 +58,10 @@ impl Pretty {
             unit_test_threshold,
             integ_test_threshold,
         }
+    }
+
+    pub(crate) fn lock(&self) -> MutexGuard<'_, impl Write> {
+        self.lock.lock().unwrap()
     }
 
     fn write_outputs<'a>(
