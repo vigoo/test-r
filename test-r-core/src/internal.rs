@@ -476,6 +476,11 @@ pub(crate) fn filter_registered_tests(
     registered_tests
         .iter()
         .filter(|registered_test| {
+            args.skip
+                .iter()
+                .all(|skip| &registered_test.filterable_name() != skip)
+        })
+        .filter(|registered_test| {
             args.filter.as_ref().is_none()
                 || args
                     .filter
