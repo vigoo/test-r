@@ -657,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "test-r"
-version = "0.0.15"
+version = "1.0.0"
 dependencies = [
  "ctor",
  "serde_json",
@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "test-r-core"
-version = "0.0.14"
+version = "1.0.0"
 dependencies = [
  "anstream",
  "anstyle",
