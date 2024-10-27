@@ -21,7 +21,7 @@ interprocess = "2.2"
 parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
 quick-xml = "0.36"
 rand = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "process"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "process", "io-std"], optional = true }
 topological-sort = "0.2"
 uuid = { version = "1.10", features = ["v4"] }
 

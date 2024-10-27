@@ -4,10 +4,11 @@ test_r::enable!();
 mod tests {
     use std::error::Error;
     use std::fmt::{Debug, Display, Formatter};
-    use test_r::test;
+    use test_r::{tag, test};
     use tokio::io::AsyncWriteExt;
 
     #[test]
+    #[tag(output_capture_test)]
     async fn it_does_work() {
         let _ = tokio::io::stdout()
             .write(b"Print from 'it_does_work'\n")
@@ -18,6 +19,7 @@ mod tests {
     }
 
     #[test]
+    #[tag(output_capture_test)]
     async fn this_too() {
         let _ = tokio::io::stdout()
             .write(b"Print from 'this_too'\n")
@@ -29,6 +31,7 @@ mod tests {
 
     #[test]
     #[should_panic]
+    #[tag(output_capture_test)]
     async fn panic_test_1() {
         let _ = tokio::io::stdout()
             .write(b"Print from 'panic_test_1'\n")
