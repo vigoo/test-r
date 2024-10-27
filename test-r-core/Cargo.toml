@@ -1,6 +1,6 @@
 [package]
 name = "test-r-core"
-version = "0.0.13"
+version = "0.0.14"
 edition = "2021"
 license = "Apache-2.0"
 description = "Test framework for Rust (core module)"
