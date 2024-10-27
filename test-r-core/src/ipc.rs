@@ -93,7 +93,10 @@ impl From<SerializableTestResult> for TestResult {
 /// Responses sent from the spawned worker processes to the primary test runner.
 #[derive(Debug, Encode, Decode)]
 pub enum IpcResponse {
-    TestFinished { result: SerializableTestResult },
+    TestFinished {
+        result: SerializableTestResult,
+        finish_marker: String,
+    },
 }
 
 pub fn ipc_name<'s>(name: String) -> Name<'s> {

@@ -55,3 +55,7 @@ async fn gen_async_tests(r: &mut DynamicTestRegistration) {
 ```
 
 The generator functions are executed at the startup of the test runner, and all the generated tests are added to the test tree. The **name** of the generated tests must be unique. Each test is added to the **test suite** the generator function is defined in.
+
+<div class="warning">
+Test generators are executed in both the main process and in all the child processes spawned for output capturing. For this reason, they must be idempotent, and they should not print any output - as the output would not be captured when the generator runs in the primary process, and it would interfere with output formats such as `json` or `junit`.  
+</div>

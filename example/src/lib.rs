@@ -5,9 +5,10 @@ mod other;
 #[cfg(test)]
 mod tests {
     use test_r::core::bench::Bencher;
-    use test_r::{bench, test, test_dep};
+    use test_r::{bench, tag, test, test_dep};
 
     #[test]
+    #[tag(output_capture_test)]
     fn it_does_work() {
         println!("Print from 'it_does_work'");
         let result = 2 + 2;
@@ -15,6 +16,7 @@ mod tests {
     }
 
     #[test]
+    #[tag(output_capture_test)]
     fn this_too() {
         println!("Print from 'this_too'");
         let result = 2 + 2;
@@ -45,9 +47,10 @@ mod tests {
 mod inner {
     #[cfg(test)]
     mod tests {
-        use test_r::test;
+        use test_r::{tag, test};
 
         #[test]
+        #[tag(output_capture_test)]
         fn inner_test_works() {
             println!("Print from inner test");
             let result = 2 + 2;

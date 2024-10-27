@@ -11,6 +11,7 @@ use crate::output::{test_runner_output, TestRunnerOutput};
 use bincode::{decode_from_slice, encode_to_vec};
 use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToNsName};
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::{Child, Command, ExitCode, Stdio};
@@ -159,8 +160,21 @@ fn test_thread(
                 output.finished_running_test(&next.test, next.index, count, &result);
 
                 if let Some(connection) = &mut connection {
+                    let finish_marker = Uuid::new_v4().to_string();
+                    let finish_marker_line = format!("{finish_marker}\n");
+                    std::io::stdout()
+                        .write_all(finish_marker_line.as_bytes())
+                        .unwrap();
+                    std::io::stderr()
+                        .write_all(finish_marker_line.as_bytes())
+                        .unwrap();
+
+                    std::io::stdout().flush().unwrap();
+                    std::io::stderr().flush().unwrap();
+
                     let response = IpcResponse::TestFinished {
                         result: (&result).into(),
+                        finish_marker,
                     };
 
                     let msg = encode_to_vec(&response, bincode::config::standard())
@@ -272,8 +286,8 @@ struct Worker {
     process: Child,
     out_handle: JoinHandle<()>,
     err_handle: JoinHandle<()>,
-    out_lines: Arc<Mutex<Vec<CapturedOutput>>>,
-    err_lines: Arc<Mutex<Vec<CapturedOutput>>>,
+    out_lines: Arc<Mutex<VecDeque<CapturedOutput>>>,
+    err_lines: Arc<Mutex<VecDeque<CapturedOutput>>>,
     capture_enabled: Arc<Mutex<bool>>,
     connection: Stream,
 }
@@ -306,11 +320,20 @@ impl Worker {
         let (response, _): (IpcResponse, usize) =
             dump_on_ipc_failure.run(decode_from_slice(&response, bincode::config::standard()));
 
-        let IpcResponse::TestFinished { result } = response;
+        let IpcResponse::TestFinished {
+            result,
+            finish_marker,
+        } = response;
 
-        let out_lines: Vec<_> = self.out_lines.lock().unwrap().drain(..).collect();
-        let err_lines: Vec<_> = self.err_lines.lock().unwrap().drain(..).collect();
-        result.into_test_result(out_lines, err_lines)
+        if test.capture_control.requires_capturing(!nocapture) {
+            let out_lines: Vec<_> =
+                Self::drain_until(self.out_lines.clone(), finish_marker.clone());
+            let err_lines: Vec<_> =
+                Self::drain_until(self.err_lines.clone(), finish_marker.clone());
+            result.into_test_result(out_lines, err_lines)
+        } else {
+            result.into_test_result(Vec::new(), Vec::new())
+        }
     }
 
     fn dump_on_failure(&self) -> DumpOnFailure {
@@ -319,11 +342,31 @@ impl Worker {
             err_lines: self.err_lines.clone(),
         }
     }
+
+    fn drain_until(
+        source: Arc<Mutex<VecDeque<CapturedOutput>>>,
+        finish_marker: String,
+    ) -> Vec<CapturedOutput> {
+        let mut result = Vec::new();
+        loop {
+            let mut source = source.lock().unwrap();
+            while let Some(line) = source.pop_front() {
+                if line.line() == finish_marker {
+                    return result;
+                } else {
+                    result.push(line.clone());
+                }
+            }
+            drop(source);
+
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
 }
 
 struct DumpOnFailure {
-    out_lines: Arc<Mutex<Vec<CapturedOutput>>>,
-    err_lines: Arc<Mutex<Vec<CapturedOutput>>>,
+    out_lines: Arc<Mutex<VecDeque<CapturedOutput>>>,
+    err_lines: Arc<Mutex<VecDeque<CapturedOutput>>>,
 }
 
 impl DumpOnFailure {
@@ -378,8 +421,8 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
         let stdout = process.stdout.take().unwrap();
         let stderr = process.stderr.take().unwrap();
 
-        let out_lines = Arc::new(Mutex::new(Vec::new()));
-        let err_lines = Arc::new(Mutex::new(Vec::new()));
+        let out_lines = Arc::new(Mutex::new(VecDeque::new()));
+        let err_lines = Arc::new(Mutex::new(VecDeque::new()));
         let capture_enabled = Arc::new(Mutex::new(true));
 
         let out_lines_clone = out_lines.clone();
@@ -394,7 +437,7 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                             out_lines_clone
                                 .lock()
                                 .unwrap()
-                                .push(CapturedOutput::stdout(line));
+                                .push_back(CapturedOutput::stdout(line));
                         } else {
                             println!("{line}");
                         }
@@ -419,7 +462,7 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                             err_lines_clone
                                 .lock()
                                 .unwrap()
-                                .push(CapturedOutput::stderr(line));
+                                .push_back(CapturedOutput::stderr(line));
                         } else {
                             eprintln!("{line}");
                         }
