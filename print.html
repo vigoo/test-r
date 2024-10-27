@@ -744,6 +744,9 @@ async fn gen_async_tests(r: &amp;mut DynamicTestRegistration) {
 }
 <span class="boring">}</span></code></pre></pre>
 <p>The generator functions are executed at the startup of the test runner, and all the generated tests are added to the test tree. The <strong>name</strong> of the generated tests must be unique. Each test is added to the <strong>test suite</strong> the generator function is defined in.</p>
+<div class="warning">
+Test generators are executed in both the main process and in all the child processes spawned for output capturing. For this reason, they must be idempotent, and they should not print any output - as the output would not be captured when the generator runs in the primary process, and it would interfere with output formats such as `json` or `junit`.  
+</div>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="how-to"><a class="header" href="#how-to">How to</a></h1>
 <p>This section contains a set of recommendations to solve various testing problems using a combination of <code>test-r</code> and other third party crates.</p>
 <ul>
