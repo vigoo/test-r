@@ -42,7 +42,7 @@ pub enum TestFunction {
             dyn for<'a> Fn(
                     &'a mut crate::bench::AsyncBencher,
                     Arc<dyn DependencyView + Send + Sync>,
-                ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
+                ) -> Pin<Box<dyn Future<Output = ()> + 'a>>
                 + Send
                 + Sync
                 + 'static,
@@ -188,9 +188,7 @@ pub static REGISTERED_TESTS: Mutex<Vec<RegisteredTest>> = Mutex::new(Vec::new())
 pub enum DependencyConstructor {
     Sync(
         Arc<
-            dyn (Fn(
-                    Arc<dyn DependencyView + Send + Sync>,
-                ) -> Arc<dyn std::any::Any + Send + Sync + 'static>)
+            dyn (Fn(Arc<dyn DependencyView + Send + Sync>) -> Arc<dyn Any + Send + Sync + 'static>)
                 + Send
                 + Sync
                 + 'static,
@@ -200,8 +198,7 @@ pub enum DependencyConstructor {
         Arc<
             dyn (Fn(
                     Arc<dyn DependencyView + Send + Sync>,
-                )
-                    -> Pin<Box<dyn Future<Output = Arc<dyn std::any::Any + Send + Sync>> + Send>>)
+                ) -> Pin<Box<dyn Future<Output = Arc<dyn Any + Send + Sync>>>>)
                 + Send
                 + Sync
                 + 'static,
