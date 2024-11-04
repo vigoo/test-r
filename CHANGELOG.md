@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## `test-r` - [1.0.3](https://github.com/vigoo/test-r/compare/test-r-v1.0.2...test-r-v1.0.3) - 2024-11-04
+
+### Other
+- updated the following local packages: test-r-core
+
+## `test-r-macro` - [1.0.3](https://github.com/vigoo/test-r/compare/test-r-macro-v1.0.2...test-r-macro-v1.0.3) - 2024-11-04
+
+### Other
+- updated the following local packages: test-r-core
+
 ## `test-r` - [1.0.2](https://github.com/vigoo/test-r/compare/test-r-v1.0.1...test-r-v1.0.2) - 2024-11-04
 
 ### Other
