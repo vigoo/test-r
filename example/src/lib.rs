@@ -113,3 +113,34 @@ mod inner {
         }
     }
 }
+
+mod generic_deps {
+    use std::sync::Arc;
+    use test_r::{test, test_dep};
+
+    pub struct Dep1 {
+        pub value: i32,
+    }
+
+    pub struct Dep2 {
+        pub value: i32,
+    }
+
+    #[test_dep]
+    pub fn create_dep1() -> Arc<Dep1> {
+        println!("Creating Dep1");
+        Arc::new(Dep1 { value: 10 })
+    }
+
+    #[test_dep]
+    pub fn create_dep2() -> Arc<Dep2> {
+        println!("Creating Dep2");
+        Arc::new(Dep2 { value: 20 })
+    }
+
+    #[test]
+    pub fn test_with_deps(dep1: &Arc<Dep1>, dep2: &Arc<Dep2>) {
+        println!("Test with deps");
+        assert_eq!(dep1.value + dep2.value, 30);
+    }
+}
