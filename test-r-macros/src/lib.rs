@@ -619,30 +619,27 @@ pub fn tag_suite(input: TokenStream) -> TokenStream {
 fn type_to_string(typ: &Type) -> String {
     match typ {
         Type::Array(array) => {
-            let inner_type = type_to_string(&*array.elem);
+            let inner_type = type_to_string(&array.elem);
             format!("array_{}", inner_type)
         }
         Type::BareFn(_) => {
             panic!("Function pointers are not supported in dependency injection")
         }
-        Type::Group(group) => type_to_string(&*group.elem),
+        Type::Group(group) => type_to_string(&group.elem),
         Type::ImplTrait(impltrait) => {
             let mut result = "impl".to_string();
             for bound in &impltrait.bounds {
-                match bound {
-                    TypeParamBound::Trait(trait_bound) => {
-                        result.push('_');
-                        result.push_str(
-                            &trait_bound
-                                .path
-                                .segments
-                                .iter()
-                                .map(|segment| segment_to_string(segment))
-                                .collect::<Vec<_>>()
-                                .join("_"),
-                        );
-                    }
-                    _ => {}
+                if let TypeParamBound::Trait(trait_bound) = bound {
+                    result.push('_');
+                    result.push_str(
+                        &trait_bound
+                            .path
+                            .segments
+                            .iter()
+                            .map(segment_to_string)
+                            .collect::<Vec<_>>()
+                            .join("_"),
+                    );
                 }
             }
             result
@@ -654,37 +651,34 @@ fn type_to_string(typ: &Type) -> String {
             panic!("Macro invocations are not supported in dependency injection type signatures")
         }
         Type::Never(_) => "never".to_string(),
-        Type::Paren(inner) => type_to_string(&*inner.elem),
+        Type::Paren(inner) => type_to_string(&inner.elem),
         Type::Path(path) => type_path_to_string(path),
         Type::Ptr(inner) => {
-            let inner_type = type_to_string(&*inner.elem);
+            let inner_type = type_to_string(&inner.elem);
             format!("ptr_{}", inner_type)
         }
         Type::Reference(inner) => {
-            let inner_type = type_to_string(&*inner.elem);
+            let inner_type = type_to_string(&inner.elem);
             format!("ref_{}", inner_type)
         }
         Type::Slice(inner) => {
-            let inner_type = type_to_string(&*inner.elem);
+            let inner_type = type_to_string(&inner.elem);
             format!("slice_{}", inner_type)
         }
         Type::TraitObject(to) => {
             let mut result = "dyn".to_string();
             for bound in &to.bounds {
-                match bound {
-                    TypeParamBound::Trait(trait_bound) => {
-                        result.push('_');
-                        result.push_str(
-                            &trait_bound
-                                .path
-                                .segments
-                                .iter()
-                                .map(|segment| segment_to_string(segment))
-                                .collect::<Vec<_>>()
-                                .join("_"),
-                        );
-                    }
-                    _ => {}
+                if let TypeParamBound::Trait(trait_bound) = bound {
+                    result.push('_');
+                    result.push_str(
+                        &trait_bound
+                            .path
+                            .segments
+                            .iter()
+                            .map(segment_to_string)
+                            .collect::<Vec<_>>()
+                            .join("_"),
+                    );
                 }
             }
             result
@@ -693,7 +687,7 @@ fn type_to_string(typ: &Type) -> String {
             let inner_types = tuple
                 .elems
                 .iter()
-                .map(|typ| type_to_string(typ))
+                .map(type_to_string)
                 .collect::<Vec<_>>()
                 .join("_");
             format!("tuple_{}", inner_types)
@@ -707,7 +701,7 @@ fn type_path_to_string(dep_type: &TypePath) -> String {
         .path
         .segments
         .iter()
-        .map(|segment| segment_to_string(segment))
+        .map(segment_to_string)
         .collect::<Vec<_>>()
         .join("_");
     let dep_name = Ident::new(&merged_ident, Span::call_site());
@@ -721,7 +715,7 @@ fn segment_to_string(segment: &PathSegment) -> String {
         PathArguments::AngleBracketed(args) => {
             for arg in &args.args {
                 result.push('_');
-                result.push_str(&generic_argument_to_string(&arg));
+                result.push_str(&generic_argument_to_string(arg));
             }
         }
         PathArguments::Parenthesized(_args) => {
