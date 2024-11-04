@@ -657,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "test-r"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "ctor",
  "serde_json",
@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "test-r-core"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "anstream",
  "anstyle",
@@ -708,7 +708,7 @@ dependencies = [
 
 [[package]]
 name = "test-r-macro"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "heck",
  "proc-macro2",
