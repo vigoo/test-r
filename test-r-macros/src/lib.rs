@@ -5,8 +5,8 @@ use quote::{quote, ToTokens};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    parse2, parse_macro_input, Expr, ExprClosure, FnArg, ItemFn, ItemMod, LitStr, Pat, PatType,
-    ReturnType, Token, Type, TypePath,
+    parse2, parse_macro_input, Expr, ExprClosure, FnArg, GenericArgument, ItemFn, ItemMod, LitStr,
+    Pat, PatType, PathArguments, PathSegment, ReturnType, Token, Type, TypeParamBound, TypePath,
 };
 use test_r_core::internal::ShouldPanic;
 
@@ -269,7 +269,7 @@ pub fn inherit_test_dep(item: TokenStream) -> TokenStream {
             panic!("Dependency constructor must return a single concrete type")
         }
     };
-    let dep_name_str = merge_type_path(&dep_type);
+    let dep_name_str = type_path_to_string(&dep_type);
     let getter_ident = Ident::new(
         &format!("test_r_get_dep_{}", dep_name_str),
         Span::call_site(),
@@ -300,7 +300,7 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         },
     };
-    let dep_name_str = merge_type_path(&dep_type);
+    let dep_name_str = type_path_to_string(&dep_type);
     let register_ident = Ident::new(
         &format!("test_r_register_{}", dep_name_str),
         Span::call_site(),
@@ -616,16 +616,132 @@ pub fn tag_suite(input: TokenStream) -> TokenStream {
     result.into()
 }
 
-fn merge_type_path(dep_type: &TypePath) -> String {
+fn type_to_string(typ: &Type) -> String {
+    match typ {
+        Type::Array(array) => {
+            let inner_type = type_to_string(&array.elem);
+            format!("array_{}", inner_type)
+        }
+        Type::BareFn(_) => {
+            panic!("Function pointers are not supported in dependency injection")
+        }
+        Type::Group(group) => type_to_string(&group.elem),
+        Type::ImplTrait(impltrait) => {
+            let mut result = "impl".to_string();
+            for bound in &impltrait.bounds {
+                if let TypeParamBound::Trait(trait_bound) = bound {
+                    result.push('_');
+                    result.push_str(
+                        &trait_bound
+                            .path
+                            .segments
+                            .iter()
+                            .map(segment_to_string)
+                            .collect::<Vec<_>>()
+                            .join("_"),
+                    );
+                }
+            }
+            result
+        }
+        Type::Infer(_) => {
+            panic!("Type inference is not supported in dependency injection type signatures")
+        }
+        Type::Macro(_) => {
+            panic!("Macro invocations are not supported in dependency injection type signatures")
+        }
+        Type::Never(_) => "never".to_string(),
+        Type::Paren(inner) => type_to_string(&inner.elem),
+        Type::Path(path) => type_path_to_string(path),
+        Type::Ptr(inner) => {
+            let inner_type = type_to_string(&inner.elem);
+            format!("ptr_{}", inner_type)
+        }
+        Type::Reference(inner) => {
+            let inner_type = type_to_string(&inner.elem);
+            format!("ref_{}", inner_type)
+        }
+        Type::Slice(inner) => {
+            let inner_type = type_to_string(&inner.elem);
+            format!("slice_{}", inner_type)
+        }
+        Type::TraitObject(to) => {
+            let mut result = "dyn".to_string();
+            for bound in &to.bounds {
+                if let TypeParamBound::Trait(trait_bound) = bound {
+                    result.push('_');
+                    result.push_str(
+                        &trait_bound
+                            .path
+                            .segments
+                            .iter()
+                            .map(segment_to_string)
+                            .collect::<Vec<_>>()
+                            .join("_"),
+                    );
+                }
+            }
+            result
+        }
+        Type::Tuple(tuple) => {
+            let inner_types = tuple
+                .elems
+                .iter()
+                .map(type_to_string)
+                .collect::<Vec<_>>()
+                .join("_");
+            format!("tuple_{}", inner_types)
+        }
+        _ => "".to_string(),
+    }
+}
+
+fn type_path_to_string(dep_type: &TypePath) -> String {
     let merged_ident = dep_type
         .path
         .segments
         .iter()
-        .map(|segment| segment.ident.to_string())
+        .map(segment_to_string)
         .collect::<Vec<_>>()
         .join("_");
     let dep_name = Ident::new(&merged_ident, Span::call_site());
     dep_name.to_string().to_lowercase()
+}
+
+fn segment_to_string(segment: &PathSegment) -> String {
+    let mut result = segment.ident.to_string();
+    match &segment.arguments {
+        PathArguments::None => {}
+        PathArguments::AngleBracketed(args) => {
+            for arg in &args.args {
+                result.push('_');
+                result.push_str(&generic_argument_to_string(arg));
+            }
+        }
+        PathArguments::Parenthesized(_args) => {
+            panic!("Parenthesized type arguments are not supported - wrap the type in a newtype")
+        }
+    }
+    result
+}
+
+fn generic_argument_to_string(arg: &syn::GenericArgument) -> String {
+    match arg {
+        GenericArgument::Type(typ) => type_to_string(typ),
+        GenericArgument::Const(_) => {
+            panic!("Const generics are not supported in dependency injection")
+        }
+        GenericArgument::AssocType(_) => {
+            panic!("Associated types are not supported in dependency injection")
+        }
+        GenericArgument::AssocConst(_) => {
+            panic!("Associated constants are not supported in dependency injection")
+        }
+        GenericArgument::Constraint(_) => {
+            panic!("Constraints are not supported in dependency injection; introduce a newtype")
+        }
+        _ => "".to_string(),
+    }
 }
 
 fn get_dependency_params(
@@ -644,7 +760,7 @@ fn get_dependency_params(
                 }
                 FnArg::Typed(typ) => get_dependency_param_from_pat_type(typ),
             };
-            let dep_name_str = merge_type_path(&dep_type);
+            let dep_name_str = type_path_to_string(&dep_type);
 
             let getter_ident = Ident::new(
                 &format!("test_r_get_dep_{}", dep_name_str),
@@ -680,7 +796,7 @@ fn get_dependency_params_for_closure<'a>(
                 // TODO: nicer error report
             }
         };
-        let dep_name_str = merge_type_path(&dep_type);
+        let dep_name_str = type_path_to_string(&dep_type);
         let binding = match pat {
             Pat::Type(typ) => match &*typ.pat {
                 Pat::Ident(ident) => ident.ident.clone(),
