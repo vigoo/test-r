@@ -114,6 +114,7 @@ mod inner {
     }
 }
 
+#[cfg(test)]
 mod generic_deps {
     use std::sync::Arc;
     use test_r::{test, test_dep};
