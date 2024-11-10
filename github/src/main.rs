@@ -49,7 +49,7 @@ fn main() {
             Job::new("Deploy book")
                 .runs_on_("ubuntu-latest")
                 .add_step(Step::checkout())
-                .add_step(SetupMDbook::default())
+                .add_step(SetupMDBook::default())
                 .add_step(Step::run("mdbook build").working_directory_("book"))
                 .add_step(
                     GHPages::default()

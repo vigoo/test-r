@@ -102,18 +102,18 @@ impl Default for InstallAction {
     }
 }
 
-pub struct SetupMDbook {
+pub struct SetupMDBook {
     version: String,
 }
 
-impl SetupMDbook {
+impl SetupMDBook {
     pub fn version(mut self, version: impl ToString) -> Self {
         self.version = version.to_string();
         self
     }
 }
 
-impl Default for SetupMDbook {
+impl Default for SetupMDBook {
     fn default() -> Self {
         Self {
             version: "latest".to_string(),
@@ -121,8 +121,8 @@ impl Default for SetupMDbook {
     }
 }
 
-impl From<SetupMDbook> for StepValue {
-    fn from(action: SetupMDbook) -> Self {
+impl From<SetupMDBook> for StepValue {
+    fn from(action: SetupMDBook) -> Self {
         StepValue::uses("peaceiris", "actions-mdbook", 2).with(("mdbook-version", action.version))
     }
 }
@@ -331,7 +331,7 @@ impl From<GHPages> for StepValue {
 pub trait StepExt {
     fn ghpages() -> GHPages;
     fn install_action() -> InstallAction;
-    fn setup_mdbook() -> SetupMDbook;
+    fn setup_mdbook() -> SetupMDBook;
 }
 
 pub trait StepRunExt {
@@ -347,8 +347,8 @@ impl StepExt for Step<Use> {
         InstallAction::default()
     }
 
-    fn setup_mdbook() -> SetupMDbook {
-        SetupMDbook::default()
+    fn setup_mdbook() -> SetupMDBook {
+        SetupMDBook::default()
     }
 }
 
