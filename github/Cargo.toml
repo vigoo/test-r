@@ -8,5 +8,5 @@ license = "Apache-2.0"
 name = "test-r-github"
 
 [dependencies]
-gh-workflow = { git = "https://github.com/tailcallhq/rust-gh-workflow", rev = "f244199"}
+gh-workflow = {version = "0.2.0"}
 serde_json = "1.0.132"
