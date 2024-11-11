@@ -391,8 +391,6 @@ dependencies = [
 [[package]]
 name = "gh-workflow"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12a47f49ec73c86a021948006ab77376012a210e3754c681e4f0226257fe68cc"
 dependencies = [
  "async-trait",
  "derive_more",

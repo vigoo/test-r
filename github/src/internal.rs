@@ -1,4 +1,4 @@
-use gh_workflow::{Expression, Job, Run, RunsOn, Step, StepValue, Strategy, Use};
+use gh_workflow::{Expression, Job, Run, RunsOn, Step, Strategy, Use};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Default)]
@@ -82,9 +82,9 @@ impl InstallAction {
     }
 }
 
-impl From<InstallAction> for StepValue {
+impl From<InstallAction> for Step<Use> {
     fn from(action: InstallAction) -> Self {
-        let mut step = StepValue::uses("taiki-e", "install-action", 2);
+        let mut step = Step::uses("taiki-e", "install-action", 2);
         if !action.checksum {
             step = step.add_with(("checksum", "false"));
         }
@@ -121,9 +121,9 @@ impl Default for SetupMDBook {
     }
 }
 
-impl From<SetupMDBook> for StepValue {
+impl From<SetupMDBook> for Step<Use> {
     fn from(action: SetupMDBook) -> Self {
-        StepValue::uses("peaceiris", "actions-mdbook", 2).with(("mdbook-version", action.version))
+        Step::uses("peaceiris", "actions-mdbook", 2).with(("mdbook-version", action.version))
     }
 }
 
@@ -259,9 +259,9 @@ impl GHPages {
     }
 }
 
-impl From<GHPages> for StepValue {
+impl From<GHPages> for Step<Use> {
     fn from(action: GHPages) -> Self {
-        let mut step = StepValue::uses("peaceiris", "actions-gh-pages", 4);
+        let mut step = Step::uses("peaceiris", "actions-gh-pages", 4);
         if let Some(allow_empty_commit) = action.allow_empty_commit {
             step = step.add_with(("allow_empty_commit", allow_empty_commit.to_string()));
         }
