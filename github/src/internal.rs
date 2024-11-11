@@ -1,4 +1,4 @@
-use gh_workflow::{AddStep, Expression, Job, Run, Step, Strategy, Use};
+use gh_workflow::{Expression, Job, Run, RunsOn, Step, Strategy, Use};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Default)]
@@ -59,7 +59,7 @@ pub trait JobExt {
 
 impl JobExt for Job {
     fn runs_on_(mut self, runs_on: impl ToString) -> Self {
-        self.runs_on = Some(Value::String(runs_on.to_string()));
+        self.runs_on = Some(RunsOn::from(runs_on.to_string()));
         self
     }
 }
@@ -82,15 +82,14 @@ impl InstallAction {
     }
 }
 
-impl AddStep for InstallAction {
-    fn apply(self, job: Job) -> Job {
+impl From<InstallAction> for Step<Use> {
+    fn from(action: InstallAction) -> Self {
         let mut step = Step::uses("taiki-e", "install-action", 2);
-        if !self.checksum {
-            step = step.with(("checksum", "false"));
+        if !action.checksum {
+            step = step.add_with(("checksum", "false"));
         }
-        step = step.with(("tool", self.tools.join(",")));
-
-        job.add_step(step)
+        step = step.add_with(("tool", action.tools.join(",")));
+        step
     }
 }
 
@@ -103,18 +102,18 @@ impl Default for InstallAction {
     }
 }
 
-pub struct SetupMdbook {
+pub struct SetupMDBook {
     version: String,
 }
 
-impl SetupMdbook {
+impl SetupMDBook {
     pub fn version(mut self, version: impl ToString) -> Self {
         self.version = version.to_string();
         self
     }
 }
 
-impl Default for SetupMdbook {
+impl Default for SetupMDBook {
     fn default() -> Self {
         Self {
             version: "latest".to_string(),
@@ -122,16 +121,14 @@ impl Default for SetupMdbook {
     }
 }
 
-impl AddStep for SetupMdbook {
-    fn apply(self, job: Job) -> Job {
-        job.add_step(
-            Step::uses("peaceiris", "actions-mdbook", 2).with(("mdbook-version", self.version)),
-        )
+impl From<SetupMDBook> for Step<Use> {
+    fn from(action: SetupMDBook) -> Self {
+        Step::uses("peaceiris", "actions-mdbook", 2).with(("mdbook-version", action.version))
     }
 }
 
 #[derive(Debug, Default)]
-pub struct GhPages {
+pub struct GHPages {
     allow_empty_commit: Option<bool>,
     commit_message: Option<String>,
     cname: Option<String>,
@@ -155,7 +152,7 @@ pub struct GhPages {
     if_condition: Option<Expression>,
 }
 
-impl GhPages {
+impl GHPages {
     pub fn allow_empty_commit(mut self, allow_empty_commit: bool) -> Self {
         self.allow_empty_commit = Some(allow_empty_commit);
         self
@@ -262,79 +259,79 @@ impl GhPages {
     }
 }
 
-impl AddStep for GhPages {
-    fn apply(self, job: Job) -> Job {
+impl From<GHPages> for Step<Use> {
+    fn from(action: GHPages) -> Self {
         let mut step = Step::uses("peaceiris", "actions-gh-pages", 4);
-        if let Some(allow_empty_commit) = self.allow_empty_commit {
-            step = step.with(("allow_empty_commit", allow_empty_commit.to_string()));
+        if let Some(allow_empty_commit) = action.allow_empty_commit {
+            step = step.add_with(("allow_empty_commit", allow_empty_commit.to_string()));
         }
-        if let Some(commit_message) = self.commit_message {
-            step = step.with(("commit_message", commit_message));
+        if let Some(commit_message) = action.commit_message {
+            step = step.add_with(("commit_message", commit_message));
         }
-        if let Some(cname) = self.cname {
-            step = step.with(("cname", cname));
+        if let Some(cname) = action.cname {
+            step = step.add_with(("cname", cname));
         }
-        if let Some(deploy_key) = self.deploy_key {
-            step = step.with(("deploy_key", deploy_key));
+        if let Some(deploy_key) = action.deploy_key {
+            step = step.add_with(("deploy_key", deploy_key));
         }
-        if let Some(destination_dir) = self.destination_dir {
-            step = step.with(("destination_dir", destination_dir));
+        if let Some(destination_dir) = action.destination_dir {
+            step = step.add_with(("destination_dir", destination_dir));
         }
-        if let Some(enable_jekyll) = self.enable_jekyll {
-            step = step.with(("enable_jekyll", enable_jekyll.to_string()));
+        if let Some(enable_jekyll) = action.enable_jekyll {
+            step = step.add_with(("enable_jekyll", enable_jekyll.to_string()));
         }
-        if let Some(exclude_assets) = self.exclude_assets {
-            step = step.with(("exclude_assets", exclude_assets.join(",")));
+        if let Some(exclude_assets) = action.exclude_assets {
+            step = step.add_with(("exclude_assets", exclude_assets.join(",")));
         }
-        if let Some(external_repository) = self.external_repository {
-            step = step.with(("external_repository", external_repository));
+        if let Some(external_repository) = action.external_repository {
+            step = step.add_with(("external_repository", external_repository));
         }
-        if let Some(force_orphan) = self.force_orphan {
-            step = step.with(("force_orphan", force_orphan.to_string()));
+        if let Some(force_orphan) = action.force_orphan {
+            step = step.add_with(("force_orphan", force_orphan.to_string()));
         }
-        if let Some(full_commit_message) = self.full_commit_message {
-            step = step.with(("full_commit_message", full_commit_message));
+        if let Some(full_commit_message) = action.full_commit_message {
+            step = step.add_with(("full_commit_message", full_commit_message));
         }
-        if let Some(github_token) = self.github_token {
-            step = step.with(("github_token", github_token));
+        if let Some(github_token) = action.github_token {
+            step = step.add_with(("github_token", github_token));
         }
-        if let Some(keep_files) = self.keep_files {
-            step = step.with(("keep_files", keep_files.to_string()));
+        if let Some(keep_files) = action.keep_files {
+            step = step.add_with(("keep_files", keep_files.to_string()));
         }
-        if let Some(personal_token) = self.personal_token {
-            step = step.with(("personal_token", personal_token));
+        if let Some(personal_token) = action.personal_token {
+            step = step.add_with(("personal_token", personal_token));
         }
-        if let Some(publish_branch) = self.publish_branch {
-            step = step.with(("publish_branch", publish_branch));
+        if let Some(publish_branch) = action.publish_branch {
+            step = step.add_with(("publish_branch", publish_branch));
         }
-        if let Some(publish_dir) = self.publish_dir {
-            step = step.with(("publish_dir", publish_dir));
+        if let Some(publish_dir) = action.publish_dir {
+            step = step.add_with(("publish_dir", publish_dir));
         }
-        if let Some(tag_name) = self.tag_name {
-            step = step.with(("tag_name", tag_name));
+        if let Some(tag_name) = action.tag_name {
+            step = step.add_with(("tag_name", tag_name));
         }
-        if let Some(tag_message) = self.tag_message {
-            step = step.with(("tag_message", tag_message));
+        if let Some(tag_message) = action.tag_message {
+            step = step.add_with(("tag_message", tag_message));
         }
-        if let Some(user_name) = self.user_name {
-            step = step.with(("user_name", user_name));
+        if let Some(user_name) = action.user_name {
+            step = step.add_with(("user_name", user_name));
         }
-        if let Some(user_email) = self.user_email {
-            step = step.with(("user_email", user_email));
+        if let Some(user_email) = action.user_email {
+            step = step.add_with(("user_email", user_email));
         }
 
-        if let Some(if_condition) = self.if_condition {
+        if let Some(if_condition) = action.if_condition {
             step = step.if_condition(if_condition);
         }
 
-        job.add_step(step)
+        step
     }
 }
 
 pub trait StepExt {
-    fn ghpages() -> GhPages;
+    fn ghpages() -> GHPages;
     fn install_action() -> InstallAction;
-    fn setup_mdbook() -> SetupMdbook;
+    fn setup_mdbook() -> SetupMDBook;
 }
 
 pub trait StepRunExt {
@@ -342,16 +339,16 @@ pub trait StepRunExt {
 }
 
 impl StepExt for Step<Use> {
-    fn ghpages() -> GhPages {
-        GhPages::default()
+    fn ghpages() -> GHPages {
+        GHPages::default()
     }
 
     fn install_action() -> InstallAction {
         InstallAction::default()
     }
 
-    fn setup_mdbook() -> SetupMdbook {
-        SetupMdbook::default()
+    fn setup_mdbook() -> SetupMDBook {
+        SetupMDBook::default()
     }
 }
 
