@@ -89,7 +89,7 @@ impl From<InstallAction> for StepValue {
             step = step.add_with(("checksum", "false"));
         }
         step = step.add_with(("tool", action.tools.join(",")));
-        StepValue::from(step)
+        step
     }
 }
 
