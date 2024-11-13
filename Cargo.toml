@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "test-r-macros",
+    "test-r-macro",
     "test-r-core",
     "test-r",
     "example",
     "example-tokio",
-    "github"
+    "github",
 ]

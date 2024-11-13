@@ -1,8 +1,9 @@
 [workspace]
 dependencies_update = true
-changelog_path = "./CHANGELOG.md"
+changelog_update = false
 
 [changelog]
+protect_breaking_commits = true # always include commits with breaking changes in the changelog
 body = """
 
 ## `{{ package }}` - [{{ version | trim_start_matches(pat="v") }}]{%- if release_link -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
@@ -33,4 +34,12 @@ release = false
 [[package]]
 name = "test-r"
 changelog_update = true
-changelog_path = "./CHANGELOG.md"
+changelog_include = ["test-r-core", "test-r-macro"]
+
+[[package]]
+name = "test-r-core"
+changelog_update = true
+
+[[package]]
+name = "test-r-macro"
+changelog_update = true
