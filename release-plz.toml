@@ -2,9 +2,6 @@
 dependencies_update = true
 changelog_update = false
 
-[changelog]
-protect_breaking_commits = true # always include commits with breaking changes in the changelog
-
 [[package]]
 name = "test-r-example"
 release = false
@@ -24,8 +21,6 @@ changelog_include = ["test-r-core", "test-r-macro"]
 
 [[package]]
 name = "test-r-core"
-changelog_update = true
 
 [[package]]
 name = "test-r-macro"
-changelog_update = true
