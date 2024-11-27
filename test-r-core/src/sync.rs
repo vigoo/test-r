@@ -153,7 +153,7 @@ fn test_thread(
                         ensure_time,
                         &next.test.flakiness_control,
                         &next.test.run,
-                        next.deps,
+                        next.deps.clone(),
                     )
                 };
 
