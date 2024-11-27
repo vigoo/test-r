@@ -175,7 +175,7 @@ async fn test_thread(
                     args.nocapture,
                     args.include_ignored,
                     ensure_time,
-                    next.deps,
+                    next.deps.clone(),
                     &next.test,
                     &mut worker,
                 )

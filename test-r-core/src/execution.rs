@@ -3,6 +3,7 @@ use rand::SeedableRng;
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use topological_sort::TopologicalSort;
 
@@ -24,6 +25,7 @@ pub(crate) struct TestSuiteExecution {
     idx: usize,
     is_sequential: bool,
     skip_creating_dependencies: bool,
+    in_progress: Arc<AtomicUsize>,
 }
 
 impl TestSuiteExecution {
@@ -128,7 +130,7 @@ impl TestSuiteExecution {
                 .pick_next_internal(&self.create_dependency_map(&HashMap::new()))
                 .await
             {
-                Some((test, deps, seq_lock)) => {
+                Some((test, deps, seq_lock, in_progress_counter)) => {
                     let index = self.idx;
                     self.idx += 1;
                     Some(TestExecution {
@@ -136,6 +138,7 @@ impl TestSuiteExecution {
                         deps: Arc::new(deps),
                         index,
                         _seq_lock: seq_lock,
+                        in_progress_counter,
                     })
                 }
                 None => None,
@@ -145,7 +148,7 @@ impl TestSuiteExecution {
 
     pub fn pick_next_sync(&mut self) -> Option<TestExecution> {
         match self.pick_next_internal_sync(&HashMap::new()) {
-            Some((test, deps, seq_lock)) => {
+            Some((test, deps, seq_lock, in_progress_counter)) => {
                 let index = self.idx;
                 self.idx += 1;
                 Some(TestExecution {
@@ -153,6 +156,7 @@ impl TestSuiteExecution {
                     deps: Arc::new(deps),
                     index,
                     _seq_lock: seq_lock,
+                    in_progress_counter,
                 })
             }
             None => None,
@@ -168,6 +172,7 @@ impl TestSuiteExecution {
         RegisteredTest,
         HashMap<String, Arc<dyn Any + Send + Sync>>,
         SequentialExecutionLockGuard,
+        Arc<AtomicUsize>,
     )> {
         if self.is_empty() {
             None
@@ -183,10 +188,10 @@ impl TestSuiteExecution {
                 let current = self.inner.iter_mut();
                 let mut result = None;
                 for inner in current {
-                    if let Some((test, deps, seq_lock)) =
+                    if let Some((test, deps, seq_lock, in_progress_counter)) =
                         Box::pin(inner.pick_next_internal(&dependency_map)).await
                     {
-                        result = Some((test, deps, seq_lock));
+                        result = Some((test, deps, seq_lock, in_progress_counter));
                         break;
                     }
                 }
@@ -195,9 +200,17 @@ impl TestSuiteExecution {
                 result
             } else {
                 let guard = self.sequential_lock.lock(self.is_sequential).await;
-                self.tests.pop().map(|test| (test, dependency_map, guard))
+                self.in_progress.fetch_add(1, Ordering::Release);
+                self.tests
+                    .pop()
+                    .map(|test| (test, dependency_map, guard, self.in_progress.clone()))
             };
-            if result.is_none() && self.is_materialized() && !locked {
+            if result.is_none()
+                && self.is_empty()
+                && self.is_materialized()
+                && !locked
+                && self.in_progress.load(Ordering::Acquire) == 0
+            {
                 self.drop_deps();
             }
             if result.is_some() {
@@ -215,6 +228,7 @@ impl TestSuiteExecution {
         RegisteredTest,
         HashMap<String, Arc<dyn Any + Send + Sync>>,
         SequentialExecutionLockGuard,
+        Arc<AtomicUsize>,
     )> {
         if self.is_empty() {
             None
@@ -230,10 +244,10 @@ impl TestSuiteExecution {
                 let current = self.inner.iter_mut();
                 let mut result = None;
                 for inner in current {
-                    if let Some((test, deps, seq_lock)) =
+                    if let Some((test, deps, seq_lock, in_progress_counter)) =
                         inner.pick_next_internal_sync(&dependency_map)
                     {
-                        result = Some((test, deps, seq_lock));
+                        result = Some((test, deps, seq_lock, in_progress_counter));
                         break;
                     }
                 }
@@ -242,9 +256,16 @@ impl TestSuiteExecution {
                 result
             } else {
                 let guard = self.sequential_lock.lock_sync(self.is_sequential);
-                self.tests.pop().map(|test| (test, dependency_map, guard))
+                self.in_progress.fetch_add(1, Ordering::Release);
+                self.tests
+                    .pop()
+                    .map(|test| (test, dependency_map, guard, self.in_progress.clone()))
             };
-            if result.is_none() && self.is_materialized() && !locked {
+            if result.is_none()
+                && self.is_materialized()
+                && !locked
+                && self.in_progress.load(Ordering::Acquire) == 0
+            {
                 self.drop_deps();
             }
             if result.is_some() {
@@ -287,6 +308,7 @@ impl TestSuiteExecution {
             sequential_lock: SequentialExecutionLock::new(),
             is_sequential,
             skip_creating_dependencies: false,
+            in_progress: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -316,6 +338,7 @@ impl TestSuiteExecution {
                     is_sequential: false,
                     sequential_lock: SequentialExecutionLock::new(),
                     skip_creating_dependencies: false,
+                    in_progress: Arc::new(AtomicUsize::new(0)),
                 };
                 inner.add_dependency(dep);
                 self.inner.push(inner);
@@ -352,8 +375,8 @@ impl TestSuiteExecution {
                     idx: 0,
                     is_sequential: false,
                     sequential_lock: SequentialExecutionLock::new(),
-
                     skip_creating_dependencies: false,
+                    in_progress: Arc::new(AtomicUsize::new(0)),
                 };
                 inner.add_test(test);
                 self.inner.push(inner);
@@ -391,6 +414,7 @@ impl TestSuiteExecution {
                     is_sequential: false,
                     sequential_lock: SequentialExecutionLock::new(),
                     skip_creating_dependencies: false,
+                    in_progress: Arc::new(AtomicUsize::new(0)),
                 };
                 inner.add_prop(prop);
                 self.inner.push(inner);
@@ -540,6 +564,13 @@ pub struct TestExecution {
     pub deps: Arc<dyn DependencyView + Send + Sync>,
     pub index: usize,
     _seq_lock: SequentialExecutionLockGuard,
+    in_progress_counter: Arc<AtomicUsize>,
+}
+
+impl Drop for TestExecution {
+    fn drop(&mut self) {
+        self.in_progress_counter.fetch_sub(1, Ordering::Release);
+    }
 }
 
 #[allow(dead_code)]
