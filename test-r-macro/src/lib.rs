@@ -616,6 +616,39 @@ pub fn tag_suite(input: TokenStream) -> TokenStream {
     result.into()
 }
 
+#[proc_macro]
+pub fn sequential_suite(input: TokenStream) -> TokenStream {
+    let params = parse_macro_input!(input with Punctuated::<Ident, Token![,]>::parse_terminated);
+
+    if params.len() != 1 {
+        panic!("sequential_suite! expects exactly 1 identifier as parameter: the name of the suite module");
+    }
+
+    let mod_name_str = params[0].to_string();
+
+    let register_ident = Ident::new(
+        &format!("test_r_register_mod_{}_sequential", mod_name_str),
+        Span::call_site(),
+    );
+
+    let register_call = quote! {
+          test_r::core::register_suite_sequential(
+              #mod_name_str,
+              module_path!(),
+          );
+    };
+
+    let result = quote! {
+        #[cfg(test)]
+        #[test_r::ctor::ctor]
+        fn #register_ident() {
+             #register_call
+        }
+    };
+
+    result.into()
+}
+
 fn type_to_string(typ: &Type) -> String {
     match typ {
         Type::Array(array) => {
