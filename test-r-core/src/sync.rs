@@ -410,6 +410,7 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
         args.logfile = None;
         let args = args.to_args();
 
+        #[allow(clippy::zombie_processes)]
         let mut process = Command::new(exe)
             .args(args)
             .stdin(Stdio::inherit())
