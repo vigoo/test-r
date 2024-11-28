@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/vigoo/test-r/compare/test-r-v1.0.5...test-r-v1.1.0) - 2024-11-28
+
+### Added
+
+- Ability to mark a non-inline suite as sequential ([#71](https://github.com/vigoo/test-r/pull/71))
+
 ## [1.0.5](https://github.com/vigoo/test-r/compare/test-r-v1.0.4...test-r-v1.0.5) - 2024-11-27
 
 ### Fixed
