@@ -24,6 +24,17 @@ mod suite {
 
 The rest of the tests in the crate will still be parallelized based on the `--test-threads` argument.
 
+The `#[sequential]` attribute can only be used on _inline modules_ due to a limitation in the current stable Rust compiler.
+For non-inline modules, you can use the `sequential_suite!` macro instead in the following way:
+
+```rust
+use test_r::sequential_suite};
+
+mod suite;
+
+sequential_suite!(suite);
+```
+
 ## Always or never capture output
 
 Two attributes can enforce capturing or not capturing the standard output and error of a test. Without these attributes, the runner will either capture (by default), or not (if the `--nocapture` command line argument is passed).

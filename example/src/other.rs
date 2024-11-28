@@ -1,4 +1,4 @@
-use test_r::tag_suite;
+use test_r::{sequential_suite, tag_suite};
 
 #[cfg(test)]
 #[test_r::tag(a)]
@@ -67,3 +67,4 @@ mod tests {
 }
 
 tag_suite!(tests, b);
+sequential_suite!(tests);
