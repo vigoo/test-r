@@ -172,6 +172,9 @@ async fn test_thread(
 
                 output.start_running_test(&next.test, next.index, count);
                 let result = run_test(
+                    output.clone(),
+                    next.index,
+                    count,
                     args.nocapture,
                     args.include_ignored,
                     ensure_time,
@@ -230,19 +233,32 @@ async fn pick_next<'a>(execution: &Arc<Mutex<TestSuiteExecution>>) -> Option<Tes
 }
 
 async fn run_with_flakiness_control<F, R>(
-    flakiness_control: &FlakinessControl,
+    output: Arc<dyn TestRunnerOutput>,
+    test_description: &RegisteredTest,
+    idx: usize,
+    count: usize,
     test: F,
 ) -> Result<(), R>
 where
     F: Fn(Instant) -> Pin<Box<dyn Future<Output = Result<(), R>>>> + Send + Sync,
 {
-    match flakiness_control {
+    match &test_description.flakiness_control {
         FlakinessControl::None => {
             let start = Instant::now();
             test(start).await
         }
         FlakinessControl::ProveNonFlaky(tries) => {
-            for _ in 0..*tries {
+            for n in 0..*tries {
+                if n > 0 {
+                    output.repeat_running_test(
+                        test_description,
+                        idx,
+                        count,
+                        n + 1,
+                        *tries,
+                        "to ensure test is not flaky",
+                    );
+                }
                 let start = Instant::now();
                 test(start).await?;
             }
@@ -256,6 +272,14 @@ where
 
                 if result.is_err() && tries < *max_retries {
                     tries += 1;
+                    output.repeat_running_test(
+                        test_description,
+                        idx,
+                        count,
+                        tries,
+                        *max_retries,
+                        "because test is known to be flaky",
+                    );
                 } else {
                     break result;
                 }
@@ -264,7 +288,11 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_test(
+    output: Arc<dyn TestRunnerOutput>,
+    idx: usize,
+    count: usize,
     nocapture: bool,
     include_ignored: bool,
     ensure_time: Option<TimeThreshold>,
@@ -278,17 +306,17 @@ async fn run_test(
         worker.run_test(nocapture, test).await
     } else {
         let start = Instant::now();
+        let test = test.clone();
         match &test.run {
             TestFunction::Sync(_) => {
-                let test_fn = test.run.clone();
-                let should_panic = test.should_panic.clone();
-                let flakiness_control = test.flakiness_control.clone();
                 let handle = spawn_blocking(move || {
+                    let test = test.clone();
                     crate::sync::run_sync_test_function(
-                        &should_panic,
+                        output,
+                        &test,
+                        idx,
+                        count,
                         ensure_time,
-                        &flakiness_control,
-                        &test_fn,
                         dependency_view,
                     )
                 });
@@ -299,7 +327,7 @@ async fn run_test(
             TestFunction::Async(test_fn) => {
                 let timeout = test.timeout;
                 let test_fn = test_fn.clone();
-                let result = run_with_flakiness_control(&test.flakiness_control, |start| {
+                let result = run_with_flakiness_control(output, &test, idx, count, |start| {
                     let dependency_view = dependency_view.clone();
                     let test_fn = test_fn.clone();
                     Box::pin(async move {
@@ -338,15 +366,14 @@ async fn run_test(
                 TestResult::from_result(&test.should_panic, start.elapsed(), result)
             }
             TestFunction::SyncBench(_) => {
-                let test_fn = test.run.clone();
-                let should_panic = test.should_panic.clone();
-                let flakiness_control = test.flakiness_control.clone();
                 let handle = spawn_blocking(move || {
+                    let test = test.clone();
                     crate::sync::run_sync_test_function(
-                        &should_panic,
+                        output,
+                        &test,
+                        idx,
+                        count,
                         ensure_time,
-                        &flakiness_control,
-                        &test_fn,
                         dependency_view,
                     )
                 });

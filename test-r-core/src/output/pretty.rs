@@ -231,6 +231,39 @@ impl TestRunnerOutput for Pretty {
         .unwrap();
     }
 
+    fn repeat_running_test(
+        &self,
+        test: &RegisteredTest,
+        idx: usize,
+        count: usize,
+        attempt: usize,
+        max_attempts: usize,
+        reason: &str,
+    ) {
+        let mut out = self.lock.lock().unwrap();
+        let index_field = format!("{}/{}", idx + 1, count);
+        let padding = " ".repeat(out.index_field_length - index_field.len());
+        let result_padding = " ".repeat(out.longest_name - test.fully_qualified_name().len() + 1);
+
+        writeln!(
+            out,
+            "{}[{}{}]{} Retrying test: {} {}{result_padding}[{}{}{}/{}{}{}]",
+            self.style_progress.render(),
+            padding,
+            index_field,
+            self.style_progress.render_reset(),
+            test.fully_qualified_name(),
+            reason,
+            self.style_progress.render(),
+            attempt,
+            self.style_progress.render_reset(),
+            self.style_progress.render(),
+            max_attempts,
+            self.style_progress.render_reset(),
+        )
+        .unwrap();
+    }
+
     fn finished_running_test(
         &self,
         test: &RegisteredTest,

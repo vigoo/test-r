@@ -4,7 +4,7 @@ use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
 use crate::internal::{
     generate_tests_sync, get_ensure_time, CapturedOutput, FlakinessControl, RegisteredTest,
-    ShouldPanic, SuiteResult, TestFunction, TestResult,
+    SuiteResult, TestFunction, TestResult,
 };
 use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
 use crate::output::{test_runner_output, TestRunnerOutput};
@@ -149,10 +149,11 @@ fn test_thread(
                 } else {
                     let ensure_time = get_ensure_time(&args, &next.test);
                     run_sync_test_function(
-                        &next.test.should_panic,
+                        output.clone(),
+                        &next.test,
+                        next.index,
+                        count,
                         ensure_time,
-                        &next.test.flakiness_control,
-                        &next.test.run,
                         next.deps.clone(),
                     )
                 };
@@ -206,16 +207,29 @@ fn pick_next(execution: &Arc<Mutex<TestSuiteExecution>>) -> Option<TestExecution
 }
 
 fn run_with_flakiness_control<R>(
-    flakiness_control: &FlakinessControl,
+    output: Arc<dyn TestRunnerOutput>,
+    test_description: &RegisteredTest,
+    idx: usize,
+    count: usize,
     test: impl Fn(Instant) -> Result<(), R>,
 ) -> Result<(), R> {
-    match flakiness_control {
+    match &test_description.flakiness_control {
         FlakinessControl::None => {
             let start = Instant::now();
             test(start)
         }
         FlakinessControl::ProveNonFlaky(tries) => {
-            for _ in 0..*tries {
+            for n in 0..*tries {
+                if n > 0 {
+                    output.repeat_running_test(
+                        test_description,
+                        idx,
+                        count,
+                        n + 1,
+                        *tries,
+                        "to ensure test is not flaky",
+                    );
+                }
                 let start = Instant::now();
                 test(start)?;
             }
@@ -229,6 +243,14 @@ fn run_with_flakiness_control<R>(
 
                 if result.is_err() && tries < *max_retries {
                     tries += 1;
+                    output.repeat_running_test(
+                        test_description,
+                        idx,
+                        count,
+                        tries,
+                        *max_retries,
+                        "because test is known to be flaky",
+                    );
                 } else {
                     break result;
                 }
@@ -239,31 +261,34 @@ fn run_with_flakiness_control<R>(
 
 #[allow(unreachable_patterns)]
 pub(crate) fn run_sync_test_function(
-    should_panic: &ShouldPanic,
+    output: Arc<dyn TestRunnerOutput>,
+    test_description: &RegisteredTest,
+    idx: usize,
+    count: usize,
     ensure_time: Option<TimeThreshold>,
-    flakiness_control: &FlakinessControl,
-    test_fn: &TestFunction,
     dependency_view: Arc<dyn internal::DependencyView + Send + Sync>,
 ) -> TestResult {
     let start = Instant::now();
-    match test_fn {
+    match test_description.run.clone() {
         TestFunction::Sync(test_fn) => {
-            let result = run_with_flakiness_control(flakiness_control, move |start| {
-                let dependency_view = dependency_view.clone();
-                catch_unwind(AssertUnwindSafe(move || {
-                    let result = test_fn(dependency_view).as_result();
-                    if let Err(failure) = result {
-                        panic!("{failure}");
-                    }
-                    if let Some(ensure_time) = ensure_time {
-                        let elapsed = start.elapsed();
-                        if ensure_time.is_critical(&elapsed) {
-                            panic!("Test run time exceeds critical threshold: {:?}", elapsed);
+            let result =
+                run_with_flakiness_control(output, test_description, idx, count, move |start| {
+                    let dependency_view = dependency_view.clone();
+                    let test_fn = test_fn.clone();
+                    catch_unwind(AssertUnwindSafe(move || {
+                        let result = test_fn(dependency_view).as_result();
+                        if let Err(failure) = result {
+                            panic!("{failure}");
                         }
-                    }
-                }))
-            });
-            TestResult::from_result(should_panic, start.elapsed(), result)
+                        if let Some(ensure_time) = ensure_time {
+                            let elapsed = start.elapsed();
+                            if ensure_time.is_critical(&elapsed) {
+                                panic!("Test run time exceeds critical threshold: {:?}", elapsed);
+                            }
+                        }
+                    }))
+                });
+            TestResult::from_result(&test_description.should_panic, start.elapsed(), result)
         }
         TestFunction::SyncBench(bench_fn) => {
             let mut bencher = Bencher::new();
@@ -273,7 +298,12 @@ pub(crate) fn run_sync_test_function(
                     .summary()
                     .expect("iter() was not called in bench function")
             }));
-            TestResult::from_summary(should_panic, start.elapsed(), result, bencher.bytes)
+            TestResult::from_summary(
+                &test_description.should_panic,
+                start.elapsed(),
+                result,
+                bencher.bytes,
+            )
         }
         _ => {
             panic!("Async tests are not supported in sync mode, enable the 'tokio' feature")

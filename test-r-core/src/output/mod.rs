@@ -14,6 +14,15 @@ use std::time::Duration;
 pub trait TestRunnerOutput: Send + Sync {
     fn start_suite(&self, tests: &[RegisteredTest]);
     fn start_running_test(&self, test: &RegisteredTest, idx: usize, count: usize);
+    fn repeat_running_test(
+        &self,
+        test: &RegisteredTest,
+        idx: usize,
+        count: usize,
+        attempt: usize,
+        max_attempts: usize,
+        reason: &str,
+    );
     fn finished_running_test(
         &self,
         test: &RegisteredTest,
