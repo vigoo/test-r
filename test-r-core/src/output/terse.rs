@@ -37,6 +37,20 @@ impl TestRunnerOutput for Terse {
 
     fn start_running_test(&self, _test: &RegisteredTest, _idx: usize, _count: usize) {}
 
+    fn repeat_running_test(
+        &self,
+        _test: &RegisteredTest,
+        _idx: usize,
+        _count: usize,
+        _attempt: usize,
+        _max_attempts: usize,
+        _reason: &str,
+    ) {
+        let mut state = self.state.lock().unwrap();
+        let mut out = self.pretty.lock();
+        state.print_char(&mut *out, &self.pretty.style_ok, 'r');
+    }
+
     fn finished_running_test(
         &self,
         test: &RegisteredTest,

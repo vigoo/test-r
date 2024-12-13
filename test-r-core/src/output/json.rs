@@ -44,6 +44,17 @@ impl TestRunnerOutput for Json {
         .expect("Failed to write to output");
     }
 
+    fn repeat_running_test(
+        &self,
+        _test: &RegisteredTest,
+        _idx: usize,
+        _count: usize,
+        _attempt: usize,
+        _max_attempts: usize,
+        _reason: &str,
+    ) {
+    }
+
     fn finished_running_test(
         &self,
         test: &RegisteredTest,
