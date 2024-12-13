@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0](https://github.com/vigoo/test-r/compare/test-r-v1.1.0...test-r-v1.2.0) - 2024-12-13
+
+### Added
+
+- Print flakyness-related retries (#76)
+
 ## [1.1.0](https://github.com/vigoo/test-r/compare/test-r-v1.0.5...test-r-v1.1.0) - 2024-11-28
 
 ### Added
