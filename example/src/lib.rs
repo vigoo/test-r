@@ -5,7 +5,7 @@ mod other;
 #[cfg(test)]
 mod tests {
     use test_r::core::bench::Bencher;
-    use test_r::{bench, tag, test, test_dep};
+    use test_r::{always_ensure_time, always_report_time, bench, tag, test, test_dep};
 
     #[test]
     #[tag(output_capture_test)]
@@ -17,6 +17,8 @@ mod tests {
 
     #[test]
     #[tag(output_capture_test)]
+    #[always_report_time]
+    #[always_ensure_time]
     fn this_too() {
         println!("Print from 'this_too'");
         let result = 2 + 2;
@@ -47,10 +49,11 @@ mod tests {
 mod inner {
     #[cfg(test)]
     mod tests {
-        use test_r::{tag, test};
+        use test_r::{never_ensure_time, tag, test};
 
         #[test]
         #[tag(output_capture_test)]
+        #[never_ensure_time]
         fn inner_test_works() {
             println!("Print from inner test");
             let result = 2 + 2;
@@ -69,9 +72,10 @@ mod inner {
     mod slow {
         #[cfg(test)]
         mod tests {
-            use test_r::test;
+            use test_r::{never_report_time, test};
 
             #[test]
+            #[never_report_time]
             fn sleeping_test_1() {
                 println!("Print from sleeping test 1");
                 std::thread::sleep(std::time::Duration::from_secs(10));

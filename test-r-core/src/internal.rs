@@ -128,6 +128,13 @@ impl CaptureControl {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReportTimeControl {
+    Default,
+    Enabled,
+    Disabled,
+}
+
 #[derive(Clone)]
 pub struct RegisteredTest {
     pub name: String,
@@ -140,6 +147,8 @@ pub struct RegisteredTest {
     pub timeout: Option<Duration>,
     pub flakiness_control: FlakinessControl,
     pub capture_control: CaptureControl,
+    pub report_time_control: ReportTimeControl,
+    pub ensure_time_control: ReportTimeControl,
     pub tags: Vec<String>,
 }
 
@@ -513,6 +522,8 @@ fn add_generated_tests(
         timeout: None,
         flakiness_control: FlakinessControl::None,
         capture_control: CaptureControl::Default,
+        report_time_control: ReportTimeControl::Default,
+        ensure_time_control: ReportTimeControl::Default,
         tags: Vec::new(),
     }));
 }
@@ -540,7 +551,7 @@ pub(crate) fn generate_tests_sync(generators: &[RegisteredTestGenerator]) -> Vec
     for generator in generators {
         match &generator.run {
             TestGeneratorFunction::Sync(generator_fn) => {
-                let tests = (generator_fn)();
+                let tests = generator_fn();
                 add_generated_tests(&mut result, generator, tests);
             }
             TestGeneratorFunction::Async(_) => {
@@ -552,7 +563,12 @@ pub(crate) fn generate_tests_sync(generators: &[RegisteredTestGenerator]) -> Vec
 }
 
 pub(crate) fn get_ensure_time(args: &Arguments, test: &RegisteredTest) -> Option<TimeThreshold> {
-    if args.ensure_time {
+    let should_ensure_time = match test.ensure_time_control {
+        ReportTimeControl::Default => args.ensure_time,
+        ReportTimeControl::Enabled => true,
+        ReportTimeControl::Disabled => false,
+    };
+    if should_ensure_time {
         match test.test_type {
             TestType::UnitTest => Some(args.unit_test_threshold()),
             TestType::IntegrationTest => Some(args.integration_test_threshold()),
@@ -574,7 +590,7 @@ pub enum TestResult {
         mb_s: usize,
     },
     Failed {
-        panic: Box<dyn std::any::Any + Send>,
+        panic: Box<dyn Any + Send>,
         captured: Vec<CapturedOutput>,
         exec_time: Duration,
     },
@@ -600,7 +616,7 @@ impl TestResult {
         }
     }
 
-    pub fn failed(exec_time: Duration, panic: Box<dyn std::any::Any + Send>) -> Self {
+    pub fn failed(exec_time: Duration, panic: Box<dyn Any + Send>) -> Self {
         TestResult::Failed {
             panic,
             captured: Vec::new(),

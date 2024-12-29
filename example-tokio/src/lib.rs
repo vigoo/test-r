@@ -4,7 +4,7 @@ test_r::enable!();
 mod tests {
     use std::error::Error;
     use std::fmt::{Debug, Display, Formatter};
-    use test_r::{tag, test};
+    use test_r::{never_report_time, tag, test};
     use tokio::io::AsyncWriteExt;
 
     #[test]
@@ -52,6 +52,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "hello world")]
+    #[never_report_time]
     async fn panic_test_2b() {
         let _ = tokio::io::stdout()
             .write(b"Print from 'panic_test_2b'\n")
@@ -93,7 +94,9 @@ mod inner {
 
     #[cfg(test)]
     mod tests {
-        use test_r::{tag, test, timeout};
+        use test_r::{
+            always_report_time, never_ensure_time, never_report_time, tag, test, timeout,
+        };
         use tokio::io::AsyncWriteExt;
 
         #[test]
@@ -130,6 +133,8 @@ mod inner {
         }
 
         #[test]
+        #[never_report_time]
+        #[never_ensure_time]
         async fn sleeping_test_2() {
             let _ = tokio::io::stdout()
                 .write(b"Print from sleeping test 2\n")
@@ -142,6 +147,7 @@ mod inner {
 
         #[test]
         #[timeout(3000)]
+        #[always_report_time]
         async fn sleeping_test_3_timeout() {
             let _ = tokio::io::stdout()
                 .write(b"Start sleeping in sleeping test 3\n")
