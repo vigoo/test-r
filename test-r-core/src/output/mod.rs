@@ -58,6 +58,7 @@ pub fn test_runner_output(args: &Arguments) -> Arc<dyn TestRunnerOutput> {
                 args.report_time,
                 args.unit_test_threshold(),
                 args.integration_test_threshold(),
+                args.show_stats,
             )),
             FormatSetting::Terse => Arc::new(terse::Terse::new()),
             FormatSetting::Json => Arc::new(json::Json::new(args.show_output, logfile)),

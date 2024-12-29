@@ -694,6 +694,13 @@ impl TestResult {
         }
     }
 
+    pub(crate) fn stats(&self) -> Option<&Summary> {
+        match self {
+            TestResult::Benchmarked { ns_iter_summ, .. } => Some(ns_iter_summ),
+            _ => None,
+        }
+    }
+
     pub(crate) fn set_captured_output(&mut self, captured: Vec<CapturedOutput>) {
         match self {
             TestResult::Passed {
