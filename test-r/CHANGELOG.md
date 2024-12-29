@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0](https://github.com/vigoo/test-r/compare/test-r-v1.2.0...test-r-v2.0.0) - 2024-12-29
+
+### Added
+
+- Support for all test properties in dynamic test generators (#82)
+- Per-test report/ensure time attributes (#80)
+
+### Other
+
+- Updated dependencies ([#78](https://github.com/vigoo/test-r/pull/78))
+
 ## [1.2.0](https://github.com/vigoo/test-r/compare/test-r-v1.1.0...test-r-v1.2.0) - 2024-12-13
 
 ### Added
