@@ -367,19 +367,28 @@ pub mod deps {
 mod generated {
     use crate::deps::tests::Dep2;
     use crate::deps::Dep1;
-    use test_r::core::{DynamicTestRegistration, TestType};
+    use std::time::Duration;
+    use test_r::core::internal::TestProperties;
+    use test_r::core::{
+        CaptureControl, DynamicTestRegistration, FlakinessControl, ReportTimeControl, ShouldPanic,
+        TestType,
+    };
     use test_r::{add_test, test_dep, test_gen};
 
     #[test_gen]
     fn generate_tests_1(r: &mut DynamicTestRegistration) {
         println!("Generating some tests in a sync generator");
         for i in 0..10 {
-            r.add_sync_test(format!("test_{i}"), TestType::UnitTest, move |_| {
-                println!("Running test {}", i);
-                let s = i.to_string();
-                let i2 = s.parse::<i32>().unwrap();
-                assert_eq!(i, i2);
-            });
+            r.add_sync_test(
+                format!("test_{i}"),
+                TestProperties::unit_test(),
+                move |_| {
+                    println!("Running test {}", i);
+                    let s = i.to_string();
+                    let i2 = s.parse::<i32>().unwrap();
+                    assert_eq!(i, i2);
+                },
+            );
         }
     }
 
@@ -387,14 +396,18 @@ mod generated {
     async fn generate_tests_2(r: &mut DynamicTestRegistration) {
         println!("Generating some tests in an async generator");
         for i in 0..10 {
-            r.add_async_test(format!("test_{i}"), TestType::UnitTest, move |_| {
-                Box::pin(async move {
-                    println!("Running test {}", i);
-                    let s = i.to_string();
-                    let i2 = s.parse::<i32>().unwrap();
-                    assert_eq!(i, i2);
-                })
-            });
+            r.add_async_test(
+                format!("test_{i}"),
+                TestProperties::unit_test(),
+                move |_| {
+                    Box::pin(async move {
+                        println!("Running test {}", i);
+                        let s = i.to_string();
+                        let i2 = s.parse::<i32>().unwrap();
+                        assert_eq!(i, i2);
+                    })
+                },
+            );
         }
     }
 
@@ -415,7 +428,7 @@ mod generated {
             add_test!(
                 r,
                 format!("test_{i}"),
-                TestType::UnitTest,
+                TestProperties::unit_test(),
                 move |dep1: &Dep1| {
                     println!("Running test {} using dep {}", i, dep1.value);
                     let s = i.to_string();
@@ -433,13 +446,64 @@ mod generated {
             add_test!(
                 r,
                 format!("test_{i}"),
-                TestType::UnitTest,
+                TestProperties::unit_test(),
                 move |dep1: &Dep1, d2: &Dep2| async {
                     println!("Running test {} using deps {} {}", i, dep1.value, d2.value);
                     let s = i.to_string();
                     let i2 = s.parse::<i32>().unwrap();
                     assert_eq!(i, i2);
                 }
+            );
+        }
+    }
+
+    #[test_gen]
+    async fn generate_tests_5(r: &mut DynamicTestRegistration) {
+        println!("Generating some async tests with custom properties");
+        for i in 0..5 {
+            r.add_async_test(
+                format!("test_{i}"),
+                TestProperties {
+                    should_panic: ShouldPanic::WithMessage(format!("panic {i}")),
+                    test_type: TestType::UnitTest,
+                    timeout: Some(Duration::from_secs(2)),
+                    flakiness_control: FlakinessControl::RetryKnownFlaky(2),
+                    capture_control: CaptureControl::NeverCapture,
+                    report_time_control: ReportTimeControl::Enabled,
+                    ensure_time_control: ReportTimeControl::Disabled,
+                    tags: vec!["example".to_string()],
+                },
+                move |_| {
+                    Box::pin(async move {
+                        println!("Running test {}", i);
+                        panic!("panic {i}");
+                    })
+                },
+            );
+        }
+    }
+
+    #[test_gen]
+    async fn generate_tests_6(r: &mut DynamicTestRegistration) {
+        println!("Generating some async tests with custom properties using the add_test! macro");
+        for i in 0..5 {
+            add_test!(
+                r,
+                format!("test_{i}"),
+                TestProperties {
+                    should_panic: ShouldPanic::WithMessage(format!("panic {i}")),
+                    test_type: TestType::UnitTest,
+                    timeout: Some(Duration::from_secs(2)),
+                    flakiness_control: FlakinessControl::RetryKnownFlaky(2),
+                    capture_control: CaptureControl::NeverCapture,
+                    report_time_control: ReportTimeControl::Enabled,
+                    ensure_time_control: ReportTimeControl::Disabled,
+                    tags: vec!["example".to_string()],
+                },
+                move || async {
+                    println!("Running test {}", i);
+                    panic!("panic {i}");
+                },
             );
         }
     }

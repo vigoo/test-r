@@ -28,7 +28,7 @@ pub mod core {
     pub use test_r_core::internal::{
         CaptureControl, DependencyConstructor, DependencyView, DynamicTestRegistration,
         FlakinessControl, GeneratedTest, ReportTimeControl, ShouldPanic, TestFunction,
-        TestGeneratorFunction, TestReturnValue, TestType,
+        TestGeneratorFunction, TestProperties, TestReturnValue, TestType,
     };
     pub use test_r_core::*;
 
@@ -57,15 +57,17 @@ pub mod core {
                 crate_name,
                 module_path,
                 is_ignored,
-                should_panic,
                 run,
-                test_type,
-                timeout,
-                flakiness_control,
-                capture_control,
-                report_time_control,
-                ensure_time_control,
-                tags,
+                props: internal::TestProperties {
+                    should_panic,
+                    test_type,
+                    timeout,
+                    flakiness_control,
+                    capture_control,
+                    report_time_control,
+                    ensure_time_control,
+                    tags,
+                },
             });
     }
 

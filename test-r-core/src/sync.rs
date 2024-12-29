@@ -213,7 +213,7 @@ fn run_with_flakiness_control<R>(
     count: usize,
     test: impl Fn(Instant) -> Result<(), R>,
 ) -> Result<(), R> {
-    match &test_description.flakiness_control {
+    match &test_description.props.flakiness_control {
         FlakinessControl::None => {
             let start = Instant::now();
             test(start)
@@ -288,7 +288,11 @@ pub(crate) fn run_sync_test_function(
                         }
                     }))
                 });
-            TestResult::from_result(&test_description.should_panic, start.elapsed(), result)
+            TestResult::from_result(
+                &test_description.props.should_panic,
+                start.elapsed(),
+                result,
+            )
         }
         TestFunction::SyncBench(bench_fn) => {
             let mut bencher = Bencher::new();
@@ -299,7 +303,7 @@ pub(crate) fn run_sync_test_function(
                     .expect("iter() was not called in bench function")
             }));
             TestResult::from_summary(
-                &test_description.should_panic,
+                &test_description.props.should_panic,
                 start.elapsed(),
                 result,
                 bencher.bytes,
@@ -325,7 +329,7 @@ struct Worker {
 impl Worker {
     pub fn run_test(&mut self, nocapture: bool, test: &RegisteredTest) -> TestResult {
         let mut capture_enabled = self.capture_enabled.lock().unwrap();
-        *capture_enabled = test.capture_control.requires_capturing(!nocapture);
+        *capture_enabled = test.props.capture_control.requires_capturing(!nocapture);
         drop(capture_enabled);
 
         // Send IPC command and wait for IPC response, and in the meantime read from the stdout/stderr channels
@@ -355,7 +359,7 @@ impl Worker {
             finish_marker,
         } = response;
 
-        if test.capture_control.requires_capturing(!nocapture) {
+        if test.props.capture_control.requires_capturing(!nocapture) {
             let out_lines: Vec<_> =
                 Self::drain_until(self.out_lines.clone(), finish_marker.clone());
             let err_lines: Vec<_> =
