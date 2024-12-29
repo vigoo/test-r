@@ -112,13 +112,14 @@ impl TestSuiteExecution {
     /// Returns true if there are any tests that require capturing, based on the given default setting
     /// and the per-test CaptureControl overrides.
     pub fn requires_capturing(&self, capture_by_default: bool) -> bool {
-        self.tests
+        self.tests.iter().any(|test| {
+            test.props
+                .capture_control
+                .requires_capturing(capture_by_default)
+        }) || self
+            .inner
             .iter()
-            .any(|test| test.capture_control.requires_capturing(capture_by_default))
-            || self
-                .inner
-                .iter()
-                .any(|inner| inner.requires_capturing(capture_by_default))
+            .any(|inner| inner.requires_capturing(capture_by_default))
     }
 
     #[cfg(feature = "tokio")]
@@ -541,7 +542,7 @@ impl Debug for TestSuiteExecution {
         }
         writeln!(f, "  tests:")?;
         for test in &self.tests {
-            writeln!(f, "    '{}' [{:?}]", test.name, test.test_type)?;
+            writeln!(f, "    '{}' [{:?}]", test.name, test.props.test_type)?;
         }
         for inner in &self.inner {
             let inner_str = format!("{inner:?}");

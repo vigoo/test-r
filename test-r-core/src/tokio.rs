@@ -242,7 +242,7 @@ async fn run_with_flakiness_control<F, R>(
 where
     F: Fn(Instant) -> Pin<Box<dyn Future<Output = Result<(), R>>>> + Send + Sync,
 {
-    match &test_description.flakiness_control {
+    match &test_description.props.flakiness_control {
         FlakinessControl::None => {
             let start = Instant::now();
             test(start).await
@@ -325,7 +325,7 @@ async fn run_test(
                 })
             }
             TestFunction::Async(test_fn) => {
-                let timeout = test.timeout;
+                let timeout = test.props.timeout;
                 let test_fn = test_fn.clone();
                 let result = run_with_flakiness_control(output, &test, idx, count, |start| {
                     let dependency_view = dependency_view.clone();
@@ -363,7 +363,7 @@ async fn run_test(
                     })
                 })
                 .await;
-                TestResult::from_result(&test.should_panic, start.elapsed(), result)
+                TestResult::from_result(&test.props.should_panic, start.elapsed(), result)
             }
             TestFunction::SyncBench(_) => {
                 let handle = spawn_blocking(move || {
@@ -396,7 +396,7 @@ async fn run_test(
                 .await;
                 let bytes = result.as_ref().map(|(_, bytes)| *bytes).unwrap_or_default();
                 TestResult::from_summary(
-                    &test.should_panic,
+                    &test.props.should_panic,
                     start.elapsed(),
                     result.map(|(summary, _)| summary),
                     bytes,
@@ -420,7 +420,7 @@ struct Worker {
 impl Worker {
     pub async fn run_test(&mut self, nocapture: bool, test: &RegisteredTest) -> TestResult {
         let mut capture_enabled = self.capture_enabled.lock().await;
-        *capture_enabled = test.capture_control.requires_capturing(!nocapture);
+        *capture_enabled = test.props.capture_control.requires_capturing(!nocapture);
         drop(capture_enabled);
 
         // Send IPC command and wait for IPC response, and in the meantime read from the stdout/stderr channels
@@ -459,7 +459,7 @@ impl Worker {
             finish_marker,
         } = response;
 
-        if test.capture_control.requires_capturing(!nocapture) {
+        if test.props.capture_control.requires_capturing(!nocapture) {
             let out_lines: Vec<_> =
                 Self::drain_until(self.out_lines.clone(), finish_marker.clone()).await;
             let err_lines: Vec<_> =

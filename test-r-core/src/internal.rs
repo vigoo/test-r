@@ -136,13 +136,8 @@ pub enum ReportTimeControl {
 }
 
 #[derive(Clone)]
-pub struct RegisteredTest {
-    pub name: String,
-    pub crate_name: String,
-    pub module_path: String,
-    pub is_ignored: bool,
+pub struct TestProperties {
     pub should_panic: ShouldPanic,
-    pub run: TestFunction,
     pub test_type: TestType,
     pub timeout: Option<Duration>,
     pub flakiness_control: FlakinessControl,
@@ -150,6 +145,47 @@ pub struct RegisteredTest {
     pub report_time_control: ReportTimeControl,
     pub ensure_time_control: ReportTimeControl,
     pub tags: Vec<String>,
+}
+
+impl TestProperties {
+    pub fn unit_test() -> Self {
+        TestProperties {
+            test_type: TestType::UnitTest,
+            ..Default::default()
+        }
+    }
+
+    pub fn integration_test() -> Self {
+        TestProperties {
+            test_type: TestType::IntegrationTest,
+            ..Default::default()
+        }
+    }
+}
+
+impl Default for TestProperties {
+    fn default() -> Self {
+        Self {
+            should_panic: ShouldPanic::No,
+            test_type: TestType::UnitTest,
+            timeout: None,
+            flakiness_control: FlakinessControl::None,
+            capture_control: CaptureControl::Default,
+            report_time_control: ReportTimeControl::Default,
+            ensure_time_control: ReportTimeControl::Default,
+            tags: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RegisteredTest {
+    pub name: String,
+    pub crate_name: String,
+    pub module_path: String,
+    pub is_ignored: bool,
+    pub run: TestFunction,
+    pub props: TestProperties,
 }
 
 impl RegisteredTest {
@@ -348,7 +384,7 @@ impl DynamicTestRegistration {
     pub fn add_sync_test<R: TestReturnValue + 'static>(
         &mut self,
         name: impl AsRef<str>,
-        test_type: TestType,
+        props: TestProperties,
         run: impl Fn(Arc<dyn DependencyView + Send + Sync>) -> R + Send + Sync + Clone + 'static,
     ) {
         self.tests.push(GeneratedTest {
@@ -356,7 +392,7 @@ impl DynamicTestRegistration {
             run: TestFunction::Sync(Arc::new(move |deps| {
                 Box::new(run(deps)) as Box<dyn TestReturnValue>
             })),
-            test_type,
+            props,
         });
     }
 
@@ -364,7 +400,7 @@ impl DynamicTestRegistration {
     pub fn add_async_test<R: TestReturnValue + 'static>(
         &mut self,
         name: impl AsRef<str>,
-        test_type: TestType,
+        props: TestProperties,
         run: impl (Fn(
                 Arc<dyn DependencyView + Send + Sync>,
             ) -> Pin<Box<dyn Future<Output = R> + Send + Sync>>)
@@ -382,7 +418,7 @@ impl DynamicTestRegistration {
                     Box::new(r) as Box<dyn TestReturnValue>
                 })
             })),
-            test_type,
+            props,
         });
     }
 }
@@ -391,7 +427,7 @@ impl DynamicTestRegistration {
 pub struct GeneratedTest {
     pub name: String,
     pub run: TestFunction,
-    pub test_type: TestType,
+    pub props: TestProperties,
 }
 
 #[derive(Clone)]
@@ -420,7 +456,7 @@ pub(crate) fn filter_test(test: &RegisteredTest, filter: &str, exact: bool) -> b
     if let Some(tag_list) = filter.strip_prefix(":tag:") {
         if tag_list.is_empty() {
             // Filtering for tags with NO TAGS
-            test.tags.is_empty()
+            test.props.tags.is_empty()
         } else {
             let or_tags = tag_list.split('|').collect::<Vec<&str>>();
             let mut result = false;
@@ -428,7 +464,7 @@ pub(crate) fn filter_test(test: &RegisteredTest, filter: &str, exact: bool) -> b
                 let and_tags = or_tag.split('&').collect::<Vec<&str>>();
                 let mut and_result = true;
                 for and_tag in and_tags {
-                    if !test.tags.contains(&and_tag.to_string()) {
+                    if !test.props.tags.contains(&and_tag.to_string()) {
                         and_result = false;
                         break;
                     }
@@ -467,7 +503,7 @@ pub(crate) fn apply_suite_tags(
         let mut test = test.clone();
         for (prefix, tag) in &tag_props {
             if &test.crate_and_module() == prefix {
-                test.tags.push(tag.clone());
+                test.props.tags.push(tag.clone());
             }
         }
         result.push(test);
@@ -500,7 +536,7 @@ pub(crate) fn filter_registered_tests(
                 || (!args.bench && !args.test)
         })
         .filter(|registered_test| {
-            !args.exclude_should_panic || registered_test.should_panic == ShouldPanic::No
+            !args.exclude_should_panic || registered_test.props.should_panic == ShouldPanic::No
         })
         .cloned()
         .collect::<Vec<_>>()
@@ -516,15 +552,8 @@ fn add_generated_tests(
         crate_name: generator.crate_name.clone(),
         module_path: generator.module_path.clone(),
         is_ignored: generator.is_ignored,
-        should_panic: ShouldPanic::No,
         run: test.run,
-        test_type: test.test_type,
-        timeout: None,
-        flakiness_control: FlakinessControl::None,
-        capture_control: CaptureControl::Default,
-        report_time_control: ReportTimeControl::Default,
-        ensure_time_control: ReportTimeControl::Default,
-        tags: Vec::new(),
+        props: test.props,
     }));
 }
 
@@ -563,13 +592,13 @@ pub(crate) fn generate_tests_sync(generators: &[RegisteredTestGenerator]) -> Vec
 }
 
 pub(crate) fn get_ensure_time(args: &Arguments, test: &RegisteredTest) -> Option<TimeThreshold> {
-    let should_ensure_time = match test.ensure_time_control {
+    let should_ensure_time = match test.props.ensure_time_control {
         ReportTimeControl::Default => args.ensure_time,
         ReportTimeControl::Enabled => true,
         ReportTimeControl::Disabled => false,
     };
     if should_ensure_time {
-        match test.test_type {
+        match test.props.test_type {
             TestType::UnitTest => Some(args.unit_test_threshold()),
             TestType::IntegrationTest => Some(args.integration_test_threshold()),
         }

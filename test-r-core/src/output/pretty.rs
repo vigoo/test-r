@@ -161,7 +161,7 @@ impl Pretty {
     }
 
     fn should_report_time(&self, test: &RegisteredTest) -> bool {
-        match test.report_time_control {
+        match test.props.report_time_control {
             ReportTimeControl::Default => self.report_time,
             ReportTimeControl::Enabled => true,
             ReportTimeControl::Disabled => false,
@@ -288,7 +288,7 @@ impl TestRunnerOutput for Pretty {
                         "[{}PASSED{}]         <{}{:.3}s{}>",
                         self.style_ok.render(),
                         self.style_ok.render_reset(),
-                        self.time_style(&test.test_type, exec_time),
+                        self.time_style(&test.props.test_type, exec_time),
                         exec_time.as_secs_f64(),
                         self.style_ok.render_reset()
                     )
@@ -315,7 +315,7 @@ impl TestRunnerOutput for Pretty {
                         "[{}FAILED{}]         <{}{:.3}s{}>",
                         self.style_failed.render(),
                         self.style_failed.render_reset(),
-                        self.time_style(&test.test_type, exec_time),
+                        self.time_style(&test.props.test_type, exec_time),
                         exec_time.as_secs_f64(),
                         self.style_ok.render_reset()
                     )
