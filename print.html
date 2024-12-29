@@ -653,6 +653,17 @@ async fn test1() {
 }
 <span class="boring">}</span></code></pre></pre>
 <p>This feature only works when using the async test runner (enabled by the <code>tokio</code> feature).</p>
+<h2 id="reporting--ensuring-time-per-test"><a class="header" href="#reporting--ensuring-time-per-test">Reporting / ensuring time per test</a></h2>
+<p>There are command line arguments to enable <em>reporting</em> test run times and <em>ensuring</em> that each test runs within a certain time limit.
+The command line arguments enable these features for all tests. It is possible to individually configure this behavior per test using
+the following attributes:</p>
+<ul>
+<li><code>#[always_report_time]</code> will report the time taken by the test even if the <code>--report-time</code> argument is not passed.</li>
+<li><code>#[never_report_time]</code> will prevent reporting the time taken by the test even if the <code>--report-time</code> argument is passed.</li>
+<li><code>#[always_ensure_time]</code> will ensure that the test runs within the specified duration even if the <code>--ensure-time</code> argument is not passed.</li>
+<li><code>#[never_ensure_time]</code> will ignore the <code>--ensure-time</code> argument for this test</li>
+</ul>
+<p>Note that for ensuring time, it is not possible to overwrite the global time limit set using environment variables, which is the way the built-in Rust test runner works. For better control, use the <code>#[timeout(duration)]</code> attribute instead.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="working-with-flaky-tests"><a class="header" href="#working-with-flaky-tests">Working with flaky tests</a></h1>
 <p>Tests can be sometimes flaky, and only fail sporadically or depending on the environment or hardware they run on.</p>
 <p><code>test-r</code> provides two ways to handle flaky tests:</p>
