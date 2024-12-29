@@ -1,5 +1,5 @@
 use crate::args::{ColorSetting, TimeThreshold};
-use crate::internal::{RegisteredTest, SuiteResult, TestResult};
+use crate::internal::{RegisteredTest, ReportTimeControl, SuiteResult, TestResult};
 use crate::output::{LogFile, TestRunnerOutput};
 use anstyle::{AnsiColor, Style};
 use std::io::Write;
@@ -159,6 +159,14 @@ impl Pretty {
             self.style_ok.render().to_string()
         }
     }
+
+    fn should_report_time(&self, test: &RegisteredTest) -> bool {
+        match test.report_time_control {
+            ReportTimeControl::Default => self.report_time,
+            ReportTimeControl::Enabled => true,
+            ReportTimeControl::Disabled => false,
+        }
+    }
 }
 
 impl Write for PrettyImpl {
@@ -275,7 +283,7 @@ impl TestRunnerOutput for Pretty {
 
         let result = match result {
             TestResult::Passed { exec_time, .. } => {
-                if self.report_time {
+                if self.should_report_time(test) {
                     format!(
                         "[{}PASSED{}]         <{}{:.3}s{}>",
                         self.style_ok.render(),
@@ -302,7 +310,7 @@ impl TestRunnerOutput for Pretty {
                 self.style_bench.render_reset()
             ),
             TestResult::Failed { exec_time, .. } => {
-                if self.report_time {
+                if self.should_report_time(test) {
                     format!(
                         "[{}FAILED{}]         <{}{:.3}s{}>",
                         self.style_failed.render(),

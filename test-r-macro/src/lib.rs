@@ -87,22 +87,30 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
         }
     };
 
-    let always_capture_attr = ast
-        .attrs
-        .iter()
-        .find(|attr| attr.path().is_ident("always_capture"));
-    let never_capture_attr = ast
-        .attrs
-        .iter()
-        .find(|attr| attr.path().is_ident("never_capture"));
-    let capture_control = match (always_capture_attr, never_capture_attr) {
-        (None, None) => quote! { test_r::core::CaptureControl::Default },
-        (Some(_), Some(_)) => {
-            panic!("Cannot have both #[always_capture] and #[never_capture] attributes")
-        }
-        (Some(_), None) => quote! { test_r::core::CaptureControl::AlwaysCapture },
-        (None, Some(_)) => quote! { test_r::core::CaptureControl::NeverCapture },
-    };
+    let capture_control = from_three_state_attrs(
+        &ast,
+        quote! { test_r::core::CaptureControl::Default },
+        "always_capture",
+        quote! { test_r::core::CaptureControl::AlwaysCapture },
+        "never_capture",
+        quote! { test_r::core::CaptureControl::NeverCapture },
+    );
+    let report_time_control = from_three_state_attrs(
+        &ast,
+        quote! { test_r::core::ReportTimeControl::Default },
+        "always_report_time",
+        quote! { test_r::core::ReportTimeControl::Enabled },
+        "never_report_time",
+        quote! { test_r::core::ReportTimeControl::Disabled },
+    );
+    let ensure_time_control = from_three_state_attrs(
+        &ast,
+        quote! { test_r::core::ReportTimeControl::Default },
+        "always_ensure_time",
+        quote! { test_r::core::ReportTimeControl::Enabled },
+        "never_ensure_time",
+        quote! { test_r::core::ReportTimeControl::Disabled },
+    );
 
     let tag_attrs = ast
         .attrs
@@ -110,7 +118,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
         .filter(|attr| attr.path().is_ident("tag"))
         .map(|attr| {
             let tag = attr
-                .parse_args::<syn::Ident>()
+                .parse_args::<Ident>()
                 .expect("tag attribute's parameter must be a identifier");
             let tag_str = tag.to_string();
             quote! { #tag_str.to_string() }
@@ -142,6 +150,8 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                       test_r::core::FlakinessControl::None,
                       #capture_control,
                       #tags,
+                      #report_time_control,
+                      #ensure_time_control,
                       test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|bencher, deps| Box::pin(async move { #test_name(bencher, #(#dep_getters),*).await })))
                   );
             }
@@ -157,6 +167,8 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                     test_r::core::FlakinessControl::None,
                     #capture_control,
                     #tags,
+                    #report_time_control,
+                    #ensure_time_control,
                     test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|bencher, deps| #test_name(bencher, #(#dep_getters),*)))
                 );
             }
@@ -173,6 +185,8 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                   #flakiness_control,
                   #capture_control,
                   #tags,
+                  #report_time_control,
+                  #ensure_time_control,
                   test_r::core::TestFunction::Async(std::sync::Arc::new(
                     move |deps| {
                         Box::pin(async move {
@@ -199,6 +213,8 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                 #flakiness_control,
                 #capture_control,
                 #tags,
+                #report_time_control,
+                #ensure_time_control,
                 test_r::core::TestFunction::Sync(std::sync::Arc::new(|deps| Box::new(#test_name(#(#dep_getters),*))))
             );
         }
@@ -215,6 +231,26 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
     };
 
     result.into()
+}
+
+fn from_three_state_attrs(
+    ast: &ItemFn,
+    default: proc_macro2::TokenStream,
+    on_name: &str,
+    on_value: proc_macro2::TokenStream,
+    off_name: &str,
+    off_value: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let on_attr = ast.attrs.iter().find(|attr| attr.path().is_ident(on_name));
+    let off_attr = ast.attrs.iter().find(|attr| attr.path().is_ident(off_name));
+    match (on_attr, off_attr) {
+        (None, None) => default,
+        (Some(_), Some(_)) => {
+            panic!("Cannot have both #[{on_name}] and #[{off_name}] attributes")
+        }
+        (Some(_), None) => on_value,
+        (None, Some(_)) => off_value,
+    }
 }
 
 struct ShouldPanicArgs {
@@ -539,6 +575,26 @@ pub fn never_capture(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
+pub fn always_report_time(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn never_report_time(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn always_ensure_time(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn never_ensure_time(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
 pub fn tag(attr: TokenStream, item: TokenStream) -> TokenStream {
     if let Ok(ast) = syn::parse::<ItemMod>(item.clone()) {
         let random = rand::random::<u64>();
@@ -549,7 +605,7 @@ pub fn tag(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let mod_name_str = ast.ident.to_string();
 
-        let tag = parse_macro_input!(attr as syn::Ident);
+        let tag = parse_macro_input!(attr as Ident);
         let tag_str = tag.to_string();
         let tag = quote! { #tag_str.to_string() };
 
@@ -758,7 +814,7 @@ fn segment_to_string(segment: &PathSegment) -> String {
     result
 }
 
-fn generic_argument_to_string(arg: &syn::GenericArgument) -> String {
+fn generic_argument_to_string(arg: &GenericArgument) -> String {
     match arg {
         GenericArgument::Type(typ) => type_to_string(typ),
         GenericArgument::Const(_) => {
@@ -816,7 +872,7 @@ fn get_dependency_params_for_closure<'a>(
 ) -> (
     Vec<proc_macro2::TokenStream>,
     Vec<proc_macro2::TokenStream>,
-    Vec<proc_macro2::Ident>,
+    Vec<Ident>,
 ) {
     let mut dep_getters = Vec::new();
     let mut dep_names = Vec::new();
