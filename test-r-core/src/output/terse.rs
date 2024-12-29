@@ -24,6 +24,7 @@ impl Terse {
                 false,
                 TimeThreshold::default(),
                 TimeThreshold::default(),
+                false,
             ),
             state: Arc::new(Mutex::new(TerseOutputState::default())),
         }

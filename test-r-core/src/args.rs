@@ -109,6 +109,10 @@ pub struct Arguments {
     #[arg(long = "shuffle-seed", value_name = "SEED", conflicts_with = "shuffle")]
     pub shuffle_seed: Option<u64>,
 
+    /// Show detailed benchmark statistics for each benchmark
+    #[arg(long = "show-stats")]
+    pub show_stats: bool,
+
     /// The FILTER string is tested against the name of all tests, and only those
     /// tests whose names contain the filter are run. Multiple filter strings may
     /// be passed, which will run all tests matching any of the filters.
@@ -242,6 +246,10 @@ impl Arguments {
         if let Some(shuffle_seed) = &self.shuffle_seed {
             result.push(OsString::from("--shuffle-seed"));
             result.push(OsString::from(shuffle_seed.to_string()));
+        }
+
+        if self.show_stats {
+            result.push(OsString::from("--show-stats"));
         }
 
         if let Some(filter) = &self.filter {

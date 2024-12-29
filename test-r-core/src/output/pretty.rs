@@ -21,6 +21,7 @@ pub(crate) struct Pretty {
     report_time: bool,
     unit_test_threshold: TimeThreshold,
     integ_test_threshold: TimeThreshold,
+    show_stats: bool,
 }
 
 struct PrettyImpl {
@@ -39,6 +40,7 @@ impl Pretty {
         report_time: bool,
         unit_test_threshold: TimeThreshold,
         integ_test_threshold: TimeThreshold,
+        show_stats: bool,
     ) -> Self {
         let logfile = logfile_path.map(|path| LogFile::new(path, false));
 
@@ -66,6 +68,7 @@ impl Pretty {
             report_time,
             unit_test_threshold,
             integ_test_threshold,
+            show_stats,
         }
     }
 
@@ -165,6 +168,132 @@ impl Pretty {
             ReportTimeControl::Default => self.report_time,
             ReportTimeControl::Enabled => true,
             ReportTimeControl::Disabled => false,
+        }
+    }
+
+    fn write_success_stats(&self, out: &mut PrettyImpl, results: &[(RegisteredTest, TestResult)]) {
+        for (test, result) in results.iter().filter(|(_, result)| result.is_benchmarked()) {
+            writeln!(
+                out,
+                "---- {} benchmark stats ----",
+                test.fully_qualified_name()
+            )
+            .unwrap();
+            if let Some(stats) = result.stats() {
+                writeln!(
+                    out,
+                    "Sum:              {0}{1:0.4}{2}",
+                    self.style_bench.render(),
+                    stats.sum,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "Min:              {0}{1:0.4}{2}",
+                    self.style_bench.render(),
+                    stats.min,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "Max:              {0}{1:0.4}{2}",
+                    self.style_bench.render(),
+                    stats.max,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "Mean:             {0}{1:0.4}{2}",
+                    self.style_bench.render(),
+                    stats.mean,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "Median:           {0}{1:0.4}4{2}",
+                    self.style_bench.render(),
+                    stats.median,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "Variance:         {0}{1:0.4}{2}",
+                    self.style_bench.render(),
+                    stats.var,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "Std. dev:         {0}{1:0.4}{2}",
+                    self.style_bench.render(),
+                    stats.std_dev,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "Std. dev %:       {0}{1:0.4}{2}",
+                    self.style_bench.render(),
+                    stats.std_dev_pct,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "Median abs dev:   {0}{1:0.4}{2}",
+                    self.style_bench.render(),
+                    stats.median_abs_dev,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "Median abs dev %: {0}{1:0.4}{2}",
+                    self.style_bench.render(),
+                    stats.median_abs_dev_pct,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "Q1:               {0}{1:0.4}{2}",
+                    self.style_bench.render(),
+                    stats.quartiles.0,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "Q2:               {0}{1:0.4}{2}",
+                    self.style_bench.render(),
+                    stats.quartiles.1,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "Q3:               {0}{1:0.4}{2}",
+                    self.style_bench.render(),
+                    stats.quartiles.2,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "IQR:              {0}{1:0.4}{2}",
+                    self.style_bench.render(),
+                    stats.iqr,
+                    self.style_bench.render_reset()
+                )
+                .unwrap();
+            }
+            writeln!(out).unwrap();
         }
     }
 }
@@ -362,6 +491,9 @@ impl TestRunnerOutput for Pretty {
 
         if self.show_output {
             self.write_success_outputs(&mut out, results);
+        }
+        if self.show_stats {
+            self.write_success_stats(&mut out, results);
         }
         self.write_failure_outputs(&mut out, results);
 
