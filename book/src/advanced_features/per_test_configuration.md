@@ -58,4 +58,15 @@ async fn test1() {
 
 This feature only works when using the async test runner (enabled by the `tokio` feature).
 
+## Reporting / ensuring time per test
 
+There are command line arguments to enable _reporting_ test run times and _ensuring_ that each test runs within a certain time limit. 
+The command line arguments enable these features for all tests. It is possible to individually configure this behavior per test using
+the following attributes:
+
+- `#[always_report_time]` will report the time taken by the test even if the `--report-time` argument is not passed.
+- `#[never_report_time]` will prevent reporting the time taken by the test even if the `--report-time` argument is passed.
+- `#[always_ensure_time]` will ensure that the test runs within the specified duration even if the `--ensure-time` argument is not passed.
+- `#[never_ensure_time]` will ignore the `--ensure-time` argument for this test
+
+Note that for ensuring time, it is not possible to overwrite the global time limit set using environment variables, which is the way the built-in Rust test runner works. For better control, use the `#[timeout(duration)]` attribute instead.
