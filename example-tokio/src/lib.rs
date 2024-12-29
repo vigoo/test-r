@@ -458,6 +458,7 @@ mod generated {
     }
 
     #[test_gen]
+    #[allow(dependency_on_unit_never_type_fallback)]
     async fn generate_tests_5(r: &mut DynamicTestRegistration) {
         println!("Generating some async tests with custom properties");
         for i in 0..5 {
@@ -484,6 +485,7 @@ mod generated {
     }
 
     #[test_gen]
+    #[allow(dependency_on_unit_never_type_fallback)]
     async fn generate_tests_6(r: &mut DynamicTestRegistration) {
         println!("Generating some async tests with custom properties using the add_test! macro");
         for i in 0..5 {
