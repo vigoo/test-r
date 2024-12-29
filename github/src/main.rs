@@ -1,6 +1,6 @@
 use gh_workflow::{
-    toolchain::Toolchain, Cargo, Event, Expression, Job, PermissionLevel, Permissions, PullRequest,
-    Push, Step, Workflow,
+    toolchain::Toolchain, Cargo, Event, Expression, Job, Level, Permissions, PullRequest, Push,
+    Step, Workflow,
 };
 use internal::*;
 
@@ -14,7 +14,7 @@ fn main() {
         .on(Event::default()
             .push(Push::default().add_branch("master"))
             .pull_request(PullRequest::default()))
-        .permissions(Permissions::default().contents(PermissionLevel::Write))
+        .permissions(Permissions::default().contents(Level::Write))
         .add_job(
             "build-and-test",
             Job::new("Build and test")

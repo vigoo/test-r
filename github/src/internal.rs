@@ -84,7 +84,7 @@ impl InstallAction {
 
 impl From<InstallAction> for Step<Use> {
     fn from(action: InstallAction) -> Self {
-        let mut step = Step::uses("taiki-e", "install-action", 2);
+        let mut step = Step::uses("taiki-e", "install-action", "v2");
         if !action.checksum {
             step = step.add_with(("checksum", "false"));
         }
@@ -123,7 +123,7 @@ impl Default for SetupMDBook {
 
 impl From<SetupMDBook> for Step<Use> {
     fn from(action: SetupMDBook) -> Self {
-        Step::uses("peaceiris", "actions-mdbook", 2).with(("mdbook-version", action.version))
+        Step::uses("peaceiris", "actions-mdbook", "v2").with(("mdbook-version", action.version))
     }
 }
 
@@ -261,7 +261,7 @@ impl GHPages {
 
 impl From<GHPages> for Step<Use> {
     fn from(action: GHPages) -> Self {
-        let mut step = Step::uses("peaceiris", "actions-gh-pages", 4);
+        let mut step = Step::uses("peaceiris", "actions-gh-pages", "v4");
         if let Some(allow_empty_commit) = action.allow_empty_commit {
             step = step.add_with(("allow_empty_commit", allow_empty_commit.to_string()));
         }

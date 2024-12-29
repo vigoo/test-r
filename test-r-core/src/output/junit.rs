@@ -31,7 +31,7 @@ impl JUnit {
         &self,
         writer: &mut Writer<W>,
         captured: &[CapturedOutput],
-    ) -> Result<(), quick_xml::errors::Error> {
+    ) -> Result<(), std::io::Error> {
         writer
             .create_element("system-out")
             .write_cdata_content(BytesCData::new(
@@ -51,7 +51,7 @@ impl JUnit {
         &self,
         writer: &mut Writer<W>,
         captured: &[CapturedOutput],
-    ) -> Result<(), quick_xml::errors::Error> {
+    ) -> Result<(), std::io::Error> {
         writer
             .create_element("system-err")
             .write_cdata_content(BytesCData::new(
@@ -159,7 +159,7 @@ impl TestRunnerOutput for JUnit {
                                             .write_inner_content(|writer| {
                                                 self.write_system_out(writer, captured)?;
                                                 self.write_system_err(writer, captured)?;
-                                                Ok::<(), quick_xml::errors::Error>(())
+                                                Ok::<(), std::io::Error>(())
                                             })?;
                                     }
                                 }
@@ -190,15 +190,15 @@ impl TestRunnerOutput for JUnit {
                                                 self.write_system_err(writer, captured)?;
                                             }
 
-                                            Ok::<(), quick_xml::errors::Error>(())
+                                            Ok::<(), std::io::Error>(())
                                         })?;
                                 }
                                 TestResult::Ignored { .. } => {}
                             };
                         }
-                        Ok::<(), quick_xml::errors::Error>(())
+                        Ok::<(), std::io::Error>(())
                     })?;
-                Ok::<(), quick_xml::errors::Error>(())
+                Ok::<(), std::io::Error>(())
             })
             .unwrap();
     }
@@ -223,9 +223,9 @@ impl TestRunnerOutput for JUnit {
                                 .with_attribute(("classname", test.crate_and_module().as_str()))
                                 .write_empty()?;
                         }
-                        Ok::<(), quick_xml::errors::Error>(())
+                        Ok::<(), std::io::Error>(())
                     })?;
-                Ok::<(), quick_xml::errors::Error>(())
+                Ok::<(), std::io::Error>(())
             })
             .unwrap();
     }
