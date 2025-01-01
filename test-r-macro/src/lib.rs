@@ -1084,7 +1084,7 @@ fn get_lit_str_attr(attrs: &[Attribute], ident: &str) -> Option<String> {
         .map(|attr| {
             let tag = attr
                 .parse_args::<LitStr>()
-                .expect(&format!("{ident} attribute's parameter must be a string"));
+                .unwrap_or_else(|_| panic!("{ident} attribute's parameter must be a string"));
             tag.value()
         })
 }
@@ -1094,9 +1094,8 @@ fn get_ident_attr(attrs: &[Attribute], ident: &str) -> Option<Ident> {
         .iter()
         .find(|attr| attr.path().is_ident(ident))
         .map(|attr| {
-            attr.parse_args::<Ident>().expect(&format!(
-                "{ident} attribute's parameter must be an identifier"
-            ))
+            attr.parse_args::<Ident>()
+                .unwrap_or_else(|_| panic!("{ident} attribute's parameter must be an identifier"))
         })
 }
 
