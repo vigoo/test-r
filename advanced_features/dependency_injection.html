@@ -227,6 +227,65 @@ fn third_dependency(shared: &amp;SharedDependency, other: &amp;OtherDependency) 
     ThirdDependency { value: shared.value + other.value }
 }
 <span class="boring">}</span></code></pre></pre>
+<h2 id="dependency-tagging"><a class="header" href="#dependency-tagging">Dependency tagging</a></h2>
+<p>It is possible to have multiple dependency constructors of the same type, distinguished by a string <strong>tag</strong>. This is an alternative to using newtype wrappers, and it enables the <strong>dependency matrix</strong> feature explained in the next section.</p>
+<p>To tag a dependency, use the <code>#[test_dep]</code> attribute with the following argument:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test_dep(tagged_as = "tag1")]
+fn shared_dependency_tag1() -&gt; SharedDependency {
+    SharedDependency { value: 1 }
+}
+
+#[test_dep(tagged_as = "tag2")]
+fn shared_dependency_tag2() -&gt; SharedDependency {
+    SharedDependency { value: 2 }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Tagged dependencies are not injected automatically for parameters of the same type, they need to have a matching <code>tagged_as</code> attribute:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test]
+fn test4(shared: #[tagged_as("tag1")] &amp;SharedDependency) {
+    assert_eq!(shared.value, 1);
+}
+<span class="boring">}</span></code></pre></pre>
+<p>It is also possible to <strong>inherit</strong> tagged dependencies from an outer suite:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>mod inner {
+    use test_r::{inher_test_dep, test};
+    use super::SharedDependency;
+    
+    inherit_test_dep!(#[tagged_as("tag1") SharedDependency);
+    inherit_test_dep!(#[tagged_as("tag2") SharedDependency);
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="dependency-matrix"><a class="header" href="#dependency-matrix">Dependency matrix</a></h2>
+<p><code>test-r</code> combines the above described <strong>dependency tagging</strong> feature with its <a href="./dynamic_test_generation.html">generated tests feature</a> to provide an easy way to test a matrix of configurations, represented by different values of test dependencies.</p>
+<p>This can be used for example to test a table of different inputs, or to run tests with multiple implementations of the same interface.</p>
+<p>The first step is to define a <strong>tagged test dependency</strong> for each value used in the matrix.
+Take the previous section as an example where two different <code>SharedDependency</code> was created with tags <code>tag1</code> and <code>tag2</code>.</p>
+<p>The second step is to define a <strong>matrix dimension</strong> with the <code>define_matrix_dimension!</code> macro:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>define_matrix_dimension!(shd: SharedDependency -&gt; "tag1", "tag2");
+<span class="boring">}</span></code></pre></pre>
+<p>In this example:</p>
+<ul>
+<li><code>shd</code> is the name of the dimension - there can be an arbitrary number of dimensions defined, and they can be used in any combination in test functions</li>
+<li><code>SharedDependency</code> is the type of the dependency</li>
+<li><code>"tag1", "tag2"</code> are the tags used in the dependency matrix for this dependency</li>
+</ul>
+<p>The third step is to mark one or more parameters of a test function to match one of the defined dimensions:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test]
+fn test5(#[dimension(shd) shared: &amp;SharedDependency) {
+    // ...
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The library will generate two separate test functions (named <code>test5::test5_tag1</code> and <code>test5::test5_tag2</code>) from this definition, and each will use a different instance of <code>SharedDependency</code>.</p>
 
                     </main>
 
