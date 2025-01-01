@@ -3,6 +3,7 @@ pub use test_r_macro::always_capture;
 pub use test_r_macro::always_ensure_time;
 pub use test_r_macro::always_report_time;
 pub use test_r_macro::bench;
+pub use test_r_macro::define_matrix_dimension;
 pub use test_r_macro::flaky;
 pub use test_r_macro::inherit_test_dep;
 pub use test_r_macro::never_capture;
