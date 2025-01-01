@@ -1,14 +1,42 @@
+use darling::ast::NestedMeta;
+use darling::{Error, FromMeta};
 use proc_macro::TokenStream;
-
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    parse2, parse_macro_input, Expr, ExprClosure, FnArg, GenericArgument, ItemFn, ItemMod, LitStr,
-    Pat, PatType, PathArguments, PathSegment, ReturnType, Token, Type, TypeParamBound, TypePath,
+    parse2, parse_macro_input, Attribute, Expr, ExprClosure, FnArg, GenericArgument, ItemFn,
+    ItemMod, LitStr, Pat, PatType, PathArguments, PathSegment, ReturnType, Token, Type,
+    TypeParamBound, TypePath,
 };
 use test_r_core::internal::ShouldPanic;
+
+#[derive(Debug, Clone)]
+enum DependencyTag {
+    None,
+    Tagged(String),
+    Matrix(Ident),
+}
+
+impl DependencyTag {
+    fn into_iter(self) -> impl Iterator<Item = String> {
+        match self {
+            DependencyTag::Tagged(tag) => Some(tag),
+            _ => None,
+        }
+        .into_iter()
+    }
+}
+
+impl From<Option<String>> for DependencyTag {
+    fn from(value: Option<String>) -> Self {
+        match value {
+            Some(tag) => DependencyTag::Tagged(tag),
+            None => DependencyTag::None,
+        }
+    }
+}
 
 #[proc_macro_attribute]
 pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -21,7 +49,7 @@ pub fn bench(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStream {
-    let ast: ItemFn = syn::parse(item).expect("test ast");
+    let mut ast: ItemFn = syn::parse(item).expect("test ast");
     let test_name = ast.sig.ident.clone();
     let test_name_str = test_name.to_string();
 
@@ -56,6 +84,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
             quote! { Some(std::time::Duration::from_millis(#timeout)) }
         })
         .unwrap_or(quote! { None });
+    let has_timeout = timeout_attr.is_some();
 
     let flaky_attr = ast.attrs.iter().find(|attr| attr.path().is_ident("flaky"));
     let non_flaky_attr = ast
@@ -131,14 +160,50 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
     );
 
     let is_async = ast.sig.asyncness.is_some();
-    let (dep_getters, _dep_names) = get_dependency_params(&ast, is_bench);
+    let (dep_getters, _dep_names, dep_dimensions) = get_dependency_params(&ast, is_bench);
 
-    let register_call = if is_bench {
-        if timeout_attr.is_some() {
-            panic!("Benchmarks cannot have a timeout attribute")
-        }
+    if dep_dimensions.is_empty() {
+        let register_call = if is_bench {
+            if has_timeout {
+                panic!("Benchmarks cannot have a timeout attribute")
+            }
 
-        if is_async {
+            if is_async {
+                quote! {
+                      test_r::core::register_test(
+                          #test_name_str,
+                          module_path!(),
+                          #is_ignored,
+                          #should_panic,
+                          test_r::core::TestType::from_path(file!()),
+                          None,
+                          test_r::core::FlakinessControl::None,
+                          #capture_control,
+                          #tags,
+                          #report_time_control,
+                          #ensure_time_control,
+                          test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|bencher, deps| Box::pin(async move { #test_name(bencher, #(#dep_getters),*).await })))
+                      );
+                }
+            } else {
+                quote! {
+                    test_r::core::register_test(
+                        #test_name_str,
+                        module_path!(),
+                        #is_ignored,
+                        #should_panic,
+                        test_r::core::TestType::from_path(file!()),
+                        None,
+                        test_r::core::FlakinessControl::None,
+                        #capture_control,
+                        #tags,
+                        #report_time_control,
+                        #ensure_time_control,
+                        test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|bencher, deps| #test_name(bencher, #(#dep_getters),*)))
+                    );
+                }
+            }
+        } else if is_async {
             quote! {
                   test_r::core::register_test(
                       #test_name_str,
@@ -146,16 +211,27 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                       #is_ignored,
                       #should_panic,
                       test_r::core::TestType::from_path(file!()),
-                      None,
-                      test_r::core::FlakinessControl::None,
+                      #timeout,
+                      #flakiness_control,
                       #capture_control,
                       #tags,
                       #report_time_control,
                       #ensure_time_control,
-                      test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|bencher, deps| Box::pin(async move { #test_name(bencher, #(#dep_getters),*).await })))
+                      test_r::core::TestFunction::Async(std::sync::Arc::new(
+                        move |deps| {
+                            Box::pin(async move {
+                                let result = #test_name(#(#dep_getters),*).await;
+                                Box::new(result) as Box<dyn test_r::core::TestReturnValue>
+                            })
+                        }
+                    ))
                   );
             }
         } else {
+            if has_timeout {
+                panic!("The #[timeout()] attribute is only supported for async tests");
+            }
+
             quote! {
                 test_r::core::register_test(
                     #test_name_str,
@@ -164,73 +240,106 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                     #should_panic,
                     test_r::core::TestType::from_path(file!()),
                     None,
-                    test_r::core::FlakinessControl::None,
+                    #flakiness_control,
                     #capture_control,
                     #tags,
                     #report_time_control,
                     #ensure_time_control,
-                    test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|bencher, deps| #test_name(bencher, #(#dep_getters),*)))
+                    test_r::core::TestFunction::Sync(std::sync::Arc::new(|deps| Box::new(#test_name(#(#dep_getters),*))))
                 );
             }
-        }
-    } else if is_async {
-        quote! {
-              test_r::core::register_test(
-                  #test_name_str,
-                  module_path!(),
-                  #is_ignored,
-                  #should_panic,
-                  test_r::core::TestType::from_path(file!()),
-                  #timeout,
-                  #flakiness_control,
-                  #capture_control,
-                  #tags,
-                  #report_time_control,
-                  #ensure_time_control,
-                  test_r::core::TestFunction::Async(std::sync::Arc::new(
-                    move |deps| {
-                        Box::pin(async move {
-                            let result = #test_name(#(#dep_getters),*).await;
-                            Box::new(result) as Box<dyn test_r::core::TestReturnValue>
-                        })
-                    }
-                ))
-              );
-        }
+        };
+
+        filter_custom_parameter_attributes(&mut ast);
+        let result = quote! {
+            #[cfg(test)]
+            #[test_r::ctor::ctor]
+            fn #register_ident() {
+                 #register_call
+            }
+
+            #ast
+        };
+
+        result.into()
     } else {
-        if timeout_attr.is_some() {
-            panic!("The #[timeout()] attribute is only supported for async tests");
+        // Dependency matrix, generating a test generator
+        let test_name_impl = Ident::new(&format!("{}_impl", test_name), Span::call_site());
+        ast.sig.ident = test_name_impl.clone();
+
+        let mut overridden_dep_getters = dep_getters.clone();
+        let mut clones = Vec::new();
+
+        for (idx, _dim) in &dep_dimensions {
+            let dep_var = Ident::new(&format!("dep_{}", idx), Span::call_site());
+            overridden_dep_getters[*idx] = quote! { &#dep_var(deps.clone()) };
+            clones.push(quote! {
+                let #dep_var = #dep_var.clone();
+            });
+        }
+        let mut loops = if is_async {
+            quote! {
+                let mut tags_as_string = String::new();
+                for name in &name_stack {
+                    tags_as_string.push_str("_");
+                    tags_as_string.push_str(name);
+                }
+                #(#clones)*
+                r.add_async_test(
+                    format!("{}{}", #test_name_str, tags_as_string),
+                    test_r::core::TestProperties { test_type: test_r::core::TestType::from_path(file!()), ..Default::default() },
+                    move |deps| {
+                        #(#clones)*
+                        Box::pin(async move {
+                            #test_name_impl(#(#overridden_dep_getters),*).await
+                        })
+                    },
+                );
+            }
+        } else {
+            quote! {
+                let mut tags_as_string = String::new();
+                for name in &name_stack {
+                    tags_as_string.push_str("_");
+                    tags_as_string.push_str(name);
+                }
+                #(#clones)*
+                r.add_sync_test(
+                    format!("{}{}", #test_name_str, tags_as_string),
+                    test_r::core::TestProperties { test_type: test_r::core::TestType::from_path(file!()), ..Default::default() },
+                    move |deps| {
+                        #test_name_impl(#(#overridden_dep_getters),*)
+                    },
+                );
+            }
+        };
+
+        for (idx, dim) in dep_dimensions {
+            let dep_name_var = Ident::new(&format!("tag_{}", idx), Span::call_site());
+            let dep_var = Ident::new(&format!("dep_{}", idx), Span::call_site());
+            let get_dep_tags_fn =
+                Ident::new(&format!("test_r_get_dep_tags_{}", dim), Span::call_site());
+            loops = quote! {
+                for (#dep_name_var, #dep_var) in #get_dep_tags_fn() {
+                    name_stack.push(#dep_name_var);
+                    #loops
+                    name_stack.pop();
+                }
+            };
         }
 
-        quote! {
-            test_r::core::register_test(
-                #test_name_str,
-                module_path!(),
-                #is_ignored,
-                #should_panic,
-                test_r::core::TestType::from_path(file!()),
-                None,
-                #flakiness_control,
-                #capture_control,
-                #tags,
-                #report_time_control,
-                #ensure_time_control,
-                test_r::core::TestFunction::Sync(std::sync::Arc::new(|deps| Box::new(#test_name(#(#dep_getters),*))))
-            );
-        }
-    };
+        filter_custom_parameter_attributes(&mut ast);
+        let result = quote! {
+            #[test_r::test_gen]
+            fn #test_name(r: &mut DynamicTestRegistration) {
+                let mut name_stack = Vec::new();
+                #loops
+            }
 
-    let result = quote! {
-        #[cfg(test)]
-        #[test_r::ctor::ctor]
-        fn #register_ident() {
-             #register_call
-        }
-
-        #ast
-    };
-
-    result.into()
+            #ast
+        };
+        result.into()
+    }
 }
 
 fn from_three_state_attrs(
@@ -274,7 +383,7 @@ impl Parse for ShouldPanicArgs {
     }
 }
 
-fn should_panic_message(attr: &syn::Attribute) -> ShouldPanic {
+fn should_panic_message(attr: &Attribute) -> ShouldPanic {
     let args: ShouldPanicArgs = attr
         .parse_args()
         .unwrap_or(ShouldPanicArgs { expected: None });
@@ -296,16 +405,52 @@ pub fn uses_test_r(_item: TokenStream) -> TokenStream {
     .unwrap()
 }
 
+struct InheritTestDep {
+    attr: Option<Attribute>,
+    typ: Type,
+}
+
+impl Parse for InheritTestDep {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.peek(Token![#]) {
+            let mut attrs = Attribute::parse_outer(input)?;
+            if attrs.len() != 1 {
+                Err(syn::Error::new(
+                    input.span(),
+                    "Expected zero or one attribute",
+                ))
+            } else {
+                Ok(InheritTestDep {
+                    attr: Some(attrs.pop().unwrap()),
+                    typ: input.parse()?,
+                })
+            }
+        } else {
+            Ok(InheritTestDep {
+                attr: None,
+                typ: input.parse()?,
+            })
+        }
+    }
+}
+
 #[proc_macro]
 pub fn inherit_test_dep(item: TokenStream) -> TokenStream {
-    let ast: Type = syn::parse(item).expect("inherit_test_dep! expect a type as a parameter");
-    let dep_type = match &ast {
+    let def: InheritTestDep = parse_macro_input!(item as InheritTestDep);
+    let dep_type = match &def.typ {
         Type::Path(path) => path.clone(),
         _ => {
             panic!("Dependency constructor must return a single concrete type")
         }
     };
-    let dep_name_str = type_path_to_string(&dep_type);
+
+    let tag_str = def.attr.and_then(|a| get_lit_str_attr(&[a], "tagged_as"));
+    let tag = match tag_str {
+        Some(tag) => DependencyTag::Tagged(tag),
+        None => DependencyTag::None,
+    };
+
+    let dep_name_str = type_path_to_string(&dep_type, tag);
     let getter_ident = Ident::new(
         &format!("test_r_get_dep_{}", dep_name_str),
         Span::call_site(),
@@ -320,8 +465,90 @@ pub fn inherit_test_dep(item: TokenStream) -> TokenStream {
     result.into()
 }
 
+struct DefineMatrixDimension {
+    dim: Ident,
+    _colon: Token![:],
+    typ: Type,
+    _arrow: Token![->],
+    tags: Punctuated<LitStr, Token![,]>,
+}
+
+impl Parse for DefineMatrixDimension {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Ok(DefineMatrixDimension {
+            dim: input.parse()?,
+            _colon: input.parse()?,
+            typ: input.parse()?,
+            _arrow: input.parse()?,
+            tags: input.parse_terminated(|i| i.parse::<LitStr>(), Token![,])?,
+        })
+    }
+}
+
+#[proc_macro]
+pub fn define_matrix_dimension(item: TokenStream) -> TokenStream {
+    let def = parse_macro_input!(item as DefineMatrixDimension);
+    let get_dep_tags_fn = Ident::new(
+        &format!("test_r_get_dep_tags_{}", def.dim),
+        Span::call_site(),
+    );
+    let typ = def.typ;
+
+    let typ_path = match &typ {
+        Type::Path(path) => path,
+        _ => {
+            panic!("Must use a single concrete type in define_matrix_dimension")
+        }
+    };
+
+    let mut pushes = Vec::new();
+
+    for tag in def.tags {
+        let dep_tag = DependencyTag::Tagged(tag.value());
+        let dep_name_str = type_path_to_string(typ_path, dep_tag);
+        let getter_ident = Ident::new(
+            &format!("test_r_get_dep_{}", dep_name_str),
+            Span::call_site(),
+        );
+
+        let name = tag.value();
+        pushes.push(quote! {
+            result.push((#name.to_string(), std::sync::Arc::new(|dependency_view: std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>| #getter_ident(&dependency_view))));
+        });
+    }
+
+    let ast = quote! {
+        fn #get_dep_tags_fn() -> Vec<(String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> {
+            let mut result: Vec<(String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> = Vec::new();
+            #(#pushes)*
+            result
+        }
+    };
+    ast.into()
+}
+
+#[derive(Debug, darling::FromMeta)]
+struct TestDepArgs {
+    #[darling(default)]
+    tagged_as: Option<String>,
+}
+
 #[proc_macro_attribute]
-pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr_args = match NestedMeta::parse_meta_list(attr.into()) {
+        Ok(v) => v,
+        Err(e) => {
+            return TokenStream::from(Error::from(e).write_errors());
+        }
+    };
+
+    let args = match TestDepArgs::from_list(&attr_args) {
+        Ok(v) => v,
+        Err(e) => {
+            return TokenStream::from(e.write_errors());
+        }
+    };
+
     let ast: ItemFn = syn::parse(item).expect("test ast");
     let ctor_name = ast.sig.ident.clone();
 
@@ -336,14 +563,14 @@ pub fn test_dep(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         },
     };
-    let dep_name_str = type_path_to_string(&dep_type);
+    let dep_name_str = type_path_to_string(&dep_type, args.tagged_as.into());
     let register_ident = Ident::new(
-        &format!("test_r_register_{}", dep_name_str),
+        &format!("test_r_register_dep_{}", dep_name_str),
         Span::call_site(),
     );
 
     let is_async = ast.sig.asyncness.is_some();
-    let (dep_getters, dep_names) = get_dependency_params(&ast, false);
+    let (dep_getters, dep_names, _dep_dimensions) = get_dependency_params(&ast, false);
 
     let register_call = if is_async {
         quote! {
@@ -705,16 +932,16 @@ pub fn sequential_suite(input: TokenStream) -> TokenStream {
     result.into()
 }
 
-fn type_to_string(typ: &Type) -> String {
+fn type_to_string(typ: &Type, optional_tag: DependencyTag) -> String {
     match typ {
         Type::Array(array) => {
-            let inner_type = type_to_string(&array.elem);
+            let inner_type = type_to_string(&array.elem, optional_tag);
             format!("array_{}", inner_type)
         }
         Type::BareFn(_) => {
             panic!("Function pointers are not supported in dependency injection")
         }
-        Type::Group(group) => type_to_string(&group.elem),
+        Type::Group(group) => type_to_string(&group.elem, optional_tag),
         Type::ImplTrait(impltrait) => {
             let mut result = "impl".to_string();
             for bound in &impltrait.bounds {
@@ -725,7 +952,7 @@ fn type_to_string(typ: &Type) -> String {
                             .path
                             .segments
                             .iter()
-                            .map(segment_to_string)
+                            .map(|s| segment_to_string(s, DependencyTag::None))
                             .collect::<Vec<_>>()
                             .join("_"),
                     );
@@ -740,18 +967,18 @@ fn type_to_string(typ: &Type) -> String {
             panic!("Macro invocations are not supported in dependency injection type signatures")
         }
         Type::Never(_) => "never".to_string(),
-        Type::Paren(inner) => type_to_string(&inner.elem),
-        Type::Path(path) => type_path_to_string(path),
+        Type::Paren(inner) => type_to_string(&inner.elem, optional_tag),
+        Type::Path(path) => type_path_to_string(path, optional_tag),
         Type::Ptr(inner) => {
-            let inner_type = type_to_string(&inner.elem);
+            let inner_type = type_to_string(&inner.elem, optional_tag);
             format!("ptr_{}", inner_type)
         }
         Type::Reference(inner) => {
-            let inner_type = type_to_string(&inner.elem);
+            let inner_type = type_to_string(&inner.elem, optional_tag);
             format!("ref_{}", inner_type)
         }
         Type::Slice(inner) => {
-            let inner_type = type_to_string(&inner.elem);
+            let inner_type = type_to_string(&inner.elem, optional_tag);
             format!("slice_{}", inner_type)
         }
         Type::TraitObject(to) => {
@@ -764,11 +991,15 @@ fn type_to_string(typ: &Type) -> String {
                             .path
                             .segments
                             .iter()
-                            .map(segment_to_string)
+                            .map(|s| segment_to_string(s, DependencyTag::None))
                             .collect::<Vec<_>>()
                             .join("_"),
                     );
                 }
+            }
+            if let DependencyTag::Tagged(tag) = optional_tag {
+                result.push('_');
+                result.push_str(&tag);
             }
             result
         }
@@ -776,7 +1007,8 @@ fn type_to_string(typ: &Type) -> String {
             let inner_types = tuple
                 .elems
                 .iter()
-                .map(type_to_string)
+                .map(|t| type_to_string(t, DependencyTag::None))
+                .chain(optional_tag.into_iter())
                 .collect::<Vec<_>>()
                 .join("_");
             format!("tuple_{}", inner_types)
@@ -785,26 +1017,27 @@ fn type_to_string(typ: &Type) -> String {
     }
 }
 
-fn type_path_to_string(dep_type: &TypePath) -> String {
+fn type_path_to_string(dep_type: &TypePath, optional_tag: DependencyTag) -> String {
     let merged_ident = dep_type
         .path
         .segments
         .iter()
-        .map(segment_to_string)
+        .map(|s| segment_to_string(s, DependencyTag::None))
+        .chain(optional_tag.into_iter())
         .collect::<Vec<_>>()
         .join("_");
     let dep_name = Ident::new(&merged_ident, Span::call_site());
     dep_name.to_string().to_lowercase()
 }
 
-fn segment_to_string(segment: &PathSegment) -> String {
+fn segment_to_string(segment: &PathSegment, optional_tag: DependencyTag) -> String {
     let mut result = segment.ident.to_string();
     match &segment.arguments {
         PathArguments::None => {}
         PathArguments::AngleBracketed(args) => {
             for arg in &args.args {
                 result.push('_');
-                result.push_str(&generic_argument_to_string(arg));
+                result.push_str(&generic_argument_to_string(arg, optional_tag.clone()));
             }
         }
         PathArguments::Parenthesized(_args) => {
@@ -814,9 +1047,9 @@ fn segment_to_string(segment: &PathSegment) -> String {
     result
 }
 
-fn generic_argument_to_string(arg: &GenericArgument) -> String {
+fn generic_argument_to_string(arg: &GenericArgument, optional_tag: DependencyTag) -> String {
     match arg {
-        GenericArgument::Type(typ) => type_to_string(typ),
+        GenericArgument::Type(typ) => type_to_string(typ, optional_tag),
         GenericArgument::Const(_) => {
             panic!("Const generics are not supported in dependency injection")
         }
@@ -833,24 +1066,79 @@ fn generic_argument_to_string(arg: &GenericArgument) -> String {
     }
 }
 
+/// Removes custom attributes from parameters that are only interpreted by the #[test] macro
+fn filter_custom_parameter_attributes(ast: &mut ItemFn) {
+    ast.sig.inputs.iter_mut().for_each(|param| {
+        if let FnArg::Typed(typed) = param {
+            typed.attrs.retain(|attr| {
+                !attr.path().is_ident("tagged_as") && !attr.path().is_ident("dimension")
+            });
+        }
+    });
+}
+
+fn get_lit_str_attr(attrs: &[Attribute], ident: &str) -> Option<String> {
+    attrs
+        .iter()
+        .find(|attr| attr.path().is_ident(ident))
+        .map(|attr| {
+            let tag = attr
+                .parse_args::<LitStr>()
+                .unwrap_or_else(|_| panic!("{ident} attribute's parameter must be a string"));
+            tag.value()
+        })
+}
+
+fn get_ident_attr(attrs: &[Attribute], ident: &str) -> Option<Ident> {
+    attrs
+        .iter()
+        .find(|attr| attr.path().is_ident(ident))
+        .map(|attr| {
+            attr.parse_args::<Ident>()
+                .unwrap_or_else(|_| panic!("{ident} attribute's parameter must be an identifier"))
+        })
+}
+
 fn get_dependency_params(
     ast: &ItemFn,
     is_bench: bool,
-) -> (Vec<proc_macro2::TokenStream>, Vec<proc_macro2::TokenStream>) {
+) -> (
+    Vec<proc_macro2::TokenStream>,
+    Vec<proc_macro2::TokenStream>,
+    Vec<(usize, Ident)>,
+) {
     let mut dep_getters = Vec::new();
     let mut dep_names = Vec::new();
+    let mut dep_dimensions = Vec::new();
 
     for (idx, param) in ast.sig.inputs.iter().enumerate() {
         if !is_bench || idx > 0 {
             // TODO: verify that the first bench arg is a Bencher/AsyncBencher
-            let dep_type = match param {
+            let (dep_type, tag) = match param {
                 FnArg::Receiver(_) => {
                     panic!("Test functions cannot have a self parameter")
                 }
-                FnArg::Typed(typ) => get_dependency_param_from_pat_type(typ),
-            };
-            let dep_name_str = type_path_to_string(&dep_type);
+                FnArg::Typed(typ) => {
+                    let tag_str = get_lit_str_attr(&typ.attrs, "tagged_as");
+                    let dim_str = get_ident_attr(&typ.attrs, "dimension");
 
+                    let dep_tag = match (tag_str, dim_str) {
+                        (Some(tag), None) => DependencyTag::Tagged(tag),
+                        (None, Some(dim)) => DependencyTag::Matrix(dim),
+                        (Some(_), Some(_)) => panic!("Cannot have both a tag and a dimension attribute on the same test parameter"),
+                        (None, None) => DependencyTag::None,
+                    };
+
+                    if let DependencyTag::Matrix(dim) = &dep_tag {
+                        dep_dimensions.push((idx, dim.clone()));
+                    }
+
+                    let typ = get_dependency_param_from_pat_type(typ);
+                    (typ, dep_tag)
+                }
+            };
+
+            let dep_name_str = type_path_to_string(&dep_type, tag);
             let getter_ident = Ident::new(
                 &format!("test_r_get_dep_{}", dep_name_str),
                 Span::call_site(),
@@ -864,7 +1152,7 @@ fn get_dependency_params(
             });
         }
     }
-    (dep_getters, dep_names)
+    (dep_getters, dep_names, dep_dimensions)
 }
 
 fn get_dependency_params_for_closure<'a>(
@@ -878,14 +1166,20 @@ fn get_dependency_params_for_closure<'a>(
     let mut dep_names = Vec::new();
     let mut bindings = Vec::new();
     for pat in ast {
-        let dep_type = match pat {
-            Pat::Type(typ) => get_dependency_param_from_pat_type(typ),
+        let (dep_type, tag) = match pat {
+            Pat::Type(typ) => {
+                let optional_tag = match get_lit_str_attr(&typ.attrs, "tagged_as") {
+                    Some(tag) => DependencyTag::Tagged(tag),
+                    None => DependencyTag::None,
+                };
+                (get_dependency_param_from_pat_type(typ), optional_tag)
+            }
             _ => {
                 panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", pat.to_token_stream())
                 // TODO: nicer error report
             }
         };
-        let dep_name_str = type_path_to_string(&dep_type);
+        let dep_name_str = type_path_to_string(&dep_type, tag);
         let binding = match pat {
             Pat::Type(typ) => match &*typ.pat {
                 Pat::Ident(ident) => ident.ident.clone(),
