@@ -86,4 +86,71 @@ fn third_dependency(shared: &SharedDependency, other: &OtherDependency) -> Third
 }
 ```
 
+## Dependency tagging
+It is possible to have multiple dependency constructors of the same type, distinguished by a string **tag**. This is an alternative to using newtype wrappers, and it enables the **dependency matrix** feature explained in the next section.
+
+To tag a dependency, use the `#[test_dep]` attribute with the following argument:
+
+```rust
+#[test_dep(tagged_as = "tag1")]
+fn shared_dependency_tag1() -> SharedDependency {
+    SharedDependency { value: 1 }
+}
+
+#[test_dep(tagged_as = "tag2")]
+fn shared_dependency_tag2() -> SharedDependency {
+    SharedDependency { value: 2 }
+}
+``` 
+
+Tagged dependencies are not injected automatically for parameters of the same type, they need to have a matching `tagged_as` attribute:
+
+```rust
+#[test]
+fn test4(shared: #[tagged_as("tag1")] &SharedDependency) {
+    assert_eq!(shared.value, 1);
+}
+```
+
+It is also possible to **inherit** tagged dependencies from an outer suite:
+
+```rust
+mod inner {
+    use test_r::{inher_test_dep, test};
+    use super::SharedDependency;
+    
+    inherit_test_dep!(#[tagged_as("tag1") SharedDependency);
+    inherit_test_dep!(#[tagged_as("tag2") SharedDependency);
+}
+```
+
+## Dependency matrix
+`test-r` combines the above described **dependency tagging** feature with its [generated tests feature](./dynamic_test_generation.md) to provide an easy way to test a matrix of configurations, represented by different values of test dependencies.
+
+This can be used for example to test a table of different inputs, or to run tests with multiple implementations of the same interface.
+
+The first step is to define a **tagged test dependency** for each value used in the matrix.
+Take the previous section as an example where two different `SharedDependency` was created with tags `tag1` and `tag2`.
+
+The second step is to define a **matrix dimension** with the `define_matrix_dimension!` macro:
+
+```rust
+define_matrix_dimension!(shd: SharedDependency -> "tag1", "tag2");
+```
+
+In this example:
+- `shd` is the name of the dimension - there can be an arbitrary number of dimensions defined, and they can be used in any combination in test functions
+- `SharedDependency` is the type of the dependency
+- `"tag1", "tag2"` are the tags used in the dependency matrix for this dependency
+
+The third step is to mark one or more parameters of a test function to match one of the defined dimensions:
+
+```rust
+#[test]
+fn test5(#[dimension(shd) shared: &SharedDependency) {
+    // ...
+}
+```
+
+The library will generate two separate test functions (named `test5::test5_tag1` and `test5::test5_tag2`) from this definition, and each will use a different instance of `SharedDependency`.
 
