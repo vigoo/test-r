@@ -401,9 +401,7 @@ impl DynamicTestRegistration {
         &mut self,
         name: impl AsRef<str>,
         props: TestProperties,
-        run: impl (Fn(
-                Arc<dyn DependencyView + Send + Sync>,
-            ) -> Pin<Box<dyn Future<Output = R> + Send + Sync>>)
+        run: impl (Fn(Arc<dyn DependencyView + Send + Sync>) -> Pin<Box<dyn Future<Output = R> + Send>>)
             + Send
             + Sync
             + Clone
