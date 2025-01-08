@@ -331,7 +331,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
         filter_custom_parameter_attributes(&mut ast);
         let result = quote! {
             #[test_r::test_gen]
-            fn #test_name(r: &mut DynamicTestRegistration) {
+            fn #test_name(r: &mut test_r::core::DynamicTestRegistration) {
                 let mut name_stack = Vec::new();
                 #loops
             }
@@ -664,7 +664,7 @@ pub fn test_gen(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let wrapped_ast = if is_async {
         quote! {
             async fn #generator_name() -> Vec<test_r::core::GeneratedTest> {
-                let mut tests = DynamicTestRegistration::new();
+                let mut tests = test_r::core::DynamicTestRegistration::new();
                 #ast
                 #generator_name(&mut tests).await;
                 tests.to_vec()
@@ -673,7 +673,7 @@ pub fn test_gen(_attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {
             fn #generator_name() -> Vec<test_r::core::GeneratedTest> {
-                let mut tests = DynamicTestRegistration::new();
+                let mut tests = test_r::core::DynamicTestRegistration::new();
                 #ast
                 #generator_name(&mut tests);
                 tests.to_vec()
