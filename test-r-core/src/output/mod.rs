@@ -6,7 +6,7 @@ mod terse;
 
 use crate::args::{Arguments, FormatSetting};
 use crate::internal::{RegisteredTest, TestResult};
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -111,6 +111,19 @@ impl LogFile {
 enum StdoutOrLogFile {
     Stdout(std::io::Stdout),
     LogFile(LogFile),
+}
+
+impl StdoutOrLogFile {
+    fn reset_log_file(&mut self) -> std::io::Result<bool> {
+        if let StdoutOrLogFile::LogFile(logfile) = self {
+            logfile.file.set_len(0)?;
+            logfile.file.seek(SeekFrom::Start(0))?;
+            logfile.file.flush()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 impl Write for StdoutOrLogFile {

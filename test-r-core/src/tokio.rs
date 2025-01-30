@@ -222,12 +222,12 @@ async fn test_thread(
     }
 }
 
-async fn is_done<'a>(execution: &Arc<Mutex<TestSuiteExecution>>) -> bool {
+async fn is_done(execution: &Arc<Mutex<TestSuiteExecution>>) -> bool {
     let execution = execution.lock().await;
     execution.is_done()
 }
 
-async fn pick_next<'a>(execution: &Arc<Mutex<TestSuiteExecution>>) -> Option<TestExecution> {
+async fn pick_next(execution: &Arc<Mutex<TestSuiteExecution>>) -> Option<TestExecution> {
     let mut execution = execution.lock().await;
     execution.pick_next().await
 }
