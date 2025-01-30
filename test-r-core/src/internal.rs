@@ -605,7 +605,7 @@ pub(crate) fn get_ensure_time(args: &Arguments, test: &RegisteredTest) -> Option
     }
 }
 
-pub enum TestResult {
+pub enum TestResult<Panic = Box<dyn Any + Send>> {
     Passed {
         captured: Vec<CapturedOutput>,
         exec_time: Duration,
@@ -617,7 +617,7 @@ pub enum TestResult {
         mb_s: usize,
     },
     Failed {
-        panic: Box<dyn Any + Send>,
+        panic: Panic,
         captured: Vec<CapturedOutput>,
         exec_time: Duration,
     },
@@ -626,7 +626,7 @@ pub enum TestResult {
     },
 }
 
-impl TestResult {
+impl<Panic> TestResult<Panic> {
     pub fn passed(exec_time: Duration) -> Self {
         TestResult::Passed {
             captured: Vec::new(),
@@ -643,7 +643,7 @@ impl TestResult {
         }
     }
 
-    pub fn failed(exec_time: Duration, panic: Box<dyn Any + Send>) -> Self {
+    pub fn failed(exec_time: Duration, panic: Panic) -> Self {
         TestResult::Failed {
             panic,
             captured: Vec::new(),
@@ -671,16 +671,6 @@ impl TestResult {
 
     pub(crate) fn is_ignored(&self) -> bool {
         matches!(self, TestResult::Ignored { .. })
-    }
-
-    pub(crate) fn failure_message(&self) -> Option<&str> {
-        match self {
-            TestResult::Failed { panic, .. } => panic
-                .downcast_ref::<String>()
-                .map(|s| s.as_str())
-                .or(panic.downcast_ref::<&str>().copied()),
-            _ => None,
-        }
     }
 
     pub(crate) fn captured_output(&self) -> &Vec<CapturedOutput> {
@@ -716,6 +706,57 @@ impl TestResult {
                 captured: captured_ref,
                 ..
             } => *captured_ref = captured,
+        }
+    }
+}
+
+impl TestResult<Box<dyn Any + Send>> {
+    #[allow(clippy::should_implement_trait)]
+    pub fn clone(&self) -> TestResult<String> {
+        match self {
+            TestResult::Passed {
+                captured,
+                exec_time,
+            } => TestResult::Passed {
+                captured: captured.clone(),
+                exec_time: *exec_time,
+            },
+            TestResult::Benchmarked {
+                captured,
+                exec_time,
+                ns_iter_summ,
+                mb_s,
+            } => TestResult::Benchmarked {
+                captured: captured.clone(),
+                exec_time: *exec_time,
+                ns_iter_summ: *ns_iter_summ,
+                mb_s: *mb_s,
+            },
+            TestResult::Failed {
+                captured,
+                exec_time,
+                ..
+            } => {
+                let failure_message = self.failure_message().unwrap_or("").to_string();
+                TestResult::Failed {
+                    panic: failure_message,
+                    captured: captured.clone(),
+                    exec_time: *exec_time,
+                }
+            }
+            TestResult::Ignored { captured } => TestResult::Ignored {
+                captured: captured.clone(),
+            },
+        }
+    }
+
+    pub(crate) fn failure_message(&self) -> Option<&str> {
+        match self {
+            TestResult::Failed { panic, .. } => panic
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or(panic.downcast_ref::<&str>().copied()),
+            _ => None,
         }
     }
 
@@ -779,6 +820,15 @@ impl TestResult {
     }
 }
 
+impl TestResult<String> {
+    pub(crate) fn failure_message(&self) -> Option<&str> {
+        match self {
+            TestResult::Failed { panic, .. } => Some(panic),
+            _ => None,
+        }
+    }
+}
+
 pub struct SuiteResult {
     pub passed: usize,
     pub failed: usize,
@@ -789,9 +839,9 @@ pub struct SuiteResult {
 }
 
 impl SuiteResult {
-    pub fn from_test_results(
+    pub fn from_test_results<Panic>(
         registered_tests: &[RegisteredTest],
-        results: &[(RegisteredTest, TestResult)],
+        results: &[(RegisteredTest, TestResult<Panic>)],
         exec_time: Duration,
     ) -> Self {
         let passed = results
