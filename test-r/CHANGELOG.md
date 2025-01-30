@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0](https://github.com/vigoo/test-r/compare/test-r-v2.0.1...test-r-v2.1.0) - 2025-01-30
+
+### Added
+
+- writing intermediate junit reports after each test (#95)
+
+### Fixed
+
+- name collision in macro-generated code (#94)
+
 ## [2.0.1](https://github.com/vigoo/test-r/compare/test-r-v2.0.0...test-r-v2.0.1) - 2025-01-08
 
 ### Other
