@@ -631,4 +631,25 @@ mod generated {
         );
         assert_eq!((dep1.value + dep2.value + dep3.value) % 2, 0);
     }
+
+    #[test_gen]
+    fn generate_tests_name_collision(r: &mut DynamicTestRegistration) {
+        println!("Generating some tests with dependencies in a sync generator");
+        for i in 0..10 {
+            add_test!(
+                r,
+                format!("test_{i}"),
+                TestProperties::unit_test(),
+                move |deps: &Dep1, other: &Dep2| async {
+                    println!(
+                        "Running test {} using dep {} and {}",
+                        i, deps.value, other.value
+                    );
+                    let s = i.to_string();
+                    let i2 = s.parse::<i32>().unwrap();
+                    assert_eq!(i, i2);
+                }
+            );
+        }
+    }
 }

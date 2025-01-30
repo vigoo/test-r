@@ -182,7 +182,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                           #tags,
                           #report_time_control,
                           #ensure_time_control,
-                          test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|bencher, deps| Box::pin(async move { #test_name(bencher, #(#dep_getters),*).await })))
+                          test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|__test_r_bencher_arg, __test_r_deps_arg| Box::pin(async move { #test_name(__test_r_bencher_arg, #(#dep_getters),*).await })))
                       );
                 }
             } else {
@@ -199,7 +199,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                         #tags,
                         #report_time_control,
                         #ensure_time_control,
-                        test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|bencher, deps| #test_name(bencher, #(#dep_getters),*)))
+                        test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|__test_r_bencher_arg, __test_r_deps_arg| #test_name(__test_r_bencher_arg, #(#dep_getters),*)))
                     );
                 }
             }
@@ -218,7 +218,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                       #report_time_control,
                       #ensure_time_control,
                       test_r::core::TestFunction::Async(std::sync::Arc::new(
-                        move |deps| {
+                        move |__test_r_deps_arg| {
                             Box::pin(async move {
                                 let result = #test_name(#(#dep_getters),*).await;
                                 Box::new(result) as Box<dyn test_r::core::TestReturnValue>
@@ -245,7 +245,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                     #tags,
                     #report_time_control,
                     #ensure_time_control,
-                    test_r::core::TestFunction::Sync(std::sync::Arc::new(|deps| Box::new(#test_name(#(#dep_getters),*))))
+                    test_r::core::TestFunction::Sync(std::sync::Arc::new(|__test_r_deps_arg| Box::new(#test_name(#(#dep_getters),*))))
                 );
             }
         };
@@ -272,7 +272,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
 
         for (idx, _dim) in &dep_dimensions {
             let dep_var = Ident::new(&format!("dep_{}", idx), Span::call_site());
-            overridden_dep_getters[*idx] = quote! { &#dep_var(deps.clone()) };
+            overridden_dep_getters[*idx] = quote! { &#dep_var(__test_r_deps_arg.clone()) };
             clones.push(quote! {
                 let #dep_var = #dep_var.clone();
             });
@@ -288,7 +288,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                 r.add_async_test(
                     format!("{}{}", #test_name_str, tags_as_string),
                     test_r::core::TestProperties { test_type: test_r::core::TestType::from_path(file!()), ..Default::default() },
-                    move |deps| {
+                    move |__test_r_deps_arg| {
                         #(#clones)*
                         Box::pin(async move {
                             #test_name_impl(#(#overridden_dep_getters),*).await
@@ -307,7 +307,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
                 r.add_sync_test(
                     format!("{}{}", #test_name_str, tags_as_string),
                     test_r::core::TestProperties { test_type: test_r::core::TestType::from_path(file!()), ..Default::default() },
-                    move |deps| {
+                    move |__test_r_deps_arg| {
                         #test_name_impl(#(#overridden_dep_getters),*)
                     },
                 );
@@ -577,7 +577,7 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
               test_r::core::register_dependency_constructor(
                   #dep_name_str,
                   module_path!(),
-                  test_r::core::DependencyConstructor::Async(std::sync::Arc::new(|deps| Box::pin(async move {
+                  test_r::core::DependencyConstructor::Async(std::sync::Arc::new(|__test_r_deps_arg| Box::pin(async move {
                     let result: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(#ctor_name(#(#dep_getters),*).await);
                     result
                   }))),
@@ -589,7 +589,7 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
             test_r::core::register_dependency_constructor(
                 #dep_name_str,
                 module_path!(),
-                test_r::core::DependencyConstructor::Sync(std::sync::Arc::new(|deps| std::sync::Arc::new(#ctor_name(#(#dep_getters),*)))),
+                test_r::core::DependencyConstructor::Sync(std::sync::Arc::new(|__test_r_deps_arg| std::sync::Arc::new(#ctor_name(#(#dep_getters),*)))),
                 vec![#(#dep_names),*]
             );
         }
@@ -757,7 +757,7 @@ pub fn add_test(input: TokenStream) -> TokenStream {
             _ => panic!("Expected async block"),
         };
         quote! {
-            #dtr_expr.add_async_test(#name_expr, #test_props_expr, move |deps| {
+            #dtr_expr.add_async_test(#name_expr, #test_props_expr, move |__test_r_deps_arg| {
                 Box::pin(async move {
                     #(#lets)*
                     #body
@@ -766,7 +766,7 @@ pub fn add_test(input: TokenStream) -> TokenStream {
         }
     } else {
         quote! {
-            #dtr_expr.add_sync_test(#name_expr, #test_props_expr, move |deps| {
+            #dtr_expr.add_sync_test(#name_expr, #test_props_expr, move |__test_r_deps_arg| {
                 let gen = #function_closure;
                 gen(#(#dep_getters),*)
             });
@@ -1145,7 +1145,7 @@ fn get_dependency_params(
             );
 
             dep_getters.push(quote! {
-                &#getter_ident(&deps)
+                &#getter_ident(&__test_r_deps_arg)
             });
             dep_names.push(quote! {
                 #dep_name_str.to_string()
@@ -1200,7 +1200,7 @@ fn get_dependency_params_for_closure<'a>(
         );
 
         dep_getters.push(quote! {
-            &#getter_ident(&deps)
+            &#getter_ident(&__test_r_deps_arg)
         });
         dep_names.push(quote! {
             #dep_name_str.to_string()
