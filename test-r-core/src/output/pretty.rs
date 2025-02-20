@@ -72,7 +72,7 @@ impl Pretty {
         }
     }
 
-    pub(crate) fn lock(&self) -> MutexGuard<'_, impl Write> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, impl Write + use<>> {
         self.lock.lock().unwrap()
     }
 

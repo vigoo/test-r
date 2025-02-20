@@ -1,12 +1,12 @@
 [package]
 name = "test-r-github"
 version = "0.0.1"
-edition = "2021"
+edition = "2024"
 license = "Apache-2.0"
 
 [[bin]]
 name = "test-r-github"
 
 [dependencies]
-gh-workflow = {version = "0.5.6"}
+gh-workflow = { version = "0.5.6" }
 serde_json = "1.0.134"
