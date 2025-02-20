@@ -767,8 +767,8 @@ pub fn add_test(input: TokenStream) -> TokenStream {
     } else {
         quote! {
             #dtr_expr.add_sync_test(#name_expr, #test_props_expr, move |__test_r_deps_arg| {
-                let gen = #function_closure;
-                gen(#(#dep_getters),*)
+                let gen_fn = #function_closure;
+                gen_fn(#(#dep_getters),*)
             });
         }
     };
