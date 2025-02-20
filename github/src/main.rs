@@ -1,6 +1,6 @@
 use gh_workflow::{
-    toolchain::Toolchain, Cargo, Event, Expression, Job, Level, Permissions, PullRequest, Push,
-    Step, Workflow,
+    Cargo, Event, Expression, Job, Level, Permissions, PullRequest, Push, Step, Workflow,
+    toolchain::Toolchain,
 };
 use internal::*;
 

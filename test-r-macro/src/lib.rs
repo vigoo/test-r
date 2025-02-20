@@ -2,13 +2,13 @@ use darling::ast::NestedMeta;
 use darling::{Error, FromMeta};
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
-use quote::{quote, ToTokens};
+use quote::{ToTokens, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    parse2, parse_macro_input, Attribute, Expr, ExprClosure, FnArg, GenericArgument, ItemFn,
-    ItemMod, LitStr, Pat, PatType, PathArguments, PathSegment, ReturnType, Token, Type,
-    TypeParamBound, TypePath,
+    Attribute, Expr, ExprClosure, FnArg, GenericArgument, ItemFn, ItemMod, LitStr, Pat, PatType,
+    PathArguments, PathSegment, ReturnType, Token, Type, TypeParamBound, TypePath,
+    parse_macro_input, parse2,
 };
 use test_r_core::internal::ShouldPanic;
 
@@ -866,7 +866,9 @@ pub fn tag_suite(input: TokenStream) -> TokenStream {
     let params = parse_macro_input!(input with Punctuated::<Ident, Token![,]>::parse_terminated);
 
     if params.len() != 2 {
-        panic!("tag_suite! expects exactly 2 identifiers as parameters: the name of the suite module and the tag");
+        panic!(
+            "tag_suite! expects exactly 2 identifiers as parameters: the name of the suite module and the tag"
+        );
     }
 
     let mod_name_str = params[0].to_string();
@@ -904,7 +906,9 @@ pub fn sequential_suite(input: TokenStream) -> TokenStream {
     let params = parse_macro_input!(input with Punctuated::<Ident, Token![,]>::parse_terminated);
 
     if params.len() != 1 {
-        panic!("sequential_suite! expects exactly 1 identifier as parameter: the name of the suite module");
+        panic!(
+            "sequential_suite! expects exactly 1 identifier as parameter: the name of the suite module"
+        );
     }
 
     let mod_name_str = params[0].to_string();
@@ -1125,7 +1129,9 @@ fn get_dependency_params(
                     let dep_tag = match (tag_str, dim_str) {
                         (Some(tag), None) => DependencyTag::Tagged(tag),
                         (None, Some(dim)) => DependencyTag::Matrix(dim),
-                        (Some(_), Some(_)) => panic!("Cannot have both a tag and a dimension attribute on the same test parameter"),
+                        (Some(_), Some(_)) => panic!(
+                            "Cannot have both a tag and a dimension attribute on the same test parameter"
+                        ),
                         (None, None) => DependencyTag::None,
                     };
 
@@ -1175,7 +1181,10 @@ fn get_dependency_params_for_closure<'a>(
                 (get_dependency_param_from_pat_type(typ), optional_tag)
             }
             _ => {
-                panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", pat.to_token_stream())
+                panic!(
+                    "Test functions can only have parameters which are immutable references to concrete types, but got {:?}",
+                    pat.to_token_stream()
+                )
                 // TODO: nicer error report
             }
         };
@@ -1184,12 +1193,18 @@ fn get_dependency_params_for_closure<'a>(
             Pat::Type(typ) => match &*typ.pat {
                 Pat::Ident(ident) => ident.ident.clone(),
                 _ => {
-                    panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", typ.pat.to_token_stream())
+                    panic!(
+                        "Test functions can only have parameters which are immutable references to concrete types, but got {:?}",
+                        typ.pat.to_token_stream()
+                    )
                     // TODO: nicer error report
                 }
             },
             _ => {
-                panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", pat.to_token_stream())
+                panic!(
+                    "Test functions can only have parameters which are immutable references to concrete types, but got {:?}",
+                    pat.to_token_stream()
+                )
                 // TODO: nicer error report
             }
         };
@@ -1216,13 +1231,19 @@ fn get_dependency_param_from_pat_type(typ: &PatType) -> TypePath {
             match &*reference.elem {
                 Type::Path(path) => path.clone(),
                 _ => {
-                    panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", reference.elem.to_token_stream())
+                    panic!(
+                        "Test functions can only have parameters which are immutable references to concrete types, but got {:?}",
+                        reference.elem.to_token_stream()
+                    )
                     // TODO: nicer error report
                 }
             }
         }
         _ => {
-            panic!("Test functions can only have parameters which are immutable references to concrete types, but got {:?}", typ.ty.to_token_stream())
+            panic!(
+                "Test functions can only have parameters which are immutable references to concrete types, but got {:?}",
+                typ.ty.to_token_stream()
+            )
             // TODO: nicer error report
         }
     }
