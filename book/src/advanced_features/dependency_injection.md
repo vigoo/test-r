@@ -147,7 +147,7 @@ The third step is to mark one or more parameters of a test function to match one
 
 ```rust
 #[test]
-fn test5(#[dimension(shd) shared: &SharedDependency) {
+fn test5(#[dimension(shd)] shared: &SharedDependency) {
     // ...
 }
 ```
