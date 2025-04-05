@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1](https://github.com/vigoo/test-r/compare/test-r-v2.1.0...test-r-v2.1.1) - 2025-04-05
+
+### Other
+
+- Rust Edition 2024 ([#98](https://github.com/vigoo/test-r/pull/98))
+
 ## [2.1.0](https://github.com/vigoo/test-r/compare/test-r-v2.0.1...test-r-v2.1.0) - 2025-01-30
 
 ### Added
