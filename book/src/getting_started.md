@@ -19,7 +19,7 @@ There are three additional steps to take when using `test-r` in place of the bui
 
 This is explained in details on the [Defining tests](./core_features/defining_tests.md) page, but the example below demonstrates how to set up a simple crate to run tests with `test-r`.
 
-## Example 
+## Example
 
 The following `Cargo.toml` file sets up a simple library crate with `test-r`:
 
@@ -27,7 +27,7 @@ The following `Cargo.toml` file sets up a simple library crate with `test-r`:
 [package]
 name = "test-r-demo"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 harness = false # Disable the built-in test harness
