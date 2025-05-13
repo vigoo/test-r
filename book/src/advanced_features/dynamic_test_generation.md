@@ -7,7 +7,8 @@ Test generators can be either sync or async (if the `tokio` feature is enabled).
 The following two examples demonstrate generating sync and async tests using the `#[test_gen]` attribute:
 
 ```rust
-use test_r::{add_test, DynamicTestRegistration, TestType, test_gen};
+use test_r::core::{DynamicTestRegistration, TestType};
+use test_r::{add_test, test_gen};
 
 struct Dep1 {
     value: i32,
