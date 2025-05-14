@@ -759,7 +759,8 @@ fn non_flaky_test() {
 <p>The following two examples demonstrate generating sync and async tests using the <code>#[test_gen]</code> attribute:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use test_r::{add_test, DynamicTestRegistration, TestType, test_gen};
+</span>use test_r::core::{DynamicTestRegistration, TestType};
+use test_r::{add_test, test_gen};
 
 struct Dep1 {
     value: i32,
