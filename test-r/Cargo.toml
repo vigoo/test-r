@@ -12,7 +12,7 @@ readme = "../README.md"
 test-r-core = { version = "2.1.0", path = "../test-r-core", default-features = false }
 test-r-macro = { version = "1.2.2", path = "../test-r-macro" }
 
-ctor = "0.2"
+ctor = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 
 [dev-dependencies]

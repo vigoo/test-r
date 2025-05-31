@@ -253,7 +253,7 @@ fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStre
         filter_custom_parameter_attributes(&mut ast);
         let result = quote! {
             #[cfg(test)]
-            #[test_r::ctor::ctor]
+            #[test_r::ctor::ctor(crate_path=::test_r::ctor)]
             fn #register_ident() {
                  #register_call
             }
@@ -610,7 +610,7 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let result = quote! {
         #[cfg(test)]
-        #[test_r::ctor::ctor]
+        #[test_r::ctor::ctor(crate_path=::test_r::ctor)]
         fn #register_ident() {
              #register_call
         }
@@ -683,7 +683,7 @@ pub fn test_gen(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let result = quote! {
         #[cfg(test)]
-        #[test_r::ctor::ctor]
+        #[test_r::ctor::ctor(crate_path=::test_r::ctor)]
         fn #register_ident() {
              #register_call
         }
@@ -713,7 +713,7 @@ pub fn sequential(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let result = quote! {
         #[cfg(test)]
-        #[test_r::ctor::ctor]
+        #[test_r::ctor::ctor(crate_path=::test_r::ctor)]
         fn #register_ident() {
              #register_call
         }
@@ -846,7 +846,7 @@ pub fn tag(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let result = quote! {
             #[cfg(test)]
-            #[test_r::ctor::ctor]
+            #[test_r::ctor::ctor(crate_path=::test_r::ctor)]
             fn #register_ident() {
                  #register_call
             }
@@ -892,7 +892,7 @@ pub fn tag_suite(input: TokenStream) -> TokenStream {
 
     let result = quote! {
         #[cfg(test)]
-        #[test_r::ctor::ctor]
+        #[test_r::ctor::ctor(crate_path=::test_r::ctor)]
         fn #register_ident() {
              #register_call
         }
@@ -927,7 +927,7 @@ pub fn sequential_suite(input: TokenStream) -> TokenStream {
 
     let result = quote! {
         #[cfg(test)]
-        #[test_r::ctor::ctor]
+        #[test_r::ctor::ctor(crate_path=::test_r::ctor)]
         fn #register_ident() {
              #register_call
         }
