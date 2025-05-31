@@ -176,8 +176,8 @@ pub mod flakiness {
     #[tag(b)]
     fn flaky_test() {
         println!("Print from flaky test");
-        let mut rng = rand::thread_rng();
-        let result = 2 + rng.gen_range(1..3);
+        let mut rng = rand::rng();
+        let result = 2 + rng.random_range(1..3);
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(result, 4);
     }

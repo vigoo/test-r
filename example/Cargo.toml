@@ -18,4 +18,4 @@ harness = false
 [dependencies]
 test-r = { version = "2.1.0", path = "../test-r", default-features = false }
 
-rand = "0.8"
+rand = "0.9"
