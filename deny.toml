@@ -32,7 +32,9 @@ allow = []
 deny = []
 
 skip = []
-skip-tree = []
+skip-tree = [
+    "wasi"
+]
 
 [sources]
 unknown-registry = "warn"
