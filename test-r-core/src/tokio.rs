@@ -300,7 +300,7 @@ async fn run_test(
     test: &RegisteredTest,
     worker: &mut Option<Worker>,
 ) -> TestResult {
-    if test.is_ignored && !include_ignored {
+    if test.props.is_ignored && !include_ignored {
         TestResult::ignored()
     } else if let Some(worker) = worker.as_mut() {
         worker.run_test(nocapture, test).await

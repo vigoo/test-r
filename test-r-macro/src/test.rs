@@ -1,4 +1,5 @@
 use crate::deps::get_dependency_params;
+use crate::helpers::is_testr_attribute;
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
 use quote::quote;
@@ -11,11 +12,14 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
     let test_name = ast.sig.ident.clone();
     let test_name_str = test_name.to_string();
 
-    let is_ignored = ast.attrs.iter().any(|attr| attr.path().is_ident("ignore"));
+    let is_ignored = ast
+        .attrs
+        .iter()
+        .any(|attr| is_testr_attribute(attr, "ignore"));
     let should_panic = ast
         .attrs
         .iter()
-        .find(|attr| attr.path().is_ident("should_panic"))
+        .find(|attr| is_testr_attribute(attr, "should_panic"))
         .map(should_panic_message)
         .unwrap_or(ShouldPanic::No);
 
@@ -30,7 +34,7 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
     let timeout_attr = ast
         .attrs
         .iter()
-        .find(|attr| attr.path().is_ident("timeout"));
+        .find(|attr| is_testr_attribute(attr, "timeout"));
     let timeout = timeout_attr
         .map(|attr| {
             let timeout = attr
@@ -44,11 +48,14 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
         .unwrap_or(quote! { None });
     let has_timeout = timeout_attr.is_some();
 
-    let flaky_attr = ast.attrs.iter().find(|attr| attr.path().is_ident("flaky"));
+    let flaky_attr = ast
+        .attrs
+        .iter()
+        .find(|attr| is_testr_attribute(attr, "flaky"));
     let non_flaky_attr = ast
         .attrs
         .iter()
-        .find(|attr| attr.path().is_ident("non_flaky"));
+        .find(|attr| is_testr_attribute(attr, "non_flaky"));
     let flakiness_control = match (flaky_attr, non_flaky_attr) {
         (None, None) => quote! { test_r::core::FlakinessControl::None },
         (Some(_), Some(_)) => {
@@ -102,7 +109,7 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
     let tag_attrs = ast
         .attrs
         .iter()
-        .filter(|attr| attr.path().is_ident("tag"))
+        .filter(|attr| is_testr_attribute(attr, "tag"))
         .map(|attr| {
             let tag = attr
                 .parse_args::<Ident>()
@@ -112,56 +119,79 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
         });
     let tags = quote! { vec![#(#tag_attrs),*] };
 
+    let is_async = ast.sig.asyncness.is_some();
+    let (dep_getters, _dep_names, dep_dimensions) = get_dependency_params(&ast, is_bench);
+
+    let details = TestDetails {
+        test_name,
+        test_name_str,
+        is_bench,
+        is_async,
+        is_ignored,
+        should_panic,
+        timeout,
+        has_timeout,
+        flakiness_control,
+        capture_control,
+        report_time_control,
+        ensure_time_control,
+        tags,
+        dep_getters,
+    };
+
+    if dep_dimensions.is_empty() {
+        single_test_impl(&mut ast, details)
+    } else {
+        matrix_test_impl(&mut ast, details, dep_dimensions)
+    }
+}
+
+struct TestDetails {
+    test_name: Ident,
+    test_name_str: String,
+    is_bench: bool,
+    is_async: bool,
+    is_ignored: bool,
+    should_panic: proc_macro2::TokenStream,
+    timeout: proc_macro2::TokenStream,
+    has_timeout: bool,
+    flakiness_control: proc_macro2::TokenStream,
+    capture_control: proc_macro2::TokenStream,
+    report_time_control: proc_macro2::TokenStream,
+    ensure_time_control: proc_macro2::TokenStream,
+    tags: proc_macro2::TokenStream,
+    dep_getters: Vec<proc_macro2::TokenStream>,
+}
+
+fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
+    let TestDetails {
+        test_name,
+        test_name_str,
+        is_bench,
+        is_async,
+        is_ignored,
+        should_panic,
+        timeout,
+        has_timeout,
+        flakiness_control,
+        capture_control,
+        report_time_control,
+        ensure_time_control,
+        tags,
+        dep_getters,
+    } = details;
+
     let register_ident = Ident::new(
         &format!("test_r_register_{}", test_name_str),
         test_name.span(),
     );
 
-    let is_async = ast.sig.asyncness.is_some();
-    let (dep_getters, _dep_names, dep_dimensions) = get_dependency_params(&ast, is_bench);
+    let register_call = if is_bench {
+        if has_timeout {
+            panic!("Benchmarks cannot have a timeout attribute")
+        }
 
-    if dep_dimensions.is_empty() {
-        let register_call = if is_bench {
-            if has_timeout {
-                panic!("Benchmarks cannot have a timeout attribute")
-            }
-
-            if is_async {
-                quote! {
-                      test_r::core::register_test(
-                          #test_name_str,
-                          module_path!(),
-                          #is_ignored,
-                          #should_panic,
-                          test_r::core::TestType::from_path(file!()),
-                          None,
-                          test_r::core::FlakinessControl::None,
-                          #capture_control,
-                          #tags,
-                          #report_time_control,
-                          #ensure_time_control,
-                          test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|__test_r_bencher_arg, __test_r_deps_arg| Box::pin(async move { #test_name(__test_r_bencher_arg, #(#dep_getters),*).await })))
-                      );
-                }
-            } else {
-                quote! {
-                    test_r::core::register_test(
-                        #test_name_str,
-                        module_path!(),
-                        #is_ignored,
-                        #should_panic,
-                        test_r::core::TestType::from_path(file!()),
-                        None,
-                        test_r::core::FlakinessControl::None,
-                        #capture_control,
-                        #tags,
-                        #report_time_control,
-                        #ensure_time_control,
-                        test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|__test_r_bencher_arg, __test_r_deps_arg| #test_name(__test_r_bencher_arg, #(#dep_getters),*)))
-                    );
-                }
-            }
-        } else if is_async {
+        if is_async {
             quote! {
                   test_r::core::register_test(
                       #test_name_str,
@@ -169,27 +199,16 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
                       #is_ignored,
                       #should_panic,
                       test_r::core::TestType::from_path(file!()),
-                      #timeout,
-                      #flakiness_control,
+                      None,
+                      test_r::core::FlakinessControl::None,
                       #capture_control,
                       #tags,
                       #report_time_control,
                       #ensure_time_control,
-                      test_r::core::TestFunction::Async(std::sync::Arc::new(
-                        move |__test_r_deps_arg| {
-                            Box::pin(async move {
-                                let result = #test_name(#(#dep_getters),*).await;
-                                Box::new(result) as Box<dyn test_r::core::TestReturnValue>
-                            })
-                        }
-                    ))
+                      test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|__test_r_bencher_arg, __test_r_deps_arg| Box::pin(async move { #test_name(__test_r_bencher_arg, #(#dep_getters),*).await })))
                   );
             }
         } else {
-            if has_timeout {
-                panic!("The #[timeout()] attribute is only supported for async tests");
-            }
-
             quote! {
                 test_r::core::register_test(
                     #test_name_str,
@@ -198,106 +217,205 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
                     #should_panic,
                     test_r::core::TestType::from_path(file!()),
                     None,
-                    #flakiness_control,
+                    test_r::core::FlakinessControl::None,
                     #capture_control,
                     #tags,
                     #report_time_control,
                     #ensure_time_control,
-                    test_r::core::TestFunction::Sync(std::sync::Arc::new(|__test_r_deps_arg| Box::new(#test_name(#(#dep_getters),*))))
+                    test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|__test_r_bencher_arg, __test_r_deps_arg| #test_name(__test_r_bencher_arg, #(#dep_getters),*)))
                 );
             }
-        };
-
-        filter_custom_parameter_attributes(&mut ast);
-        let result = quote! {
-            #[cfg(test)]
-            #[test_r::ctor::ctor(crate_path=::test_r::ctor)]
-            fn #register_ident() {
-                 #register_call
-            }
-
-            #ast
-        };
-
-        result.into()
-    } else {
-        // Dependency matrix, generating a test generator
-        let test_name_impl = Ident::new(&format!("{}_impl", test_name), Span::call_site());
-        ast.sig.ident = test_name_impl.clone();
-
-        let mut overridden_dep_getters = dep_getters.clone();
-        let mut clones = Vec::new();
-
-        for (idx, _dim) in &dep_dimensions {
-            let dep_var = Ident::new(&format!("dep_{}", idx), Span::call_site());
-            overridden_dep_getters[*idx] = quote! { &#dep_var(__test_r_deps_arg.clone()) };
-            clones.push(quote! {
-                let #dep_var = #dep_var.clone();
-            });
         }
-        let mut loops = if is_async {
-            quote! {
-                let mut tags_as_string = String::new();
-                for name in &name_stack {
-                    tags_as_string.push_str("_");
-                    tags_as_string.push_str(name);
-                }
-                #(#clones)*
-                r.add_async_test(
-                    format!("{}{}", #test_name_str, tags_as_string),
-                    test_r::core::TestProperties { test_type: test_r::core::TestType::from_path(file!()), ..Default::default() },
+    } else if is_async {
+        quote! {
+              test_r::core::register_test(
+                  #test_name_str,
+                  module_path!(),
+                  #is_ignored,
+                  #should_panic,
+                  test_r::core::TestType::from_path(file!()),
+                  #timeout,
+                  #flakiness_control,
+                  #capture_control,
+                  #tags,
+                  #report_time_control,
+                  #ensure_time_control,
+                  test_r::core::TestFunction::Async(std::sync::Arc::new(
                     move |__test_r_deps_arg| {
-                        #(#clones)*
                         Box::pin(async move {
-                            #test_name_impl(#(#overridden_dep_getters),*).await
+                            let result = #test_name(#(#dep_getters),*).await;
+                            Box::new(result) as Box<dyn test_r::core::TestReturnValue>
                         })
-                    },
-                );
-            }
-        } else {
-            quote! {
-                let mut tags_as_string = String::new();
-                for name in &name_stack {
-                    tags_as_string.push_str("_");
-                    tags_as_string.push_str(name);
-                }
-                #(#clones)*
-                r.add_sync_test(
-                    format!("{}{}", #test_name_str, tags_as_string),
-                    test_r::core::TestProperties { test_type: test_r::core::TestType::from_path(file!()), ..Default::default() },
-                    move |__test_r_deps_arg| {
-                        #test_name_impl(#(#overridden_dep_getters),*)
-                    },
-                );
-            }
-        };
-
-        for (idx, dim) in dep_dimensions {
-            let dep_name_var = Ident::new(&format!("tag_{}", idx), Span::call_site());
-            let dep_var = Ident::new(&format!("dep_{}", idx), Span::call_site());
-            let get_dep_tags_fn =
-                Ident::new(&format!("test_r_get_dep_tags_{}", dim), Span::call_site());
-            loops = quote! {
-                for (#dep_name_var, #dep_var) in #get_dep_tags_fn() {
-                    name_stack.push(#dep_name_var);
-                    #loops
-                    name_stack.pop();
-                }
-            };
+                    }
+                ))
+              );
+        }
+    } else {
+        if has_timeout {
+            panic!("The #[timeout()] attribute is only supported for async tests");
         }
 
-        filter_custom_parameter_attributes(&mut ast);
-        let result = quote! {
-            #[test_r::test_gen]
-            fn #test_name(r: &mut test_r::core::DynamicTestRegistration) {
-                let mut name_stack = Vec::new();
-                #loops
-            }
+        quote! {
+            test_r::core::register_test(
+                #test_name_str,
+                module_path!(),
+                #is_ignored,
+                #should_panic,
+                test_r::core::TestType::from_path(file!()),
+                None,
+                #flakiness_control,
+                #capture_control,
+                #tags,
+                #report_time_control,
+                #ensure_time_control,
+                test_r::core::TestFunction::Sync(std::sync::Arc::new(|__test_r_deps_arg| Box::new(#test_name(#(#dep_getters),*))))
+            );
+        }
+    };
 
-            #ast
-        };
-        result.into()
+    filter_custom_parameter_attributes(ast);
+    let result = quote! {
+        #[cfg(test)]
+        #[test_r::ctor::ctor(crate_path=::test_r::ctor)]
+        fn #register_ident() {
+             #register_call
+        }
+
+        #ast
+    };
+
+    result.into()
+}
+
+fn matrix_test_impl(
+    ast: &mut ItemFn,
+    details: TestDetails,
+    dep_dimensions: Vec<(usize, Ident)>,
+) -> TokenStream {
+    // Dependency matrix, generating a test generator
+
+    let TestDetails {
+        test_name,
+        test_name_str,
+        is_bench,
+        is_async,
+        is_ignored,
+        should_panic,
+        timeout,
+        has_timeout,
+        flakiness_control,
+        capture_control,
+        report_time_control,
+        ensure_time_control,
+        tags,
+        dep_getters,
+    } = details;
+
+    if is_bench {
+        panic!("Matrix dependencies are not supported for benchmarks yet");
     }
+
+    let test_name_impl = Ident::new(&format!("{}_impl", test_name), Span::call_site());
+    ast.sig.ident = test_name_impl.clone();
+
+    let mut overridden_dep_getters = dep_getters.clone();
+    let mut clones = Vec::new();
+
+    for (idx, _dim) in &dep_dimensions {
+        let dep_var = Ident::new(&format!("dep_{}", idx), Span::call_site());
+        overridden_dep_getters[*idx] = quote! { &#dep_var(__test_r_deps_arg.clone()) };
+        clones.push(quote! {
+            let #dep_var = #dep_var.clone();
+        });
+    }
+
+    let test_props = {
+        let mut props = Vec::new();
+
+        props.push(quote! { should_panic: #should_panic });
+        if has_timeout {
+            props.push(quote! { timeout: #timeout });
+        } else {
+            props.push(quote! { timeout: None });
+        }
+        props.push(quote! { flakiness_control: #flakiness_control });
+        props.push(quote! { capture_control: #capture_control });
+        props.push(quote! { report_time_control: #report_time_control });
+        props.push(quote! { ensure_time_control: #ensure_time_control });
+        props.push(quote! { tags: #tags });
+        props.push(quote! { is_ignored: #is_ignored });
+
+        props
+    };
+
+    let mut loops = if is_async {
+        quote! {
+            let mut tags_as_string = String::new();
+            for name in &name_stack {
+                tags_as_string.push_str("_");
+                tags_as_string.push_str(name);
+            }
+            #(#clones)*
+            r.add_async_test(
+                format!("{}{}", #test_name_str, tags_as_string),
+                test_r::core::TestProperties {
+                    test_type: test_r::core::TestType::from_path(file!()),
+                    #(#test_props),*
+                },
+                move |__test_r_deps_arg| {
+                    #(#clones)*
+                    Box::pin(async move {
+                        #test_name_impl(#(#overridden_dep_getters),*).await
+                    })
+                },
+            );
+        }
+    } else {
+        quote! {
+            let mut tags_as_string = String::new();
+            for name in &name_stack {
+                tags_as_string.push_str("_");
+                tags_as_string.push_str(name);
+            }
+            #(#clones)*
+            r.add_sync_test(
+                format!("{}{}", #test_name_str, tags_as_string),
+                test_r::core::TestProperties {
+                    test_type: test_r::core::TestType::from_path(file!()),
+                    #(#test_props),*
+                },
+                move |__test_r_deps_arg| {
+                    #test_name_impl(#(#overridden_dep_getters),*)
+                },
+            );
+        }
+    };
+
+    for (idx, dim) in dep_dimensions {
+        let dep_name_var = Ident::new(&format!("tag_{}", idx), Span::call_site());
+        let dep_var = Ident::new(&format!("dep_{}", idx), Span::call_site());
+        let get_dep_tags_fn =
+            Ident::new(&format!("test_r_get_dep_tags_{}", dim), Span::call_site());
+        loops = quote! {
+            for (#dep_name_var, #dep_var) in #get_dep_tags_fn() {
+                name_stack.push(#dep_name_var);
+                #loops
+                name_stack.pop();
+            }
+        };
+    }
+
+    filter_custom_parameter_attributes(ast);
+    let result = quote! {
+        #[test_r::test_gen]
+        fn #test_name(r: &mut test_r::core::DynamicTestRegistration) {
+            let mut name_stack = Vec::new();
+            #loops
+        }
+
+        #ast
+    };
+    result.into()
 }
 
 fn from_three_state_attrs(
@@ -308,8 +426,14 @@ fn from_three_state_attrs(
     off_name: &str,
     off_value: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
-    let on_attr = ast.attrs.iter().find(|attr| attr.path().is_ident(on_name));
-    let off_attr = ast.attrs.iter().find(|attr| attr.path().is_ident(off_name));
+    let on_attr = ast
+        .attrs
+        .iter()
+        .find(|attr| is_testr_attribute(attr, on_name));
+    let off_attr = ast
+        .attrs
+        .iter()
+        .find(|attr| is_testr_attribute(attr, off_name));
     match (on_attr, off_attr) {
         (None, None) => default,
         (Some(_), Some(_)) => {
@@ -356,7 +480,7 @@ fn filter_custom_parameter_attributes(ast: &mut ItemFn) {
     ast.sig.inputs.iter_mut().for_each(|param| {
         if let FnArg::Typed(typed) = param {
             typed.attrs.retain(|attr| {
-                !attr.path().is_ident("tagged_as") && !attr.path().is_ident("dimension")
+                !is_testr_attribute(attr, "tagged_as") && !is_testr_attribute(attr, "dimension")
             });
         }
     });

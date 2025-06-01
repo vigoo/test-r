@@ -1,5 +1,6 @@
 mod deps;
 mod dynamic;
+mod helpers;
 mod suite;
 mod test;
 

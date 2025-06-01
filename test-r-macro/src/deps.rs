@@ -1,3 +1,4 @@
+use crate::helpers::is_testr_attribute;
 use darling::ast::NestedMeta;
 use darling::{Error, FromMeta};
 use proc_macro::TokenStream;
@@ -403,7 +404,7 @@ impl Parse for InheritTestDep {
 fn get_lit_str_attr(attrs: &[Attribute], ident: &str) -> Option<String> {
     attrs
         .iter()
-        .find(|attr| attr.path().is_ident(ident))
+        .find(|attr| is_testr_attribute(attr, ident))
         .map(|attr| {
             let tag = attr
                 .parse_args::<LitStr>()
@@ -415,7 +416,7 @@ fn get_lit_str_attr(attrs: &[Attribute], ident: &str) -> Option<String> {
 fn get_ident_attr(attrs: &[Attribute], ident: &str) -> Option<Ident> {
     attrs
         .iter()
-        .find(|attr| attr.path().is_ident(ident))
+        .find(|attr| is_testr_attribute(attr, ident))
         .map(|attr| {
             attr.parse_args::<Ident>()
                 .unwrap_or_else(|_| panic!("{ident} attribute's parameter must be an identifier"))
