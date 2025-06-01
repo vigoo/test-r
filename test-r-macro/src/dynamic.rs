@@ -1,4 +1,5 @@
 use crate::deps::get_dependency_params_for_closure;
+use crate::helpers::is_testr_attribute;
 use proc_macro::TokenStream;
 use proc_macro2::Ident;
 use quote::{ToTokens, quote};
@@ -10,7 +11,10 @@ pub fn test_gen(item: TokenStream) -> TokenStream {
     let generator_name = ast.sig.ident.clone();
     let generator_name_str = generator_name.to_string();
 
-    let is_ignored = ast.attrs.iter().any(|attr| attr.path().is_ident("ignore"));
+    let is_ignored = ast
+        .attrs
+        .iter()
+        .any(|attr| is_testr_attribute(attr, "ignore"));
 
     let register_ident = Ident::new(
         &format!("test_r_register_generator_{}", generator_name_str),

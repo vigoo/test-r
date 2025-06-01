@@ -183,6 +183,30 @@ pub mod flakiness {
     }
 
     #[test]
+    #[test_r::flaky(10)]
+    #[tag(a)]
+    #[tag(b)]
+    fn flaky_test_ex1() {
+        println!("Print from flaky test");
+        let mut rng = rand::rng();
+        let result = 2 + rng.random_range(1..3);
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(result, 4);
+    }
+
+    #[test]
+    #[::test_r::flaky(10)]
+    #[tag(a)]
+    #[tag(b)]
+    fn flaky_test_ex2() {
+        println!("Print from flaky test");
+        let mut rng = rand::rng();
+        let result = 2 + rng.random_range(1..3);
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(result, 4);
+    }
+
+    #[test]
     #[non_flaky(10)]
     #[tag(a)]
     fn non_flaky_test() {
@@ -536,6 +560,7 @@ mod generated {
                     report_time_control: ReportTimeControl::Enabled,
                     ensure_time_control: ReportTimeControl::Disabled,
                     tags: vec!["example".to_string()],
+                    is_ignored: false,
                 },
                 move |_| {
                     Box::pin(async move {
@@ -564,6 +589,7 @@ mod generated {
                     report_time_control: ReportTimeControl::Enabled,
                     ensure_time_control: ReportTimeControl::Disabled,
                     tags: vec!["example".to_string()],
+                    is_ignored: false,
                 },
                 move || async {
                     println!("Running test {}", i);

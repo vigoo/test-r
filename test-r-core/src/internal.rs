@@ -145,6 +145,7 @@ pub struct TestProperties {
     pub report_time_control: ReportTimeControl,
     pub ensure_time_control: ReportTimeControl,
     pub tags: Vec<String>,
+    pub is_ignored: bool,
 }
 
 impl TestProperties {
@@ -174,6 +175,7 @@ impl Default for TestProperties {
             report_time_control: ReportTimeControl::Default,
             ensure_time_control: ReportTimeControl::Default,
             tags: Vec::new(),
+            is_ignored: false,
         }
     }
 }
@@ -183,7 +185,6 @@ pub struct RegisteredTest {
     pub name: String,
     pub crate_name: String,
     pub module_path: String,
-    pub is_ignored: bool,
     pub run: TestFunction,
     pub props: TestProperties,
 }
@@ -545,13 +546,15 @@ fn add_generated_tests(
     generator: &RegisteredTestGenerator,
     generated: Vec<GeneratedTest>,
 ) {
-    target.extend(generated.into_iter().map(|test| RegisteredTest {
-        name: format!("{}::{}", generator.name, test.name),
-        crate_name: generator.crate_name.clone(),
-        module_path: generator.module_path.clone(),
-        is_ignored: generator.is_ignored,
-        run: test.run,
-        props: test.props,
+    target.extend(generated.into_iter().map(|mut test| {
+        test.props.is_ignored |= generator.is_ignored;
+        RegisteredTest {
+            name: format!("{}::{}", generator.name, test.name),
+            crate_name: generator.crate_name.clone(),
+            module_path: generator.module_path.clone(),
+            run: test.run,
+            props: test.props,
+        }
     }));
 }
 

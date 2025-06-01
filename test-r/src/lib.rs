@@ -57,7 +57,6 @@ pub mod core {
                 name: name.to_string(),
                 crate_name,
                 module_path,
-                is_ignored,
                 run,
                 props: internal::TestProperties {
                     should_panic,
@@ -68,6 +67,7 @@ pub mod core {
                     report_time_control,
                     ensure_time_control,
                     tags,
+                    is_ignored,
                 },
             });
     }

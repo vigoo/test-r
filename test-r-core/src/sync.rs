@@ -140,7 +140,7 @@ fn test_thread(
 
                 output.start_running_test(&next.test, next.index, count);
 
-                let result = if next.test.is_ignored && !args.include_ignored {
+                let result = if next.test.props.is_ignored && !args.include_ignored {
                     TestResult::Ignored {
                         captured: Vec::new(),
                     }
