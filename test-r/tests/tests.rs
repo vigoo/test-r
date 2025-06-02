@@ -68,6 +68,8 @@ fn timeout_works() {
     let _process = std::process::Command::new("cargo")
         .arg("test")
         .arg("inner::tests::sleeping_test_3_timeout")
+        .arg("--")
+        .arg("--exact")
         .current_dir(root)
         .status()
         .unwrap();
