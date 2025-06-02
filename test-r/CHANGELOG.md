@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0](https://github.com/vigoo/test-r/compare/test-r-v2.1.0...test-r-v2.2.0) - 2025-06-02
+
+### Added
+
+- Support for human-readable duration strings in #[timeout] ([#116](https://github.com/vigoo/test-r/pull/116))
+
+### Other
+
+- More robust test modifiers ([#114](https://github.com/vigoo/test-r/pull/114))
+- Updated dependencies ([#110](https://github.com/vigoo/test-r/pull/110))
+- Rust Edition 2024 ([#98](https://github.com/vigoo/test-r/pull/98))
+- Splitted the macro code into submodules ([#112](https://github.com/vigoo/test-r/pull/112))
+
 ## [2.1.0](https://github.com/vigoo/test-r/compare/test-r-v2.0.1...test-r-v2.1.0) - 2025-01-30
 
 ### Added
