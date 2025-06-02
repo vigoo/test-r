@@ -15,6 +15,7 @@ proc-macro = true
 test-r-core = { version = "2.1.0", path = "../test-r-core" }
 
 darling = "0.20.11"
+humantime = "2.2.0"
 proc-macro2 = "1"
 quote = "1"
 rand = "0.9"

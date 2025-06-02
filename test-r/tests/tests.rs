@@ -30,6 +30,8 @@ fn can_run_async_examples() {
         .arg("--skip")
         .arg("inner::tests::sleeping_test_3_timeout")
         .arg("--skip")
+        .arg("inner::tests::sleeping_test_3_timeout_hr")
+        .arg("--skip")
         .arg("tests::it_does_work")
         .arg("--skip")
         .arg("tests::panic_test_2b")
@@ -66,6 +68,8 @@ fn timeout_works() {
     let _process = std::process::Command::new("cargo")
         .arg("test")
         .arg("inner::tests::sleeping_test_3_timeout")
+        .arg("--")
+        .arg("--exact")
         .current_dir(root)
         .status()
         .unwrap();
