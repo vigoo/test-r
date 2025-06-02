@@ -56,6 +56,19 @@ async fn test1() {
 }
 ```
 
+Alternatively a human-readable duration string can used, to parsed by the `humantime` crate:
+
+```rust
+use test_r::{test, timeout};
+
+#[timeout("1s")]
+#[test]
+async fn test1() {
+    tokio::time::sleep(std::time::Duration::from_secs(2));
+    assert!(true);
+}
+```
+
 This feature only works when using the async test runner (enabled by the `tokio` feature).
 
 ## Reporting / ensuring time per test

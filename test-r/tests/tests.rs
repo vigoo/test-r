@@ -30,6 +30,8 @@ fn can_run_async_examples() {
         .arg("--skip")
         .arg("inner::tests::sleeping_test_3_timeout")
         .arg("--skip")
+        .arg("inner::tests::sleeping_test_3_timeout_hr")
+        .arg("--skip")
         .arg("tests::it_does_work")
         .arg("--skip")
         .arg("tests::panic_test_2b")

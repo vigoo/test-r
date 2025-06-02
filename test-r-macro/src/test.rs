@@ -35,17 +35,7 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
         .attrs
         .iter()
         .find(|attr| is_testr_attribute(attr, "timeout"));
-    let timeout = timeout_attr
-        .map(|attr| {
-            let timeout = attr
-                .parse_args::<syn::LitInt>()
-                .expect("timeout attribute's parameter must be an integer (timeout milliseconds)");
-            let timeout = timeout
-                .base10_parse::<u64>()
-                .expect("timeout attribute's parameter must be an integer (timeout milliseconds)");
-            quote! { Some(std::time::Duration::from_millis(#timeout)) }
-        })
-        .unwrap_or(quote! { None });
+    let timeout = timeout_attr_to_duration(timeout_attr);
     let has_timeout = timeout_attr.is_some();
 
     let flaky_attr = ast
@@ -144,6 +134,25 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
     } else {
         matrix_test_impl(&mut ast, details, dep_dimensions)
     }
+}
+
+fn timeout_attr_to_duration(timeout_attr: Option<&Attribute>) -> proc_macro2::TokenStream {
+    timeout_attr
+        .map(|attr| {
+            let timeout = if let Ok(timeout) = attr.parse_args::<syn::LitInt>() {
+                timeout
+                    .base10_parse::<u64>()
+                    .expect("timeout attribute's parameter must be an integer (timeout milliseconds) or a human-readable duration string")
+            } else if let Ok(timeout) = attr.parse_args::<LitStr>() {
+                let duration = timeout.value().parse::<humantime::Duration>()
+                    .expect("timeout attribute's parameter must be an integer (timeout milliseconds) or a human-readable duration string");
+                duration.as_millis() as u64
+            } else {
+                panic!("timeout attribute's parameter must be an integer (timeout milliseconds) or a human-readable duration string");
+            };
+            quote! { Some(std::time::Duration::from_millis(#timeout)) }
+        })
+        .unwrap_or(quote! { None })
 }
 
 struct TestDetails {
