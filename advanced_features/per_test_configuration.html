@@ -214,6 +214,18 @@ async fn test1() {
     assert!(true);
 }
 <span class="boring">}</span></code></pre></pre>
+<p>Alternatively a human-readable duration string can used, to parsed by the <code>humantime</code> crate:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{test, timeout};
+
+#[timeout("1s")]
+#[test]
+async fn test1() {
+    tokio::time::sleep(std::time::Duration::from_secs(2));
+    assert!(true);
+}
+<span class="boring">}</span></code></pre></pre>
 <p>This feature only works when using the async test runner (enabled by the <code>tokio</code> feature).</p>
 <h2 id="reporting--ensuring-time-per-test"><a class="header" href="#reporting--ensuring-time-per-test">Reporting / ensuring time per test</a></h2>
 <p>There are command line arguments to enable <em>reporting</em> test run times and <em>ensuring</em> that each test runs within a certain time limit.
