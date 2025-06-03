@@ -104,6 +104,8 @@ async fn async_test_runner() -> ExitCode {
             res.expect("Failed to join task");
         }
 
+        drop(execution);
+
         let results = results.lock().await;
         output.finished_suite(&all_tests, &results, start.elapsed());
         SuiteResult::exit_code(&results)
