@@ -79,6 +79,8 @@ pub fn test_runner() -> ExitCode {
             results.extend(handle.join().unwrap());
         }
 
+        drop(execution);
+
         output.finished_suite(&all_tests, &results, start.elapsed());
         SuiteResult::exit_code(&results)
     }
