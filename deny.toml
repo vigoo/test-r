@@ -33,7 +33,8 @@ deny = []
 
 skip = []
 skip-tree = [
-    "wasi"
+    "wasi",
+    "windows-sys"
 ]
 
 [sources]
