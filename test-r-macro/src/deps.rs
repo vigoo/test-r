@@ -72,10 +72,7 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    let getter_ident = Ident::new(
-        &format!("test_r_get_dep_{dep_name_str}"),
-        Span::call_site(),
-    );
+    let getter_ident = Ident::new(&format!("test_r_get_dep_{dep_name_str}"), Span::call_site());
 
     let getter_body = quote! {
         dependency_view
@@ -119,10 +116,7 @@ pub fn inherit_test_dep(item: TokenStream) -> TokenStream {
     };
 
     let dep_name_str = type_path_to_string(&dep_type, tag);
-    let getter_ident = Ident::new(
-        &format!("test_r_get_dep_{dep_name_str}"),
-        Span::call_site(),
-    );
+    let getter_ident = Ident::new(&format!("test_r_get_dep_{dep_name_str}"), Span::call_site());
 
     let result = quote! {
         fn #getter_ident<'a>(dependency_view: &'a impl test_r::core::DependencyView) -> std::sync::Arc<#dep_type> {
@@ -153,10 +147,7 @@ pub fn define_matrix_dimension(item: TokenStream) -> TokenStream {
     for tag in def.tags {
         let dep_tag = DependencyTag::Tagged(tag.value());
         let dep_name_str = type_path_to_string(typ_path, dep_tag);
-        let getter_ident = Ident::new(
-            &format!("test_r_get_dep_{dep_name_str}"),
-            Span::call_site(),
-        );
+        let getter_ident = Ident::new(&format!("test_r_get_dep_{dep_name_str}"), Span::call_site());
 
         let name = tag.value();
         pushes.push(quote! {
@@ -216,10 +207,8 @@ pub fn get_dependency_params(
             };
 
             let dep_name_str = type_path_to_string(&dep_type, tag);
-            let getter_ident = Ident::new(
-                &format!("test_r_get_dep_{dep_name_str}"),
-                Span::call_site(),
-            );
+            let getter_ident =
+                Ident::new(&format!("test_r_get_dep_{dep_name_str}"), Span::call_site());
 
             dep_getters.push(quote! {
                 &#getter_ident(&__test_r_deps_arg)
@@ -280,10 +269,7 @@ pub fn get_dependency_params_for_closure<'a>(
             }
         };
 
-        let getter_ident = Ident::new(
-            &format!("test_r_get_dep_{dep_name_str}"),
-            Span::call_site(),
-        );
+        let getter_ident = Ident::new(&format!("test_r_get_dep_{dep_name_str}"), Span::call_site());
 
         dep_getters.push(quote! {
             &#getter_ident(&__test_r_deps_arg)
