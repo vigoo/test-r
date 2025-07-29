@@ -39,7 +39,7 @@ pub trait TestRunnerOutput: Send + Sync {
     fn test_list(&self, registered_tests: &[RegisteredTest]);
 
     fn warning(&self, message: &str) {
-        eprintln!("{}", message);
+        eprintln!("{message}");
     }
 }
 
@@ -94,7 +94,7 @@ impl LogFile {
                 .extension()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            path.set_file_name(format!("{}-{}.{}", stem, uuid, extension));
+            path.set_file_name(format!("{stem}-{uuid}.{extension}"));
         }
 
         eprintln!("Logging to {}", path.to_string_lossy());

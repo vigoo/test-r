@@ -87,7 +87,7 @@ impl Pretty {
                 for line in result.captured_output() {
                     match line {
                         crate::internal::CapturedOutput::Stdout { line, .. } => {
-                            writeln!(out, "{}", line).unwrap();
+                            writeln!(out, "{line}").unwrap();
                         }
                         crate::internal::CapturedOutput::Stderr { line, .. } => {
                             writeln!(

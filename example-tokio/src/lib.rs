@@ -424,7 +424,7 @@ mod generated {
                 format!("test_{i}"),
                 TestProperties::unit_test(),
                 move |_| {
-                    println!("Running test {}", i);
+                    println!("Running test {i}");
                     let s = i.to_string();
                     let i2 = s.parse::<i32>().unwrap();
                     assert_eq!(i, i2);
@@ -442,7 +442,7 @@ mod generated {
                 TestProperties::unit_test(),
                 move |_| {
                     Box::pin(async move {
-                        println!("Running test {}", i);
+                        println!("Running test {i}");
                         let s = i.to_string();
                         let i2 = s.parse::<i32>().unwrap();
                         assert_eq!(i, i2);
@@ -581,7 +581,7 @@ mod generated {
                 },
                 move |_| {
                     Box::pin(async move {
-                        println!("Running test {}", i);
+                        println!("Running test {i}");
                         panic!("panic {i}");
                     })
                 },
@@ -609,7 +609,7 @@ mod generated {
                     is_ignored: false,
                 },
                 move || async {
-                    println!("Running test {}", i);
+                    println!("Running test {i}");
                     panic!("panic {i}");
                 },
             );

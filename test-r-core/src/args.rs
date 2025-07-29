@@ -119,6 +119,11 @@ pub struct Arguments {
     #[arg(value_name = "FILTER")]
     pub filter: Option<String>,
 
+    /// Marks the whole run (all the selected tests) as expected to be flaky, to
+    /// be retried on top level a given number of times if needed.
+    #[arg(long = "flaky-run", value_name = "COUNT")]
+    pub flaky_run: Option<usize>,
+
     /// Run the test suite in worker IPC mode - listening on the given local socket waiting
     /// for the test runner to connect and send test execution requests. The only stdout/stderr
     /// output will be the one emitted by the actual test runs so the test runner can capture them.
@@ -254,6 +259,11 @@ impl Arguments {
 
         if let Some(filter) = &self.filter {
             result.push(OsString::from(filter));
+        }
+
+        if let Some(flaky_run) = &self.flaky_run {
+            result.push(OsString::from("--flaky-run"));
+            result.push(OsString::from(flaky_run.to_string()));
         }
 
         if let Some(ipc) = &self.ipc {

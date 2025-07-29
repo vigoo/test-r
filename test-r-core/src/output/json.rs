@@ -111,7 +111,7 @@ impl TestRunnerOutput for Json {
             let mbps = if *mb_s == 0 {
                 String::new()
             } else {
-                format!(r#", "mib_per_second": {}"#, mb_s)
+                format!(r#", "mib_per_second": {mb_s}"#)
             };
 
             writeln!(
