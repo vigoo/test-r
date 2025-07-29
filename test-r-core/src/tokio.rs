@@ -58,57 +58,69 @@ async fn async_test_runner() -> ExitCode {
         output.test_list(&all_tests);
         ExitCode::SUCCESS
     } else {
-        let (mut execution, filtered_tests) = TestSuiteExecution::construct(
-            &args,
-            registered_dependency_constructors.as_slice(),
-            &all_tests,
-            registered_testsuite_props.as_slice(),
-        );
-        args.finalize_for_execution(&execution, output.clone());
-        if args.spawn_workers {
-            execution.skip_creating_dependencies();
+        let mut remaining_retries = args.flaky_run.unwrap_or(1);
+
+        let mut exit_code = ExitCode::from(101);
+        while remaining_retries > 0 {
+            let (mut execution, filtered_tests) = TestSuiteExecution::construct(
+                &args,
+                registered_dependency_constructors.as_slice(),
+                &all_tests,
+                registered_testsuite_props.as_slice(),
+            );
+            args.finalize_for_execution(&execution, output.clone());
+            if args.spawn_workers {
+                execution.skip_creating_dependencies();
+            }
+
+            // println!("Execution plan: {execution:?}");
+            // println!("Final args: {args:?}");
+            // println!("Has dependencies: {:?}", execution.has_dependencies());
+
+            let count = execution.remaining();
+            let results = Arc::new(Mutex::new(Vec::with_capacity(count)));
+
+            let start = Instant::now();
+            output.start_suite(&filtered_tests);
+
+            let execution = Arc::new(Mutex::new(execution));
+            let mut join_set = JoinSet::new();
+            let threads = args.test_threads().get();
+
+            for _ in 0..threads {
+                let execution_clone = execution.clone();
+                let output_clone = output.clone();
+                let args_clone = args.clone();
+                let results_clone = results.clone();
+                let handle = tokio::runtime::Handle::current();
+                join_set.spawn_blocking(move || {
+                    handle.block_on(test_thread(
+                        args_clone,
+                        execution_clone,
+                        output_clone,
+                        count,
+                        results_clone,
+                    ))
+                });
+            }
+
+            while let Some(res) = join_set.join_next().await {
+                res.expect("Failed to join task");
+            }
+
+            drop(execution);
+
+            let results = results.lock().await;
+            output.finished_suite(&all_tests, &results, start.elapsed());
+            exit_code = SuiteResult::exit_code(&results);
+
+            if exit_code == ExitCode::SUCCESS {
+                break;
+            } else {
+                remaining_retries -= 1;
+            }
         }
-
-        // println!("Execution plan: {execution:?}");
-        // println!("Final args: {args:?}");
-        // println!("Has dependencies: {:?}", execution.has_dependencies());
-
-        let count = execution.remaining();
-        let results = Arc::new(Mutex::new(Vec::with_capacity(count)));
-
-        let start = Instant::now();
-        output.start_suite(&filtered_tests);
-
-        let execution = Arc::new(Mutex::new(execution));
-        let mut join_set = JoinSet::new();
-        let threads = args.test_threads().get();
-
-        for _ in 0..threads {
-            let execution_clone = execution.clone();
-            let output_clone = output.clone();
-            let args_clone = args.clone();
-            let results_clone = results.clone();
-            let handle = tokio::runtime::Handle::current();
-            join_set.spawn_blocking(move || {
-                handle.block_on(test_thread(
-                    args_clone,
-                    execution_clone,
-                    output_clone,
-                    count,
-                    results_clone,
-                ))
-            });
-        }
-
-        while let Some(res) = join_set.join_next().await {
-            res.expect("Failed to join task");
-        }
-
-        drop(execution);
-
-        let results = results.lock().await;
-        output.finished_suite(&all_tests, &results, start.elapsed());
-        SuiteResult::exit_code(&results)
+        exit_code
     }
 }
 
