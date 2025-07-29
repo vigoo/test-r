@@ -17,7 +17,7 @@ pub fn test_gen(item: TokenStream) -> TokenStream {
         .any(|attr| is_testr_attribute(attr, "ignore"));
 
     let register_ident = Ident::new(
-        &format!("test_r_register_generator_{}", generator_name_str),
+        &format!("test_r_register_generator_{generator_name_str}"),
         generator_name.span(),
     );
 

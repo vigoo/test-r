@@ -191,7 +191,7 @@ fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
     } = details;
 
     let register_ident = Ident::new(
-        &format!("test_r_register_{}", test_name_str),
+        &format!("test_r_register_{test_name_str}"),
         test_name.span(),
     );
 
@@ -324,14 +324,14 @@ fn matrix_test_impl(
         panic!("Matrix dependencies are not supported for benchmarks yet");
     }
 
-    let test_name_impl = Ident::new(&format!("{}_impl", test_name), Span::call_site());
+    let test_name_impl = Ident::new(&format!("{test_name}_impl"), Span::call_site());
     ast.sig.ident = test_name_impl.clone();
 
     let mut overridden_dep_getters = dep_getters.clone();
     let mut clones = Vec::new();
 
     for (idx, _dim) in &dep_dimensions {
-        let dep_var = Ident::new(&format!("dep_{}", idx), Span::call_site());
+        let dep_var = Ident::new(&format!("dep_{idx}"), Span::call_site());
         overridden_dep_getters[*idx] = quote! { &#dep_var(__test_r_deps_arg.clone()) };
         clones.push(quote! {
             let #dep_var = #dep_var.clone();
@@ -401,10 +401,10 @@ fn matrix_test_impl(
     };
 
     for (idx, dim) in dep_dimensions {
-        let dep_name_var = Ident::new(&format!("tag_{}", idx), Span::call_site());
-        let dep_var = Ident::new(&format!("dep_{}", idx), Span::call_site());
+        let dep_name_var = Ident::new(&format!("tag_{idx}"), Span::call_site());
+        let dep_var = Ident::new(&format!("dep_{idx}"), Span::call_site());
         let get_dep_tags_fn =
-            Ident::new(&format!("test_r_get_dep_tags_{}", dim), Span::call_site());
+            Ident::new(&format!("test_r_get_dep_tags_{dim}"), Span::call_site());
         loops = quote! {
             for (#dep_name_var, #dep_var) in #get_dep_tags_fn() {
                 name_stack.push(#dep_name_var);

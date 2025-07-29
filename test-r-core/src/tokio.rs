@@ -366,8 +366,7 @@ async fn run_test(
                                 let elapsed = start.elapsed();
                                 if ensure_time.is_critical(&elapsed) {
                                     panic!(
-                                        "Test run time exceeds critical threshold: {:?}",
-                                        elapsed
+                                        "Test run time exceeds critical threshold: {elapsed:?}"
                                     );
                                 }
                             }

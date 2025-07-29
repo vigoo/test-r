@@ -42,7 +42,7 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let dep_name_str = type_path_to_string(&dep_type, args.tagged_as.into());
     let register_ident = Ident::new(
-        &format!("test_r_register_dep_{}", dep_name_str),
+        &format!("test_r_register_dep_{dep_name_str}"),
         Span::call_site(),
     );
 
@@ -73,7 +73,7 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let getter_ident = Ident::new(
-        &format!("test_r_get_dep_{}", dep_name_str),
+        &format!("test_r_get_dep_{dep_name_str}"),
         Span::call_site(),
     );
 
@@ -120,7 +120,7 @@ pub fn inherit_test_dep(item: TokenStream) -> TokenStream {
 
     let dep_name_str = type_path_to_string(&dep_type, tag);
     let getter_ident = Ident::new(
-        &format!("test_r_get_dep_{}", dep_name_str),
+        &format!("test_r_get_dep_{dep_name_str}"),
         Span::call_site(),
     );
 
@@ -154,7 +154,7 @@ pub fn define_matrix_dimension(item: TokenStream) -> TokenStream {
         let dep_tag = DependencyTag::Tagged(tag.value());
         let dep_name_str = type_path_to_string(typ_path, dep_tag);
         let getter_ident = Ident::new(
-            &format!("test_r_get_dep_{}", dep_name_str),
+            &format!("test_r_get_dep_{dep_name_str}"),
             Span::call_site(),
         );
 
@@ -217,7 +217,7 @@ pub fn get_dependency_params(
 
             let dep_name_str = type_path_to_string(&dep_type, tag);
             let getter_ident = Ident::new(
-                &format!("test_r_get_dep_{}", dep_name_str),
+                &format!("test_r_get_dep_{dep_name_str}"),
                 Span::call_site(),
             );
 
@@ -281,7 +281,7 @@ pub fn get_dependency_params_for_closure<'a>(
         };
 
         let getter_ident = Ident::new(
-            &format!("test_r_get_dep_{}", dep_name_str),
+            &format!("test_r_get_dep_{dep_name_str}"),
             Span::call_site(),
         );
 
@@ -427,7 +427,7 @@ fn type_to_string(typ: &Type, optional_tag: DependencyTag) -> String {
     match typ {
         Type::Array(array) => {
             let inner_type = type_to_string(&array.elem, optional_tag);
-            format!("array_{}", inner_type)
+            format!("array_{inner_type}")
         }
         Type::BareFn(_) => {
             panic!("Function pointers are not supported in dependency injection")
@@ -462,15 +462,15 @@ fn type_to_string(typ: &Type, optional_tag: DependencyTag) -> String {
         Type::Path(path) => type_path_to_string(path, optional_tag),
         Type::Ptr(inner) => {
             let inner_type = type_to_string(&inner.elem, optional_tag);
-            format!("ptr_{}", inner_type)
+            format!("ptr_{inner_type}")
         }
         Type::Reference(inner) => {
             let inner_type = type_to_string(&inner.elem, optional_tag);
-            format!("ref_{}", inner_type)
+            format!("ref_{inner_type}")
         }
         Type::Slice(inner) => {
             let inner_type = type_to_string(&inner.elem, optional_tag);
-            format!("slice_{}", inner_type)
+            format!("slice_{inner_type}")
         }
         Type::TraitObject(to) => {
             let mut result = "dyn".to_string();
@@ -502,7 +502,7 @@ fn type_to_string(typ: &Type, optional_tag: DependencyTag) -> String {
                 .chain(optional_tag.into_iter())
                 .collect::<Vec<_>>()
                 .join("_");
-            format!("tuple_{}", inner_types)
+            format!("tuple_{inner_types}")
         }
         _ => "".to_string(),
     }

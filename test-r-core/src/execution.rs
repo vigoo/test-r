@@ -547,7 +547,7 @@ impl Debug for TestSuiteExecution {
         for inner in &self.inner {
             let inner_str = format!("{inner:?}");
             for inner_line in inner_str.lines() {
-                writeln!(f, "  {}", inner_line)?;
+                writeln!(f, "  {inner_line}")?;
             }
         }
         Ok(())

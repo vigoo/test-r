@@ -57,7 +57,7 @@ pub fn tag_suite(input: TokenStream) -> TokenStream {
 
     let random = rand::random::<u64>();
     let register_ident = Ident::new(
-        &format!("test_r_register_mod_{}_tag_{}", mod_name_str, random),
+        &format!("test_r_register_mod_{mod_name_str}_tag_{random}"),
         Span::call_site(),
     );
 
@@ -123,7 +123,7 @@ pub fn sequential_suite(input: TokenStream) -> TokenStream {
     let mod_name_str = params[0].to_string();
 
     let register_ident = Ident::new(
-        &format!("test_r_register_mod_{}_sequential", mod_name_str),
+        &format!("test_r_register_mod_{mod_name_str}_sequential"),
         Span::call_site(),
     );
 

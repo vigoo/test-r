@@ -297,7 +297,7 @@ pub(crate) fn run_sync_test_function(
                         if let Some(ensure_time) = ensure_time {
                             let elapsed = start.elapsed();
                             if ensure_time.is_critical(&elapsed) {
-                                panic!("Test run time exceeds critical threshold: {:?}", elapsed);
+                                panic!("Test run time exceeds critical threshold: {elapsed:?}");
                             }
                         }
                     }))

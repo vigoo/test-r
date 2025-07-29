@@ -124,7 +124,7 @@ impl TerseOutputState {
     }
 
     pub fn print_inline(&mut self, out: &mut impl Write, str: &str) {
-        write!(out, "{}", str).unwrap();
+        write!(out, "{str}").unwrap();
         out.flush().unwrap();
         self.column += str.len();
     }
@@ -134,6 +134,6 @@ impl TerseOutputState {
             writeln!(out).unwrap();
         }
         self.column = 0;
-        writeln!(out, "{}", line).unwrap();
+        writeln!(out, "{line}").unwrap();
     }
 }
