@@ -35,7 +35,7 @@ jobs:
         - macos-latest
     steps:
     - name: Checkout Code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
     - name: Setup Rust Toolchain
       uses: actions-rust-lang/setup-rust-toolchain@v1
     - run: cargo test -p test-r --all-features
@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout Code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
     - name: Setup Rust Toolchain
       uses: actions-rust-lang/setup-rust-toolchain@v1
     - uses: taiki-e/install-action@v2
@@ -60,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout Code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
     - uses: peaceiris/actions-mdbook@v2
       with:
         mdbook-version: latest
