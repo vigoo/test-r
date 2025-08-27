@@ -77,7 +77,7 @@ impl TestReturnValue for () {
 
 impl<T, E: Display> TestReturnValue for Result<T, E> {
     fn as_result(&self) -> Result<(), String> {
-        self.as_ref().map(|_| ()).map_err(|e| e.to_string())
+        self.as_ref().map(|_| ()).map_err(|e| format!("{e:#}"))
     }
 }
 
