@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.2](https://github.com/vigoo/test-r/compare/test-r-v2.2.1...test-r-v2.2.2) - 2025-08-27
+
+### Other
+
+- Use :# format for converting the error to panic ([#124](https://github.com/vigoo/test-r/pull/124))
+
 ## [2.2.1](https://github.com/vigoo/test-r/compare/test-r-v2.2.0...test-r-v2.2.1) - 2025-07-29
 
 ### Other
