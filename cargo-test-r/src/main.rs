@@ -2,6 +2,7 @@ use anyhow::anyhow;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser};
 use glob_match::glob_match;
+use humansize::{format_size, BINARY};
 use nextest_metadata::{BinaryListSummary, RustTestBinaryKind, RustTestBinarySummary};
 use std::fs::File;
 use std::path::PathBuf;
@@ -186,7 +187,13 @@ fn reuse_nextest_archive(
         std::fs::create_dir_all(&target)?;
     }
 
-    println!("Extracting {} to {}", cmd.archive_file, target);
+    let archive_size = std::fs::metadata(&cmd.archive_file)?.len();
+    println!(
+        "Extracting {} to {} ({})",
+        cmd.archive_file,
+        target,
+        format_size(archive_size, BINARY)
+    );
     extract_tar_zstd(&cmd.archive_file, &target)?;
 
     Ok(ExitStatus::default())
