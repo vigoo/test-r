@@ -181,6 +181,11 @@ fn reuse_nextest_archive(
 ) -> anyhow::Result<ExitStatus> {
     let target = nextest_archive_target(workspace_root, &cmd.target_dir);
 
+    if !target.exists() {
+        println!("Creating target directory: {target}");
+        std::fs::create_dir_all(&target)?;
+    }
+
     println!("Extracting {} to {}", cmd.archive_file, target);
     extract_tar_zstd(&cmd.archive_file, &target)?;
 
