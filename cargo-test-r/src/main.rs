@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser};
 use glob_match::glob_match;
-use humansize::{format_size, BINARY};
+use humansize::{BINARY, format_size};
 use nextest_metadata::{BinaryListSummary, RustTestBinaryKind, RustTestBinarySummary};
 use std::fs::File;
 use std::path::PathBuf;
@@ -238,7 +238,9 @@ fn run(workspace_root: &Utf8Path, cmd: RunSubcommand) -> anyhow::Result<ExitStat
         println!("No nexttest archive was found, forwarding to cargo test");
         let cargo_path: PathBuf = std::env::var_os("CARGO").map_or("cargo".into(), PathBuf::from);
         let mut command = std::process::Command::new(cargo_path);
-        command.args(std::env::args());
+        let mut args = std::env::args_os().collect::<Vec<_>>();
+        args.remove(0);
+        command.args(&args);
         Ok(command.status()?)
     }
 }
