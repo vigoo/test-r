@@ -5,7 +5,6 @@ use glob_match::glob_match;
 use humansize::{BINARY, format_size};
 use nextest_metadata::{BinaryListSummary, RustTestBinaryKind, RustTestBinarySummary};
 use std::fs::File;
-use std::path::PathBuf;
 use std::process::ExitStatus;
 use tar::Archive;
 
@@ -236,12 +235,16 @@ fn run(workspace_root: &Utf8Path, cmd: RunSubcommand) -> anyhow::Result<ExitStat
         Ok(ExitStatus::default())
     } else {
         println!("No nexttest archive was found, forwarding to cargo test");
-        let cargo_path: PathBuf = std::env::var_os("CARGO").map_or("cargo".into(), PathBuf::from);
-        let mut command = std::process::Command::new(cargo_path);
-        let mut args = std::env::args_os().collect::<Vec<_>>();
-        args.remove(0);
+        let cargo_path: Utf8PathBuf = std::env::var("CARGO").map_or("cargo".into(), Utf8PathBuf::from);
+        let mut command = std::process::Command::new(cargo_path.clone());
+        let mut args = std::env::args().collect::<Vec<_>>();
+        args.remove(0); // process name
+        args.remove(0); // 'run' command
         args.insert(0, "test".into());
         command.args(&args);
+
+        println!("Executing {} {}", cargo_path, args.join(" "));
+
         Ok(command.status()?)
     }
 }
