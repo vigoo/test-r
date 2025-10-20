@@ -240,6 +240,7 @@ fn run(workspace_root: &Utf8Path, cmd: RunSubcommand) -> anyhow::Result<ExitStat
         let mut command = std::process::Command::new(cargo_path);
         let mut args = std::env::args_os().collect::<Vec<_>>();
         args.remove(0);
+        args.insert(0, "test".into());
         command.args(&args);
         Ok(command.status()?)
     }
