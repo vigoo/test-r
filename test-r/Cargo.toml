@@ -1,7 +1,7 @@
 [package]
 name = "test-r"
 version = "2.2.2"
-edition = "2021"
+edition = "2024"
 license = "Apache-2.0"
 description = "Test framework for Rust"
 homepage = "https://github.com/vigoo/test-r"

@@ -41,6 +41,7 @@ jobs:
     - run: cargo test -p test-r --all-features
     - run: cargo test -p test-r-example --no-run
     - run: cargo test -p test-r-example-tokio --no-run
+    - run: cargo test -p cargo-test-r
   checks:
     name: Checks
     runs-on: ubuntu-latest
