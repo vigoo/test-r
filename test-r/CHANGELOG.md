@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0](https://github.com/vigoo/test-r/compare/test-r-v2.2.2...test-r-v2.3.0) - 2025-10-21
+
+### Added
+
+- Support CTRF output ([#130](https://github.com/vigoo/test-r/pull/130))
+
 ## [2.2.2](https://github.com/vigoo/test-r/compare/test-r-v2.2.1...test-r-v2.2.2) - 2025-08-27
 
 ### Other
