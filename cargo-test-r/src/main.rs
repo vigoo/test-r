@@ -186,14 +186,23 @@ fn reuse_nextest_archive(
         std::fs::create_dir_all(&target)?;
     }
 
-    let archive_size = std::fs::metadata(&cmd.archive_file)?.len();
-    println!(
-        "Extracting {} to {} ({})",
-        cmd.archive_file,
-        target,
-        format_size(archive_size, BINARY)
-    );
-    extract_tar_zstd(&cmd.archive_file, &target)?;
+    if cmd.archive_file.is_file() {
+        let archive_size = std::fs::metadata(&cmd.archive_file)?.len();
+        println!(
+            "Extracting {} to {} ({})",
+            cmd.archive_file,
+            target,
+            format_size(archive_size, BINARY)
+        );
+        extract_tar_zstd(&cmd.archive_file, &target)?;
+    } else {
+        println!("Moving files from {} to {}", cmd.archive_file, target);
+        fs_extra::dir::move_dir(
+            &cmd.archive_file,
+            &target,
+            &fs_extra::dir::CopyOptions::new().overwrite(true).content_only(true)
+        )?;
+    }
 
     Ok(ExitStatus::default())
 }
@@ -235,7 +244,8 @@ fn run(workspace_root: &Utf8Path, cmd: RunSubcommand) -> anyhow::Result<ExitStat
         Ok(ExitStatus::default())
     } else {
         println!("No nexttest archive was found, forwarding to cargo test");
-        let cargo_path: Utf8PathBuf = std::env::var("CARGO").map_or("cargo".into(), Utf8PathBuf::from);
+        let cargo_path: Utf8PathBuf =
+            std::env::var("CARGO").map_or("cargo".into(), Utf8PathBuf::from);
         let mut command = std::process::Command::new(cargo_path.clone());
         let mut args = std::env::args().collect::<Vec<_>>();
         args.remove(0); // process name
