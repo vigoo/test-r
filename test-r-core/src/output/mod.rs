@@ -1,3 +1,4 @@
+mod ctrf;
 mod ipc;
 mod json;
 mod junit;
@@ -63,6 +64,7 @@ pub fn test_runner_output(args: &Arguments) -> Arc<dyn TestRunnerOutput> {
             FormatSetting::Terse => Arc::new(terse::Terse::new()),
             FormatSetting::Json => Arc::new(json::Json::new(args.show_output, logfile)),
             FormatSetting::Junit => Arc::new(junit::JUnit::new(args.show_output, logfile)),
+            FormatSetting::Ctrf => Arc::new(ctrf::Ctrf::new(args.show_output, logfile)),
         }
     }
 }
