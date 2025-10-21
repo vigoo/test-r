@@ -16,7 +16,7 @@ name = "tests"
 harness = false
 
 [dependencies]
-test-r = { version = "2.2.2", path = "../test-r" }
+test-r = { version = "2.3.1", path = "../test-r" }
 
 rand = "0.9"
 tokio = { version = "1", features = ["full"] }
