@@ -222,6 +222,7 @@ impl Arguments {
                 FormatSetting::Terse => result.push(OsString::from("terse")),
                 FormatSetting::Json => result.push(OsString::from("json")),
                 FormatSetting::Junit => result.push(OsString::from("junit")),
+                FormatSetting::Ctrf => result.push(OsString::from("ctrf")),
             }
         }
 
@@ -377,6 +378,9 @@ pub enum FormatSetting {
 
     /// Output a JUnit document
     Junit,
+
+    /// Output to Common Test Report Format
+    Ctrf,
 }
 
 /// Structure denoting time limits for test execution.
