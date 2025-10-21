@@ -1,6 +1,6 @@
 [package]
 name = "test-r"
-version = "2.3.0"
+version = "2.3.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Test framework for Rust"
@@ -9,8 +9,8 @@ repository = "https://github.com/vigoo/test-r"
 readme = "../README.md"
 
 [dependencies]
-test-r-core = { version = "5.0.0", path = "../test-r-core", default-features = false }
-test-r-macro = { version = "1.3.3", path = "../test-r-macro" }
+test-r-core = { version = "5.0.1", path = "../test-r-core", default-features = false }
+test-r-macro = { version = "1.3.4", path = "../test-r-macro" }
 
 ctor = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
