@@ -11,6 +11,7 @@ use crate::output::{test_runner_output, TestRunnerOutput};
 use bincode::{decode_from_slice, encode_to_vec};
 use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToNsName};
+use std::any::Any;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -220,13 +221,13 @@ fn pick_next(execution: &Arc<Mutex<TestSuiteExecution>>) -> Option<TestExecution
     execution.pick_next_sync()
 }
 
-fn run_with_flakiness_control<R>(
+fn run_with_flakiness_control(
     output: Arc<dyn TestRunnerOutput>,
     test_description: &RegisteredTest,
     idx: usize,
     count: usize,
-    test: impl Fn(Instant) -> Result<(), R>,
-) -> Result<(), R> {
+    test: impl Fn(Instant) -> Result<Result<(), String>, Box<dyn Any + Send>>,
+) -> Result<Result<(), String>, Box<dyn Any + Send>> {
     match &test_description.props.flakiness_control {
         FlakinessControl::None => {
             let start = Instant::now();
@@ -245,9 +246,13 @@ fn run_with_flakiness_control<R>(
                     );
                 }
                 let start = Instant::now();
-                test(start)?;
+                match test(start) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Ok(Err(e)),
+                    Err(e) => return Err(e),
+                };
             }
-            Ok(())
+            Ok(Ok(()))
         }
         FlakinessControl::RetryKnownFlaky(max_retries) => {
             let mut tries = 1;
@@ -290,16 +295,16 @@ pub(crate) fn run_sync_test_function(
                     let dependency_view = dependency_view.clone();
                     let test_fn = test_fn.clone();
                     catch_unwind(AssertUnwindSafe(move || {
-                        let result = test_fn(dependency_view).as_result();
-                        if let Err(failure) = result {
-                            panic!("{failure}");
-                        }
+                        test_fn(dependency_view).as_result()?;
                         if let Some(ensure_time) = ensure_time {
                             let elapsed = start.elapsed();
                             if ensure_time.is_critical(&elapsed) {
-                                panic!("Test run time exceeds critical threshold: {elapsed:?}");
+                                return Err(format!(
+                                    "Test run time exceeds critical threshold: {elapsed:?}"
+                                ));
                             }
-                        }
+                        };
+                        Ok(())
                     }))
                 });
             TestResult::from_result(

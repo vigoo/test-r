@@ -28,7 +28,7 @@ pub enum SerializableTestResult {
     },
     Failed {
         exec_time: Duration,
-        panic: String,
+        rendered_failure_cause: String,
     },
     Ignored,
 }
@@ -64,9 +64,13 @@ impl From<&TestResult> for SerializableTestResult {
                 ns_iter_summ: *ns_iter_summ,
                 mb_s: *mb_s,
             },
-            TestResult::Failed { exec_time, .. } => SerializableTestResult::Failed {
+            TestResult::Failed {
+                exec_time,
+                rendered_failure_cause,
+                ..
+            } => SerializableTestResult::Failed {
                 exec_time: *exec_time,
-                panic: result.failure_message().unwrap_or_default().to_string(),
+                rendered_failure_cause: rendered_failure_cause.clone(),
             },
             TestResult::Ignored { .. } => SerializableTestResult::Ignored,
         }
@@ -77,9 +81,10 @@ impl From<SerializableTestResult> for TestResult {
     fn from(result: SerializableTestResult) -> Self {
         match result {
             SerializableTestResult::Passed { exec_time } => TestResult::passed(exec_time),
-            SerializableTestResult::Failed { exec_time, panic } => {
-                TestResult::failed(exec_time, Box::new(panic))
-            }
+            SerializableTestResult::Failed {
+                exec_time,
+                rendered_failure_cause,
+            } => TestResult::failed(exec_time, rendered_failure_cause),
             SerializableTestResult::Ignored => TestResult::ignored(),
             SerializableTestResult::Benchmarked {
                 exec_time,

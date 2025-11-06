@@ -3,7 +3,7 @@ use crate::bench::Bencher;
 use crate::stats::Summary;
 use std::any::Any;
 use std::cmp::{max, Ordering};
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::hash::Hash;
 use std::pin::Pin;
@@ -75,9 +75,9 @@ impl TestReturnValue for () {
     }
 }
 
-impl<T, E: Display> TestReturnValue for Result<T, E> {
+impl<T, E: Debug> TestReturnValue for Result<T, E> {
     fn as_result(&self) -> Result<(), String> {
-        self.as_ref().map(|_| ()).map_err(|e| format!("{e:#}"))
+        self.as_ref().map(|_| ()).map_err(|e| format!("{e:?}"))
     }
 }
 
@@ -608,7 +608,8 @@ pub(crate) fn get_ensure_time(args: &Arguments, test: &RegisteredTest) -> Option
     }
 }
 
-pub enum TestResult<Panic = Box<dyn Any + Send>> {
+#[derive(Clone)]
+pub enum TestResult {
     Passed {
         captured: Vec<CapturedOutput>,
         exec_time: Duration,
@@ -620,7 +621,7 @@ pub enum TestResult<Panic = Box<dyn Any + Send>> {
         mb_s: usize,
     },
     Failed {
-        panic: Panic,
+        rendered_failure_cause: String,
         captured: Vec<CapturedOutput>,
         exec_time: Duration,
     },
@@ -629,7 +630,7 @@ pub enum TestResult<Panic = Box<dyn Any + Send>> {
     },
 }
 
-impl<Panic> TestResult<Panic> {
+impl TestResult {
     pub fn passed(exec_time: Duration) -> Self {
         TestResult::Passed {
             captured: Vec::new(),
@@ -646,9 +647,9 @@ impl<Panic> TestResult<Panic> {
         }
     }
 
-    pub fn failed(exec_time: Duration, panic: Panic) -> Self {
+    pub fn failed(exec_time: Duration, rendered_failure_cause: String) -> Self {
         TestResult::Failed {
-            panic,
+            rendered_failure_cause,
             captured: Vec::new(),
             exec_time,
         }
@@ -711,72 +712,22 @@ impl<Panic> TestResult<Panic> {
             } => *captured_ref = captured,
         }
     }
-}
-
-impl TestResult<Box<dyn Any + Send>> {
-    #[allow(clippy::should_implement_trait)]
-    pub fn clone(&self) -> TestResult<String> {
-        match self {
-            TestResult::Passed {
-                captured,
-                exec_time,
-            } => TestResult::Passed {
-                captured: captured.clone(),
-                exec_time: *exec_time,
-            },
-            TestResult::Benchmarked {
-                captured,
-                exec_time,
-                ns_iter_summ,
-                mb_s,
-            } => TestResult::Benchmarked {
-                captured: captured.clone(),
-                exec_time: *exec_time,
-                ns_iter_summ: *ns_iter_summ,
-                mb_s: *mb_s,
-            },
-            TestResult::Failed {
-                captured,
-                exec_time,
-                ..
-            } => {
-                let failure_message = self.failure_message().unwrap_or("").to_string();
-                TestResult::Failed {
-                    panic: failure_message,
-                    captured: captured.clone(),
-                    exec_time: *exec_time,
-                }
-            }
-            TestResult::Ignored { captured } => TestResult::Ignored {
-                captured: captured.clone(),
-            },
-        }
-    }
-
-    pub(crate) fn failure_message(&self) -> Option<&str> {
-        match self {
-            TestResult::Failed { panic, .. } => panic
-                .downcast_ref::<String>()
-                .map(|s| s.as_str())
-                .or(panic.downcast_ref::<&str>().copied()),
-            _ => None,
-        }
-    }
 
     pub(crate) fn from_result<A>(
         should_panic: &ShouldPanic,
         elapsed: Duration,
-        result: Result<A, Box<dyn Any + Send>>,
+        result: Result<Result<A, String>, Box<dyn Any + Send>>,
     ) -> Self {
         match result {
-            Ok(_) => {
+            Ok(Ok(_)) => {
                 if should_panic == &ShouldPanic::No {
                     TestResult::passed(elapsed)
                 } else {
-                    TestResult::failed(elapsed, Box::new("Test did not panic as expected"))
+                    TestResult::failed(elapsed, "Test did not panic as expected".to_string())
                 }
             }
-            Err(panic) => Self::from_panic(should_panic, elapsed, panic),
+            Ok(Err(error_message)) => TestResult::failed(elapsed, error_message),
+            Err(panic) => TestResult::from_panic(should_panic, elapsed, panic),
         }
     }
 
@@ -801,32 +752,33 @@ impl TestResult<Box<dyn Any + Send>> {
         elapsed: Duration,
         panic: Box<dyn Any + Send>,
     ) -> Self {
-        match should_panic {
-            ShouldPanic::WithMessage(expected) => {
-                let failure = TestResult::failed(elapsed, panic);
-                let message = failure.failure_message();
+        let panic_message = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or(panic.downcast_ref::<&str>().map(|s| s.to_string()));
 
-                match message {
-                    Some(message) if message.contains(expected) => TestResult::passed(elapsed),
-                    _ => TestResult::failed(
-                        elapsed,
-                        Box::new(format!(
-                            "Test panicked with unexpected message: {}",
-                            message.unwrap_or_default()
-                        )),
+        match should_panic {
+            ShouldPanic::WithMessage(expected) => match panic_message {
+                Some(message) if message.contains(expected) => TestResult::passed(elapsed),
+                _ => TestResult::failed(
+                    elapsed,
+                    format!(
+                        "Test panicked with unexpected message: {}",
+                        panic_message.unwrap_or_default()
                     ),
-                }
-            }
+                ),
+            },
             ShouldPanic::Yes => TestResult::passed(elapsed),
-            ShouldPanic::No => TestResult::failed(elapsed, panic),
+            ShouldPanic::No => TestResult::failed(elapsed, panic_message.unwrap_or_default()),
         }
     }
-}
 
-impl TestResult<String> {
     pub(crate) fn failure_message(&self) -> Option<&str> {
         match self {
-            TestResult::Failed { panic, .. } => Some(panic),
+            TestResult::Failed {
+                rendered_failure_cause,
+                ..
+            } => Some(rendered_failure_cause),
             _ => None,
         }
     }
@@ -842,9 +794,9 @@ pub struct SuiteResult {
 }
 
 impl SuiteResult {
-    pub fn from_test_results<Panic>(
+    pub fn from_test_results(
         registered_tests: &[RegisteredTest],
-        results: &[(RegisteredTest, TestResult<Panic>)],
+        results: &[(RegisteredTest, TestResult)],
         exec_time: Duration,
     ) -> Self {
         let passed = results

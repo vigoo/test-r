@@ -13,6 +13,7 @@ use futures::FutureExt;
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::tokio::{Listener, Stream};
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions};
+use std::any::Any;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -246,15 +247,20 @@ async fn pick_next(execution: &Arc<Mutex<TestSuiteExecution>>) -> Option<TestExe
     execution.pick_next().await
 }
 
-async fn run_with_flakiness_control<F, R>(
+async fn run_with_flakiness_control<F>(
     output: Arc<dyn TestRunnerOutput>,
     test_description: &RegisteredTest,
     idx: usize,
     count: usize,
     test: F,
-) -> Result<(), R>
+) -> Result<Result<(), String>, Box<dyn Any + Send>>
 where
-    F: Fn(Instant) -> Pin<Box<dyn Future<Output = Result<(), R>>>> + Send + Sync,
+    F: Fn(
+            Instant,
+        )
+            -> Pin<Box<dyn Future<Output = Result<Result<(), String>, Box<dyn Any + Send>>>>>
+        + Send
+        + Sync,
 {
     match &test_description.props.flakiness_control {
         FlakinessControl::None => {
@@ -274,9 +280,13 @@ where
                     );
                 }
                 let start = Instant::now();
-                test(start).await?;
+                match test(start).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Ok(Err(e)),
+                    Err(e) => return Err(e),
+                };
             }
-            Ok(())
+            Ok(Ok(()))
         }
         FlakinessControl::RetryKnownFlaky(max_retries) => {
             let mut tries = 1;
@@ -335,7 +345,10 @@ async fn run_test(
                     )
                 });
                 handle.await.unwrap_or_else(|join_error| {
-                    TestResult::failed(start.elapsed(), Box::new(join_error))
+                    TestResult::failed(
+                        start.elapsed(),
+                        format!("Failed joining test task: {join_error}"),
+                    )
                 })
             }
             TestFunction::Async(test_fn) => {
@@ -346,7 +359,7 @@ async fn run_test(
                     let test_fn = test_fn.clone();
                     Box::pin(async move {
                         AssertUnwindSafe(Box::pin(async move {
-                            let result = match timeout {
+                            match timeout {
                                 None => test_fn(dependency_view).await,
                                 Some(duration) => {
                                     let result =
@@ -354,20 +367,20 @@ async fn run_test(
                                             .await;
                                     match result {
                                         Ok(result) => result,
-                                        Err(_) => panic!("Test timed out"),
+                                        Err(_) => return Err("Test timed out".to_string()),
                                     }
                                 }
-                            };
-                            match result.as_result() {
-                                Ok(_) => (),
-                                Err(message) => panic!("{message}"),
-                            };
+                            }
+                            .as_result()?;
                             if let Some(ensure_time) = ensure_time {
                                 let elapsed = start.elapsed();
                                 if ensure_time.is_critical(&elapsed) {
-                                    panic!("Test run time exceeds critical threshold: {elapsed:?}");
+                                    return Err(format!(
+                                        "Test run time exceeds critical threshold: {elapsed:?}"
+                                    ));
                                 }
                             }
+                            Ok(())
                         }))
                         .catch_unwind()
                         .await
@@ -389,7 +402,10 @@ async fn run_test(
                     )
                 });
                 handle.await.unwrap_or_else(|join_error| {
-                    TestResult::failed(start.elapsed(), Box::new(join_error))
+                    TestResult::failed(
+                        start.elapsed(),
+                        format!("Failed joining test task: {join_error}"),
+                    )
                 })
             }
             TestFunction::AsyncBench(bench_fn) => {

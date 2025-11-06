@@ -76,7 +76,7 @@ impl JUnit {
     fn write_junit_report(
         &self,
         registered_tests: &[RegisteredTest],
-        results: &[(RegisteredTest, TestResult<String>)],
+        results: &[(RegisteredTest, TestResult)],
         exec_time: Duration,
         is_final: bool,
     ) {
@@ -267,5 +267,5 @@ impl TestRunnerOutput for JUnit {
 struct IntermediateState {
     start: Instant,
     tests: Vec<RegisteredTest>,
-    results: Vec<(RegisteredTest, TestResult<String>)>,
+    results: Vec<(RegisteredTest, TestResult)>,
 }
