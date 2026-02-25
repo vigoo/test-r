@@ -43,6 +43,10 @@ mod cargo_tests {
             .arg("tests::panic_test_2b")
             .arg("--skip")
             .arg("tests::result_based_test_err")
+            .arg("--skip")
+            .arg("suite_timeout_tests::suite_timeout_exceeds")
+            .arg("--skip")
+            .arg("suite_timeout_macro_tests::suite_timeout_macro_exceeds")
             .current_dir(root)
             .status()
             .unwrap();
@@ -186,5 +190,81 @@ mod timing_tests {
         let elapsed = start.elapsed();
 
         assert!(elapsed < Duration::from_secs(15));
+    }
+
+    #[test]
+    #[serial]
+    fn suite_timeout_attribute_works() {
+        let cwd = std::env::current_dir().unwrap();
+        let root = cwd.parent().unwrap().join("example-tokio");
+
+        let start = Instant::now();
+        let process = std::process::Command::new("cargo")
+            .arg("test")
+            .arg("suite_timeout_tests::suite_timeout_exceeds")
+            .arg("--")
+            .arg("--exact")
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        // The test should fail due to timeout, and it should complete quickly (not wait 30s)
+        assert_ne!(process.code(), Some(0));
+        assert!(elapsed < Duration::from_secs(15));
+
+        // A short test in the same suite should pass
+        let process = std::process::Command::new("cargo")
+            .arg("test")
+            .arg("suite_timeout_tests::suite_timeout_short_test")
+            .arg("--")
+            .arg("--exact")
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        assert_eq!(process.code(), Some(0));
+
+        // A test with its own per-test timeout should use the per-test timeout (override)
+        let process = std::process::Command::new("cargo")
+            .arg("test")
+            .arg("suite_timeout_tests::suite_timeout_overridden")
+            .arg("--")
+            .arg("--exact")
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        assert_eq!(process.code(), Some(0));
+    }
+
+    #[test]
+    #[serial]
+    fn suite_timeout_macro_works() {
+        let cwd = std::env::current_dir().unwrap();
+        let root = cwd.parent().unwrap().join("example-tokio");
+
+        let start = Instant::now();
+        let process = std::process::Command::new("cargo")
+            .arg("test")
+            .arg("suite_timeout_macro_tests::suite_timeout_macro_exceeds")
+            .arg("--")
+            .arg("--exact")
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        assert_ne!(process.code(), Some(0));
+        assert!(elapsed < Duration::from_secs(15));
+
+        // A short test in the same suite should pass
+        let process = std::process::Command::new("cargo")
+            .arg("test")
+            .arg("suite_timeout_macro_tests::suite_timeout_macro_short_test")
+            .arg("--")
+            .arg("--exact")
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        assert_eq!(process.code(), Some(0));
     }
 }

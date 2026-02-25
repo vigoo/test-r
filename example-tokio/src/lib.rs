@@ -182,6 +182,55 @@ mod inner {
 }
 
 #[cfg(test)]
+#[test_r::timeout("3s")]
+mod suite_timeout_tests {
+    use test_r::test;
+
+    #[test]
+    async fn suite_timeout_short_test() {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let result = 2 + 2;
+        assert_eq!(result, 4);
+    }
+
+    #[test]
+    async fn suite_timeout_exceeds() {
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+        let result = 2 + 2;
+        assert_eq!(result, 4);
+    }
+
+    #[test]
+    #[test_r::timeout(60000)]
+    async fn suite_timeout_overridden() {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let result = 2 + 2;
+        assert_eq!(result, 4);
+    }
+}
+
+#[cfg(test)]
+mod suite_timeout_macro_tests {
+    use test_r::test;
+
+    #[test]
+    async fn suite_timeout_macro_short_test() {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let result = 2 + 2;
+        assert_eq!(result, 4);
+    }
+
+    #[test]
+    async fn suite_timeout_macro_exceeds() {
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+        let result = 2 + 2;
+        assert_eq!(result, 4);
+    }
+}
+
+test_r::timeout_suite!(suite_timeout_macro_tests, "3s");
+
+#[cfg(test)]
 pub mod flakiness {
     use rand::Rng;
     use std::time::Duration;

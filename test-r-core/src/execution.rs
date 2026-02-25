@@ -9,8 +9,8 @@ use topological_sort::TopologicalSort;
 
 use crate::args::Arguments;
 use crate::internal::{
-    apply_suite_tags, filter_registered_tests, DependencyConstructor, DependencyView,
-    RegisteredDependency, RegisteredTest, RegisteredTestSuiteProperty,
+    apply_suite_tags, apply_suite_timeouts, filter_registered_tests, DependencyConstructor,
+    DependencyView, RegisteredDependency, RegisteredTest, RegisteredTestSuiteProperty,
 };
 
 pub(crate) struct TestSuiteExecution {
@@ -36,7 +36,8 @@ impl TestSuiteExecution {
         props: &[RegisteredTestSuiteProperty],
     ) -> (Self, Vec<RegisteredTest>) {
         let tagged_tests = apply_suite_tags(tests, props);
-        let mut filtered_tests = filter_registered_tests(arguments, &tagged_tests);
+        let timed_tests = apply_suite_timeouts(&tagged_tests, props);
+        let mut filtered_tests = filter_registered_tests(arguments, &timed_tests);
         Self::shuffle(arguments, &mut filtered_tests);
         filtered_tests.reverse();
 

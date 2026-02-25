@@ -57,7 +57,7 @@ As explained above, test dependencies must be provided in **each test module**. 
 
 ```rust
 mod inner {
-    use test_r::{inher_test_dep, test};
+    use test_r::{inherit_test_dep, test};
     use super::SharedDependency;
     
     inherit_test_dep!(SharedDependency);
@@ -116,11 +116,11 @@ It is also possible to **inherit** tagged dependencies from an outer suite:
 
 ```rust
 mod inner {
-    use test_r::{inher_test_dep, test};
+    use test_r::{inherit_test_dep, test};
     use super::SharedDependency;
     
-    inherit_test_dep!(#[tagged_as("tag1") SharedDependency);
-    inherit_test_dep!(#[tagged_as("tag2") SharedDependency);
+    inherit_test_dep!(#[tagged_as("tag1")] SharedDependency);
+    inherit_test_dep!(#[tagged_as("tag2")] SharedDependency);
 }
 ```
 

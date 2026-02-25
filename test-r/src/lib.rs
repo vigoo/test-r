@@ -19,6 +19,7 @@ pub use test_r_macro::test;
 pub use test_r_macro::test_dep;
 pub use test_r_macro::test_gen;
 pub use test_r_macro::timeout;
+pub use test_r_macro::timeout_suite;
 pub use test_r_macro::uses_test_r as enable;
 
 #[cfg(feature = "tokio")]
@@ -107,6 +108,19 @@ pub mod core {
                 name: name.to_string(),
                 crate_name,
                 module_path,
+            },
+        );
+    }
+
+    pub fn register_suite_timeout(name: &str, module_path: &str, timeout: Duration) {
+        let (crate_name, module_path) = split_module_path(module_path);
+
+        internal::REGISTERED_TESTSUITE_PROPS.lock().unwrap().push(
+            internal::RegisteredTestSuiteProperty::Timeout {
+                name: name.to_string(),
+                crate_name,
+                module_path,
+                timeout,
             },
         );
     }

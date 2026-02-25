@@ -17,7 +17,7 @@ fn tagged_test() {
 
 ## Tagging entire test suites
 
-It is possible to tag an entire **test suite**. This can be done by using the `#[tags]` attribute on the module containing the tests, 
+It is possible to tag an entire **test suite**. This can be done by using the `#[tag]` attribute on the module containing the tests, 
 or alternatively using the `tag_suite!` macro:
 
 ```rust
@@ -27,7 +27,7 @@ mod inner1;
 
 tag_suite!(inner1, tag1);
 
-#[tags(tag2)]
+#[tag(tag2)]
 mod inner2 {
     // ...
 }
