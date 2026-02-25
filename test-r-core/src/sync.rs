@@ -8,7 +8,7 @@ use crate::internal::{
 };
 use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
 use crate::output::{test_runner_output, TestRunnerOutput};
-use bincode::{decode_from_slice, encode_to_vec};
+use desert_rust::{deserialize, serialize_to_byte_vec};
 use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToNsName};
 use std::any::Any;
@@ -129,9 +129,8 @@ fn test_thread(
                 connection
                     .read_exact(&mut command)
                     .expect("Failed to read IPC command");
-                let (command, _): (IpcCommand, usize) =
-                    decode_from_slice(&command, bincode::config::standard())
-                        .expect("Failed to decode IPC command");
+                let command: IpcCommand =
+                    deserialize(&command).expect("Failed to decode IPC command");
 
                 let IpcCommand::RunTest {
                     name,
@@ -194,8 +193,8 @@ fn test_thread(
                         finish_marker,
                     };
 
-                    let msg = encode_to_vec(&response, bincode::config::standard())
-                        .expect("Failed to encode IPC response");
+                    let msg =
+                        serialize_to_byte_vec(&response).expect("Failed to encode IPC response");
                     let message_size = (msg.len() as u16).to_le_bytes();
                     connection
                         .write_all(&message_size)
@@ -423,8 +422,7 @@ impl Worker {
 
         let dump_on_ipc_failure = self.dump_on_failure();
 
-        let msg =
-            encode_to_vec(&cmd, bincode::config::standard()).expect("Failed to encode IPC command");
+        let msg = serialize_to_byte_vec(&cmd).expect("Failed to encode IPC command");
         let message_size = (msg.len() as u16).to_le_bytes();
         dump_on_ipc_failure.run(self.connection.write_all(&message_size));
         dump_on_ipc_failure.run(self.connection.write_all(&msg));
@@ -433,8 +431,7 @@ impl Worker {
         dump_on_ipc_failure.run(self.connection.read_exact(&mut response_size));
         let mut response = vec![0; u16::from_le_bytes(response_size) as usize];
         dump_on_ipc_failure.run(self.connection.read_exact(&mut response));
-        let (response, _): (IpcResponse, usize) =
-            dump_on_ipc_failure.run(decode_from_slice(&response, bincode::config::standard()));
+        let response: IpcResponse = dump_on_ipc_failure.run(deserialize(&response));
 
         let IpcResponse::TestFinished {
             result,

@@ -1,6 +1,6 @@
 // Borrowed from https://github.com/rust-lang/rust/blob/master/library/test/src/stats.rs
 
-use bincode::{Decode, Encode};
+use desert_rust::BinaryCodec;
 use std::mem;
 
 fn local_sort(v: &mut [f64]) {
@@ -96,7 +96,7 @@ pub trait Stats {
 }
 
 /// Extracted collection of all the summary statistics of a sample set.
-#[derive(Debug, Clone, PartialEq, Copy, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Copy, BinaryCodec)]
 #[allow(missing_docs)]
 pub struct Summary {
     pub sum: f64,

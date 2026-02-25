@@ -1,13 +1,13 @@
 use crate::internal::{CapturedOutput, FailureCause, TestResult};
 use crate::stats::Summary;
-use bincode::{Decode, Encode};
+use desert_rust::BinaryCodec;
 use interprocess::local_socket::{
     GenericFilePath, GenericNamespaced, Name, NameType, ToFsName, ToNsName,
 };
 use std::time::Duration;
 
 /// Commands sent from the primary test runner to the spawned worker processes.
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, BinaryCodec)]
 pub enum IpcCommand {
     RunTest {
         name: String,
@@ -16,7 +16,7 @@ pub enum IpcCommand {
     },
 }
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, BinaryCodec)]
 pub enum SerializableTestResult {
     Passed {
         exec_time: Duration,
@@ -97,7 +97,7 @@ impl From<SerializableTestResult> for TestResult {
 }
 
 /// Responses sent from the spawned worker processes to the primary test runner.
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, BinaryCodec)]
 pub enum IpcResponse {
     TestFinished {
         result: SerializableTestResult,
