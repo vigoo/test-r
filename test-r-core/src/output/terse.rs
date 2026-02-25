@@ -55,10 +55,11 @@ impl TestRunnerOutput for Terse {
     fn finished_running_test(
         &self,
         test: &RegisteredTest,
-        _idx: usize,
-        _count: usize,
+        idx: usize,
+        count: usize,
         result: &TestResult,
     ) {
+        self.pretty.update_term_progress(idx + 1, count, result);
         let mut state = self.state.lock().unwrap();
         let mut out = self.pretty.lock();
         match result {
