@@ -55,6 +55,19 @@ async fn gen_async_tests(r: &mut DynamicTestRegistration) {
 }
 ```
 
+The closure parameters in `add_test!` support `#[tagged_as]` to reference tagged dependencies, just like regular test functions:
+
+```rust
+add_test!(
+    r,
+    format!("test_{i}"),
+    TestType::UnitTest,
+    move |dep1: &Dep1, #[tagged_as("secondary")] d2: &Dep2| {
+        println!("Using tagged dep: {}", d2.value);
+    }
+);
+```
+
 The generator functions are executed at the startup of the test runner, and all the generated tests are added to the test tree. The **name** of the generated tests must be unique. Each test is added to the **test suite** the generator function is defined in.
 
 <div class="warning">

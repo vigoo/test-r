@@ -568,6 +568,25 @@ mod generated {
         }
     }
 
+    struct Dep2Derived {
+        base_value: i32,
+        extra: i32,
+    }
+
+    #[test_dep]
+    fn create_dep2_derived(#[tagged_as("secondary")] dep2: &Dep2) -> Dep2Derived {
+        Dep2Derived {
+            base_value: dep2.value,
+            extra: 42,
+        }
+    }
+
+    #[test]
+    fn dep2_derived_uses_secondary(dep2_derived: &Dep2Derived) {
+        assert_eq!(dep2_derived.base_value, 20); // secondary dep2 has value 20
+        assert_eq!(dep2_derived.extra, 42);
+    }
+
     #[test_gen]
     fn generate_tests_3(r: &mut DynamicTestRegistration) {
         println!("Generating some tests with dependencies in a sync generator");
@@ -581,6 +600,24 @@ mod generated {
                     let s = i.to_string();
                     let i2 = s.parse::<i32>().unwrap();
                     assert_eq!(i, i2);
+                }
+            );
+        }
+    }
+
+    #[test_gen]
+    fn generate_tests_3_tagged(r: &mut DynamicTestRegistration) {
+        for i in 0..3 {
+            add_test!(
+                r,
+                format!("test_{i}"),
+                TestProperties::unit_test(),
+                move |dep1: &Dep1, #[tagged_as("secondary")] d2: &Dep2| {
+                    println!(
+                        "Running sync tagged test {} using deps {} {}",
+                        i, dep1.value, d2.value
+                    );
+                    assert_eq!(d2.value, 20);
                 }
             );
         }

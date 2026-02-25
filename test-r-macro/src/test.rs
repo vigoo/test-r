@@ -1,10 +1,10 @@
 use crate::deps::get_dependency_params;
-use crate::helpers::is_testr_attribute;
+use crate::helpers::{filter_custom_parameter_attributes, is_testr_attribute};
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{Attribute, FnArg, ItemFn, LitStr, Token};
+use syn::{Attribute, ItemFn, LitStr, Token};
 use test_r_core::internal::ShouldPanic;
 
 pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStream {
@@ -500,15 +500,4 @@ fn should_panic_message(attr: &Attribute) -> ShouldPanic {
         Some(message) => ShouldPanic::WithMessage(message.value()),
         None => ShouldPanic::Yes,
     }
-}
-
-/// Removes custom attributes from parameters that are only interpreted by the #[test] macro
-fn filter_custom_parameter_attributes(ast: &mut ItemFn) {
-    ast.sig.inputs.iter_mut().for_each(|param| {
-        if let FnArg::Typed(typed) = param {
-            typed.attrs.retain(|attr| {
-                !is_testr_attribute(attr, "tagged_as") && !is_testr_attribute(attr, "dimension")
-            });
-        }
-    });
 }

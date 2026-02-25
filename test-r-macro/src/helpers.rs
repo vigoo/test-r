@@ -1,3 +1,5 @@
+use syn::{FnArg, ItemFn};
+
 pub fn is_testr_attribute(attr: &syn::Attribute, name: &str) -> bool {
     let path = attr.path();
     if path.is_ident(name) {
@@ -19,4 +21,14 @@ pub fn is_testr_attribute(attr: &syn::Attribute, name: &str) -> bool {
     } else {
         false
     }
+}
+
+pub fn filter_custom_parameter_attributes(ast: &mut ItemFn) {
+    ast.sig.inputs.iter_mut().for_each(|param| {
+        if let FnArg::Typed(typed) = param {
+            typed.attrs.retain(|attr| {
+                !is_testr_attribute(attr, "tagged_as") && !is_testr_attribute(attr, "dimension")
+            });
+        }
+    });
 }
