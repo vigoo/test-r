@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/vigoo/test-r/compare/test-r-v2.3.1...test-r-v3.0.0) - 2026-02-25
+
+### Added
+
+- suite level timeout ([#140](https://github.com/vigoo/test-r/pull/140))
+- progress bar support ([#146](https://github.com/vigoo/test-r/pull/146))
+- tagged dependency support in test_dep inputs ([#145](https://github.com/vigoo/test-r/pull/145))
+
+### Fixed
+
+- stderr capturing in json output mode ([#143](https://github.com/vigoo/test-r/pull/143))
+- properly handle nested sequential suites ([#150](https://github.com/vigoo/test-r/pull/150))
+
+### Other
+
+- Adjust error formatting & hide internal panic traces ([#135](https://github.com/vigoo/test-r/pull/135))
+- migrated to desert-rust ([#142](https://github.com/vigoo/test-r/pull/142))
+
 ## [2.3.1](https://github.com/vigoo/test-r/compare/test-r-v2.3.0...test-r-v2.3.1) - 2025-10-21
 
 ### Fixed
