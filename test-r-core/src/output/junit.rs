@@ -158,8 +158,10 @@ impl JUnit {
                                                     .with_attribute(("type", "assert"));
 
                                                 if let Some(message) = result.failure_message() {
-                                                    failure = failure
-                                                        .with_attribute(("message", message));
+                                                    failure = failure.with_attribute((
+                                                        "message",
+                                                        message.as_str(),
+                                                    ));
                                                 }
 
                                                 failure.write_empty()?;

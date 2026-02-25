@@ -411,8 +411,8 @@ mod generated {
     use std::time::Duration;
     use test_r::core::internal::TestProperties;
     use test_r::core::{
-        CaptureControl, DynamicTestRegistration, FlakinessControl, ReportTimeControl, ShouldPanic,
-        TestType,
+        CaptureControl, DetachedPanicPolicy, DynamicTestRegistration, FlakinessControl,
+        ReportTimeControl, ShouldPanic, TestType,
     };
     use test_r::{add_test, define_matrix_dimension, test, test_dep, test_gen};
 
@@ -578,6 +578,7 @@ mod generated {
                     ensure_time_control: ReportTimeControl::Disabled,
                     tags: vec!["example".to_string()],
                     is_ignored: false,
+                    detached_panic_policy: DetachedPanicPolicy::FailTest,
                 },
                 move |_| {
                     Box::pin(async move {
@@ -607,6 +608,7 @@ mod generated {
                     ensure_time_control: ReportTimeControl::Disabled,
                     tags: vec!["example".to_string()],
                     is_ignored: false,
+                    detached_panic_policy: DetachedPanicPolicy::FailTest,
                 },
                 move || async {
                     println!("Running test {i}");

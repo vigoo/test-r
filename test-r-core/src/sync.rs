@@ -3,10 +3,10 @@ use crate::bench::Bencher;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
 use crate::internal::{
-    generate_tests_sync, get_ensure_time, CapturedOutput, FlakinessControl, RegisteredTest,
-    SuiteResult, TestFunction, TestResult,
+    generate_tests_sync, get_ensure_time, CapturedOutput, FailureCause, FlakinessControl,
+    RegisteredTest, SuiteResult, TestFunction, TestResult,
 };
-use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
+use crate::ipc::{ipc_name, IpcCommand, IpcResponse, INIT_MARKER};
 use crate::output::{test_runner_output, TestRunnerOutput};
 use bincode::{decode_from_slice, encode_to_vec};
 use interprocess::local_socket::prelude::*;
@@ -22,6 +22,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 pub fn test_runner() -> ExitCode {
+    crate::panic_hook::install_panic_hook();
     let mut args = Arguments::from_args();
     let output = test_runner_output(&args);
 
@@ -106,7 +107,20 @@ fn test_thread(
     count: usize,
 ) -> Vec<(RegisteredTest, TestResult)> {
     let mut worker = spawn_worker_if_needed(&args);
+    if let Some(ref w) = worker {
+        w.drain_init_output();
+    }
     let mut connection = if let Some(ref name) = args.ipc {
+        let init_marker_line = format!("{INIT_MARKER}\n");
+        std::io::stdout()
+            .write_all(init_marker_line.as_bytes())
+            .unwrap();
+        std::io::stderr()
+            .write_all(init_marker_line.as_bytes())
+            .unwrap();
+        std::io::stdout().flush().unwrap();
+        std::io::stderr().flush().unwrap();
+
         let name = ipc_name(name.clone());
         let stream = Stream::connect(name).expect("Failed to connect to IPC socket");
         Some(stream)
@@ -153,6 +167,18 @@ fn test_thread(
             if !skip {
                 expected_test = None;
 
+                let start_marker = if connection.is_some() {
+                    let marker = Uuid::new_v4().to_string();
+                    let marker_line = format!("{marker}\n");
+                    std::io::stdout().write_all(marker_line.as_bytes()).unwrap();
+                    std::io::stderr().write_all(marker_line.as_bytes()).unwrap();
+                    std::io::stdout().flush().unwrap();
+                    std::io::stderr().flush().unwrap();
+                    Some(marker)
+                } else {
+                    None
+                };
+
                 output.start_running_test(&next.test, next.index, count);
 
                 let result = if next.test.props.is_ignored && !args.include_ignored {
@@ -190,6 +216,7 @@ fn test_thread(
 
                     let response = IpcResponse::TestFinished {
                         result: (&result).into(),
+                        start_marker: start_marker.unwrap(),
                         finish_marker,
                     };
 
@@ -226,8 +253,8 @@ fn run_with_flakiness_control(
     test_description: &RegisteredTest,
     idx: usize,
     count: usize,
-    test: impl Fn(Instant) -> Result<Result<(), String>, Box<dyn Any + Send>>,
-) -> Result<Result<(), String>, Box<dyn Any + Send>> {
+    test: impl Fn(Instant) -> Result<Result<(), FailureCause>, Box<dyn Any + Send>>,
+) -> Result<Result<(), FailureCause>, Box<dyn Any + Send>> {
     match &test_description.props.flakiness_control {
         FlakinessControl::None => {
             let start = Instant::now();
@@ -294,39 +321,47 @@ pub(crate) fn run_sync_test_function(
                 run_with_flakiness_control(output, test_description, idx, count, move |start| {
                     let dependency_view = dependency_view.clone();
                     let test_fn = test_fn.clone();
+                    let test_id = crate::panic_hook::next_test_id();
+                    crate::panic_hook::set_current_test_id(test_id);
                     catch_unwind(AssertUnwindSafe(move || {
-                        test_fn(dependency_view).as_result()?;
+                        test_fn(dependency_view).into_result()?;
                         if let Some(ensure_time) = ensure_time {
                             let elapsed = start.elapsed();
                             if ensure_time.is_critical(&elapsed) {
-                                return Err(format!(
+                                return Err(FailureCause::HarnessError(format!(
                                     "Test run time exceeds critical threshold: {elapsed:?}"
-                                ));
+                                )));
                             }
                         };
                         Ok(())
                     }))
                 });
-            TestResult::from_result(
+            let test_result = TestResult::from_result(
                 &test_description.props.should_panic,
                 start.elapsed(),
                 result,
-            )
+            );
+            crate::panic_hook::clear_current_test_id();
+            test_result
         }
         TestFunction::SyncBench(bench_fn) => {
             let mut bencher = Bencher::new();
+            let test_id = crate::panic_hook::next_test_id();
+            crate::panic_hook::set_current_test_id(test_id);
             let result = catch_unwind(AssertUnwindSafe(|| {
                 bench_fn(&mut bencher, dependency_view);
                 bencher
                     .summary()
                     .expect("iter() was not called in bench function")
             }));
-            TestResult::from_summary(
+            let test_result = TestResult::from_summary(
                 &test_description.props.should_panic,
                 start.elapsed(),
                 result,
                 bencher.bytes,
-            )
+            );
+            crate::panic_hook::clear_current_test_id();
+            test_result
         }
         _ => {
             panic!("Async tests are not supported in sync mode, enable the 'tokio' feature")
@@ -346,6 +381,11 @@ struct Worker {
 }
 
 impl Worker {
+    pub fn drain_init_output(&self) {
+        Self::drain_until(self.out_lines.clone(), INIT_MARKER.to_string());
+        Self::drain_until(self.err_lines.clone(), INIT_MARKER.to_string());
+    }
+
     pub fn run_test(&mut self, nocapture: bool, test: &RegisteredTest) -> TestResult {
         let mut capture_enabled = self.capture_enabled.lock().unwrap();
         *capture_enabled = test.props.capture_control.requires_capturing(!nocapture);
@@ -375,10 +415,14 @@ impl Worker {
 
         let IpcResponse::TestFinished {
             result,
+            start_marker,
             finish_marker,
         } = response;
 
         if test.props.capture_control.requires_capturing(!nocapture) {
+            // Discard output from before the test started (e.g. dependency materialization)
+            Self::drain_until(self.out_lines.clone(), start_marker.clone());
+            Self::drain_until(self.err_lines.clone(), start_marker.clone());
             let out_lines: Vec<_> =
                 Self::drain_until(self.out_lines.clone(), finish_marker.clone());
             let err_lines: Vec<_> =

@@ -527,7 +527,7 @@ impl TestRunnerOutput for Pretty {
                     " - {} {}({}){}",
                     failed.0.fully_qualified_name(),
                     self.style_ignored.render(),
-                    failed.1.failure_message().unwrap_or("???"),
+                    failed.1.failure_message().as_deref().unwrap_or("???"),
                     self.style_ignored.render_reset(),
                 )
                 .unwrap();

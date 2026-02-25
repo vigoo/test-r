@@ -1,4 +1,4 @@
-use crate::internal::{CapturedOutput, TestResult};
+use crate::internal::{CapturedOutput, FailureCause, TestResult};
 use crate::stats::Summary;
 use bincode::{Decode, Encode};
 use interprocess::local_socket::{
@@ -65,12 +65,10 @@ impl From<&TestResult> for SerializableTestResult {
                 mb_s: *mb_s,
             },
             TestResult::Failed {
-                exec_time,
-                rendered_failure_cause,
-                ..
+                exec_time, cause, ..
             } => SerializableTestResult::Failed {
                 exec_time: *exec_time,
-                rendered_failure_cause: rendered_failure_cause.clone(),
+                rendered_failure_cause: cause.render(),
             },
             TestResult::Ignored { .. } => SerializableTestResult::Ignored,
         }
@@ -84,7 +82,10 @@ impl From<SerializableTestResult> for TestResult {
             SerializableTestResult::Failed {
                 exec_time,
                 rendered_failure_cause,
-            } => TestResult::failed(exec_time, rendered_failure_cause),
+            } => TestResult::failed(
+                exec_time,
+                FailureCause::HarnessError(rendered_failure_cause),
+            ),
             SerializableTestResult::Ignored => TestResult::ignored(),
             SerializableTestResult::Benchmarked {
                 exec_time,
@@ -100,9 +101,12 @@ impl From<SerializableTestResult> for TestResult {
 pub enum IpcResponse {
     TestFinished {
         result: SerializableTestResult,
+        start_marker: String,
         finish_marker: String,
     },
 }
+
+pub const INIT_MARKER: &str = "__TEST_R_INIT_COMPLETE__";
 
 pub fn ipc_name<'s>(name: String) -> Name<'s> {
     if GenericNamespaced::is_supported() {
