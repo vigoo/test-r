@@ -29,6 +29,9 @@ Rust workspace with three core crates and two examples:
 - test-r must be feature-complete **without** tokio (sync mode). The `tokio` feature flag adds async test support.
 - Every new feature should work in both sync and async modes when possible, with minimal code duplication.
 
+## Final Checks
+- After every final code change, run `cargo clippy --no-deps --all-targets -- -Dwarnings` and `cargo fmt --all` before finishing.
+
 ## Code Style
 - Rust 2024 edition (workspace), some crates still 2021. Resolver v3.
 - Use `cargo fmt` (rustfmt) formatting. Run `cargo clippy` with `-Dwarnings`.

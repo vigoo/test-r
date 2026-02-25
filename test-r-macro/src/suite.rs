@@ -201,17 +201,22 @@ pub fn timeout_suite(input: TokenStream) -> TokenStream {
 
     let timeout_millis = match &params[1] {
         Expr::Lit(lit) => match &lit.lit {
-            syn::Lit::Int(int) => int
-                .base10_parse::<u64>()
-                .expect("timeout must be an integer (milliseconds) or a human-readable duration string"),
+            syn::Lit::Int(int) => int.base10_parse::<u64>().expect(
+                "timeout must be an integer (milliseconds) or a human-readable duration string",
+            ),
             syn::Lit::Str(s) => {
-                let duration = s.value().parse::<humantime::Duration>()
-                    .expect("timeout must be an integer (milliseconds) or a human-readable duration string");
+                let duration = s.value().parse::<humantime::Duration>().expect(
+                    "timeout must be an integer (milliseconds) or a human-readable duration string",
+                );
                 duration.as_millis() as u64
             }
-            _ => panic!("timeout must be an integer (milliseconds) or a human-readable duration string"),
+            _ => panic!(
+                "timeout must be an integer (milliseconds) or a human-readable duration string"
+            ),
         },
-        _ => panic!("timeout must be an integer (milliseconds) or a human-readable duration string"),
+        _ => {
+            panic!("timeout must be an integer (milliseconds) or a human-readable duration string")
+        }
     };
 
     let random = rand::random::<u64>();
@@ -249,6 +254,8 @@ fn parse_timeout_millis(attr: TokenStream) -> u64 {
             .expect("timeout attribute's parameter must be an integer (timeout milliseconds) or a human-readable duration string");
         duration.as_millis() as u64
     } else {
-        panic!("timeout attribute's parameter must be an integer (timeout milliseconds) or a human-readable duration string");
+        panic!(
+            "timeout attribute's parameter must be an integer (timeout milliseconds) or a human-readable duration string"
+        );
     }
 }

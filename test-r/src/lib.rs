@@ -16,10 +16,10 @@ pub use test_r_macro::sequential_suite;
 pub use test_r_macro::tag;
 pub use test_r_macro::tag_suite;
 pub use test_r_macro::test;
-pub use test_r_macro::timeout_suite;
 pub use test_r_macro::test_dep;
 pub use test_r_macro::test_gen;
 pub use test_r_macro::timeout;
+pub use test_r_macro::timeout_suite;
 pub use test_r_macro::uses_test_r as enable;
 
 #[cfg(feature = "tokio")]
