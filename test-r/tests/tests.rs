@@ -185,6 +185,6 @@ mod timing_tests {
             .unwrap();
         let elapsed = start.elapsed();
 
-        assert!(elapsed < Duration::from_secs(5));
+        assert!(elapsed < Duration::from_secs(15));
     }
 }

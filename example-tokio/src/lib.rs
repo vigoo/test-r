@@ -153,7 +153,7 @@ mod inner {
                 .write(b"Start sleeping in sleeping test 3\n")
                 .await
                 .unwrap();
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
             let _ = tokio::io::stdout()
                 .write(b"Finished sleeping in sleeping test 3\n")
                 .await

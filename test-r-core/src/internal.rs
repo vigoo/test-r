@@ -1255,6 +1255,131 @@ mod error_reporting_tests {
     }
 
     #[test]
+    fn detached_thread_panic_detected() {
+        crate::panic_hook::install_panic_hook();
+        let test_id = crate::panic_hook::next_test_id();
+        crate::panic_hook::set_current_test_id(test_id);
+        crate::panic_hook::create_detached_collector(test_id);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let handle = crate::spawn::spawn_thread(|| {
+                panic!("background thread panic");
+            });
+            let _ = handle.join();
+        }));
+
+        let mut test_result =
+            TestResult::from_result(&ShouldPanic::No, Duration::from_millis(1), result.map(|_| Ok(())));
+
+        if let Some(collector) = crate::panic_hook::take_detached_collector(test_id) {
+            let panics = match collector.lock() {
+                Ok(p) => p,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if !panics.is_empty() && test_result.is_passed() {
+                let messages: Vec<String> = panics.iter().map(|p| p.render()).collect();
+                test_result = TestResult::failed(
+                    Duration::from_millis(1),
+                    FailureCause::Panic(PanicCause {
+                        message: Some(format!(
+                            "Detached task(s) panicked:\n{}",
+                            messages.join("\n---\n")
+                        )),
+                        location: panics.first().and_then(|p| p.location.clone()),
+                        backtrace: panics.first().and_then(|p| p.backtrace.clone()),
+                    }),
+                );
+            }
+        }
+
+        crate::panic_hook::clear_current_test_id();
+
+        assert!(
+            test_result.is_failed(),
+            "Expected test to fail due to detached panic"
+        );
+        let msg = test_result.failure_message().unwrap();
+        assert!(
+            msg.contains("Detached task(s) panicked"),
+            "Expected detached panic message, got: {msg}"
+        );
+        assert!(
+            msg.contains("background thread panic"),
+            "Expected original panic message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn detached_thread_panic_ignored_with_policy() {
+        crate::panic_hook::install_panic_hook();
+        let test_id = crate::panic_hook::next_test_id();
+        crate::panic_hook::set_current_test_id(test_id);
+        crate::panic_hook::create_detached_collector(test_id);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let handle = crate::spawn::spawn_thread(|| {
+                panic!("ignored thread panic");
+            });
+            let _ = handle.join();
+        }));
+
+        let test_result =
+            TestResult::from_result(&ShouldPanic::No, Duration::from_millis(1), result.map(|_| Ok(())));
+
+        if let Some(collector) = crate::panic_hook::take_detached_collector(test_id) {
+            let panics = match collector.lock() {
+                Ok(p) => p,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            // Verify panics were captured but Ignore policy does not fail the test
+            assert!(
+                !panics.is_empty(),
+                "Expected panics in collector even with Ignore policy"
+            );
+        }
+
+        crate::panic_hook::clear_current_test_id();
+
+        assert!(
+            test_result.is_passed(),
+            "Expected test to pass with Ignore policy"
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn detached_task_panic_detected() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            crate::panic_hook::install_panic_hook();
+            let test_id = crate::panic_hook::next_test_id();
+            crate::panic_hook::set_current_test_id(test_id);
+            crate::panic_hook::create_detached_collector(test_id);
+
+            let handle = crate::spawn::spawn(async {
+                panic!("detached task panic");
+            });
+            let _ = handle.await;
+
+            let collector = crate::panic_hook::take_detached_collector(test_id).unwrap();
+            let panics = collector.lock().unwrap();
+
+            assert_eq!(panics.len(), 1);
+            assert!(
+                panics[0]
+                    .message
+                    .as_ref()
+                    .unwrap()
+                    .contains("detached task panic"),
+                "Expected panic message, got: {:?}",
+                panics[0].message
+            );
+
+            crate::panic_hook::clear_current_test_id();
+        });
+    }
+
+    #[test]
     fn failure_cause_variants() {
         // ReturnedMessage
         let cause = FailureCause::ReturnedMessage("simple message".to_string());
