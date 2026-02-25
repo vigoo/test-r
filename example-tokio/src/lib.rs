@@ -552,7 +552,10 @@ mod generated {
                 format!("test_{i}"),
                 TestProperties::unit_test(),
                 move |dep1: &Dep1, #[tagged_as("secondary")] d2: &Dep2| {
-                    println!("Running sync tagged test {} using deps {} {}", i, dep1.value, d2.value);
+                    println!(
+                        "Running sync tagged test {} using deps {} {}",
+                        i, dep1.value, d2.value
+                    );
                     assert_eq!(d2.value, 20);
                 }
             );

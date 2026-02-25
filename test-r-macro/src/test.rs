@@ -501,5 +501,3 @@ fn should_panic_message(attr: &Attribute) -> ShouldPanic {
         None => ShouldPanic::Yes,
     }
 }
-
-

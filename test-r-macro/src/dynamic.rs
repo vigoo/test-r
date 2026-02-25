@@ -97,7 +97,9 @@ pub fn add_test(input: TokenStream) -> TokenStream {
 
     for input in &mut function_closure.inputs {
         if let Pat::Type(typed) = input {
-            typed.attrs.retain(|attr| !is_testr_attribute(attr, "tagged_as"));
+            typed
+                .attrs
+                .retain(|attr| !is_testr_attribute(attr, "tagged_as"));
         }
     }
     let is_async = matches!(&*function_closure.body, Expr::Async(_));
