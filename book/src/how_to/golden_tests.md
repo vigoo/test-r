@@ -7,22 +7,14 @@ The `test-r` crate does not provide a built-in support for golden tests, but it 
 
 ## Golden tests with the goldenfile crate
 
-The [goldenfile](https://crates.io/crates/goldenfile) crate is proven to work well with `test-r`. For example the following helper function can be used to check the backward compatibility of reading serialized binary data with some custom serialize/deserialize functions requiring [bincode](https://crates.io/crates/bincode) codecs:
+The [goldenfile](https://crates.io/crates/goldenfile) crate is proven to work well with `test-r`. For example the following helper function can be used to check the backward compatibility of reading serialized binary data with some custom serialize/deserialize functions requiring [desert_rust](https://crates.io/crates/desert_rust) codecs:
 
 ```rust
-use bincode::{Decode, Encode};
+use desert_rust::{BinaryCodec, BinarySerializer, BinaryDeserializer, serialize_to_byte_vec, deserialize};
 use goldenfile::Mint;
 use test_r::test;
 
-fn serialize<T: Encode>(value: &T) -> Result<Vec<u8>, bincode::Error> {
-    todo!()
-}
-
-fn deserialize<T: Decode>(data: &[u8]) -> Result<T, bincode::Error> {
-    todo!()
-}
-
-fn is_deserializable<T: Encode + Decode + PartialEq + Debug>(old: &Path, new: &Path) {
+fn is_deserializable<T: BinaryCodec + PartialEq + Debug>(old: &Path, new: &Path) {
     let old = std::fs::read(old).unwrap();
     let new = std::fs::read(new).unwrap();
 
@@ -34,7 +26,7 @@ fn is_deserializable<T: Encode + Decode + PartialEq + Debug>(old: &Path, new: &P
     assert_eq!(old_decoded, new_decoded);
 }
 
-pub(crate) fn backward_compatible<T: Encode + Decode + PartialEq + Debug + 'static>(
+pub(crate) fn backward_compatible<T: BinaryCodec + PartialEq + Debug + 'static>(
     name: impl AsRef<str>,
     mint: &mut Mint,
     value: T,
@@ -45,12 +37,12 @@ pub(crate) fn backward_compatible<T: Encode + Decode + PartialEq + Debug + 'stat
             Box::new(is_deserializable::<T>),
         )
         .unwrap();
-    let encoded = serialize(&value).unwrap();
+    let encoded = serialize_to_byte_vec(&value).unwrap();
     file.write_all(&encoded).unwrap();
     file.flush().unwrap();
 }
 
-#[derive(Debug, PartialEq, Encode, Decode)]
+#[derive(Debug, PartialEq, BinaryCodec)]
 struct Example {
     value: i32,
 }

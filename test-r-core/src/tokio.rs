@@ -8,7 +8,7 @@ use crate::internal::{
 };
 use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
 use crate::output::{test_runner_output, TestRunnerOutput};
-use bincode::{decode_from_slice, encode_to_vec};
+use desert_rust::{deserialize, serialize_to_byte_vec};
 use futures::FutureExt;
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::tokio::{Listener, Stream};
@@ -159,9 +159,8 @@ async fn test_thread(
                     .read_exact(&mut command)
                     .await
                     .expect("Failed to read IPC command");
-                let (command, _): (IpcCommand, usize) =
-                    decode_from_slice(&command, bincode::config::standard())
-                        .expect("Failed to decode IPC command");
+                let command: IpcCommand =
+                    deserialize(&command).expect("Failed to decode IPC command");
 
                 let IpcCommand::RunTest {
                     name,
@@ -219,7 +218,7 @@ async fn test_thread(
                         result: (&result).into(),
                         finish_marker,
                     };
-                    let msg = encode_to_vec(&response, bincode::config::standard())
+                    let msg = serialize_to_byte_vec(&response)
                         .expect("Failed to encode IPC response");
                     let message_size = (msg.len() as u16).to_le_bytes();
                     connection
@@ -506,7 +505,7 @@ impl Worker {
         let dump_on_ipc_failure = self.dump_on_failure();
 
         let msg =
-            encode_to_vec(&cmd, bincode::config::standard()).expect("Failed to encode IPC command");
+            serialize_to_byte_vec(&cmd).expect("Failed to encode IPC command");
         let message_size = (msg.len() as u16).to_le_bytes();
         dump_on_ipc_failure
             .run(self.connection.write_all(&message_size).await)
@@ -523,8 +522,8 @@ impl Worker {
         dump_on_ipc_failure
             .run(self.connection.read_exact(&mut response).await)
             .await;
-        let (response, _): (IpcResponse, usize) = dump_on_ipc_failure
-            .run(decode_from_slice(&response, bincode::config::standard()))
+        let response: IpcResponse = dump_on_ipc_failure
+            .run(deserialize(&response))
             .await;
 
         let IpcResponse::TestFinished {

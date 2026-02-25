@@ -16,7 +16,7 @@ anstream = "0.6"
 anstyle = "1"
 anstyle-query = "=1.1.1"
 anstyle-wincon = "=3.0.4"
-bincode = "2.0.1"
+desert_rust = "0.1.7"
 clap = { version = "4.5", features = ["derive"] }
 ctrf-rs = "0.1.0"
 escape8259 = "0.5"
