@@ -152,3 +152,66 @@ mod generic_deps {
         assert_eq!(dep1.value + dep2.value, 30);
     }
 }
+
+#[cfg(test)]
+mod lazy_dep_pruning {
+    use test_r::{test, test_dep};
+
+    pub struct DepA {
+        pub value: i32,
+    }
+
+    pub struct DepB {
+        pub value: i32,
+    }
+
+    pub struct DepC {
+        pub value: i32,
+    }
+
+    #[test_dep]
+    fn create_dep_a() -> DepA {
+        println!("LAZY_DEPS_MARKER: Creating DepA");
+        DepA { value: 1 }
+    }
+
+    #[test_dep]
+    fn create_dep_b() -> DepB {
+        println!("LAZY_DEPS_MARKER: Creating DepB");
+        DepB { value: 2 }
+    }
+
+    #[test_dep]
+    fn create_dep_c(dep_a: &DepA) -> DepC {
+        println!("LAZY_DEPS_MARKER: Creating DepC");
+        DepC {
+            value: dep_a.value + 10,
+        }
+    }
+
+    #[test]
+    fn test_uses_dep_a(dep_a: &DepA) {
+        assert_eq!(dep_a.value, 1);
+    }
+
+    #[test]
+    fn test_uses_dep_b(dep_b: &DepB) {
+        assert_eq!(dep_b.value, 2);
+    }
+
+    #[test]
+    fn test_uses_both(dep_a: &DepA, dep_b: &DepB) {
+        assert_eq!(dep_a.value + dep_b.value, 3);
+    }
+
+    #[test]
+    fn test_uses_none() {
+        let x = 4;
+        assert_eq!(x, 4);
+    }
+
+    #[test]
+    fn test_uses_dep_c(dep_c: &DepC) {
+        assert_eq!(dep_c.value, 11);
+    }
+}

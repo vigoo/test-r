@@ -484,6 +484,7 @@ mod generated {
             r.add_sync_test(
                 format!("test_{i}"),
                 TestProperties::unit_test(),
+                None,
                 move |_| {
                     println!("Running test {i}");
                     let s = i.to_string();
@@ -501,6 +502,7 @@ mod generated {
             r.add_async_test(
                 format!("test_{i}"),
                 TestProperties::unit_test(),
+                None,
                 move |_| {
                     Box::pin(async move {
                         println!("Running test {i}");
@@ -678,6 +680,7 @@ mod generated {
                     is_ignored: false,
                     detached_panic_policy: DetachedPanicPolicy::FailTest,
                 },
+                None,
                 move |_| {
                     Box::pin(async move {
                         println!("Running test {i}");
