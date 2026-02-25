@@ -111,8 +111,11 @@ mod cargo_tests {
         }
 
         assert!(output_it_does_work.contains("Print from 'it_does_work'\n"));
+        assert!(output_it_does_work.contains("Stderr from 'it_does_work'\n"));
         assert!(output_this_too.contains("Print from 'this_too'"));
+        assert!(output_this_too.contains("Stderr from 'this_too'"));
         assert!(output_panic_test_1.contains("Print from 'panic_test_1'"));
+        assert!(output_panic_test_1.contains("Stderr from 'panic_test_1'"));
     }
 
     #[test]
@@ -160,8 +163,11 @@ mod cargo_tests {
         }
 
         assert!(output_it_does_work.contains("Print from 'it_does_work'\n"));
+        assert!(output_it_does_work.contains("Stderr from 'it_does_work'\n"));
         assert!(output_this_too.contains("Print from 'this_too'"));
+        assert!(output_this_too.contains("Stderr from 'this_too'"));
         assert!(output_inner_test_works.contains("Print from inner test"));
+        assert!(output_inner_test_works.contains("Stderr from inner test"));
     }
 }
 
