@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b8477f72.js";
+            window.path_to_searchindex_js = "../searchindex-0fa54e21.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-9098e925.js"></script>
@@ -179,22 +179,14 @@
 There are several golden testing libraries available in the Rust ecosystem.</p>
 <p>The <code>test-r</code> crate does not provide a built-in support for golden tests, but it should work with most of these libraries.</p>
 <h2 id="golden-tests-with-the-goldenfile-crate"><a class="header" href="#golden-tests-with-the-goldenfile-crate">Golden tests with the goldenfile crate</a></h2>
-<p>The <a href="https://crates.io/crates/goldenfile">goldenfile</a> crate is proven to work well with <code>test-r</code>. For example the following helper function can be used to check the backward compatibility of reading serialized binary data with some custom serialize/deserialize functions requiring <a href="https://crates.io/crates/bincode">bincode</a> codecs:</p>
+<p>The <a href="https://crates.io/crates/goldenfile">goldenfile</a> crate is proven to work well with <code>test-r</code>. For example the following helper function can be used to check the backward compatibility of reading serialized binary data with some custom serialize/deserialize functions requiring <a href="https://crates.io/crates/desert_rust">desert_rust</a> codecs:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use bincode::{Decode, Encode};
+</span>use desert_rust::{BinaryCodec, BinarySerializer, BinaryDeserializer, serialize_to_byte_vec, deserialize};
 use goldenfile::Mint;
 use test_r::test;
 
-fn serialize&lt;T: Encode&gt;(value: &amp;T) -&gt; Result&lt;Vec&lt;u8&gt;, bincode::Error&gt; {
-    todo!()
-}
-
-fn deserialize&lt;T: Decode&gt;(data: &amp;[u8]) -&gt; Result&lt;T, bincode::Error&gt; {
-    todo!()
-}
-
-fn is_deserializable&lt;T: Encode + Decode + PartialEq + Debug&gt;(old: &amp;Path, new: &amp;Path) {
+fn is_deserializable&lt;T: BinaryCodec + PartialEq + Debug&gt;(old: &amp;Path, new: &amp;Path) {
     let old = std::fs::read(old).unwrap();
     let new = std::fs::read(new).unwrap();
 
@@ -206,7 +198,7 @@ fn is_deserializable&lt;T: Encode + Decode + PartialEq + Debug&gt;(old: &amp;Pat
     assert_eq!(old_decoded, new_decoded);
 }
 
-pub(crate) fn backward_compatible&lt;T: Encode + Decode + PartialEq + Debug + 'static&gt;(
+pub(crate) fn backward_compatible&lt;T: BinaryCodec + PartialEq + Debug + 'static&gt;(
     name: impl AsRef&lt;str&gt;,
     mint: &amp;mut Mint,
     value: T,
@@ -217,12 +209,12 @@ pub(crate) fn backward_compatible&lt;T: Encode + Decode + PartialEq + Debug + 's
             Box::new(is_deserializable::&lt;T&gt;),
         )
         .unwrap();
-    let encoded = serialize(&amp;value).unwrap();
+    let encoded = serialize_to_byte_vec(&amp;value).unwrap();
     file.write_all(&amp;encoded).unwrap();
     file.flush().unwrap();
 }
 
-#[derive(Debug, PartialEq, Encode, Decode)]
+#[derive(Debug, PartialEq, BinaryCodec)]
 struct Example {
     value: i32,
 }
