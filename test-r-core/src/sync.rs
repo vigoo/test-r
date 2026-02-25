@@ -317,12 +317,14 @@ pub(crate) fn run_sync_test_function(
     let start = Instant::now();
     match test_description.run.clone() {
         TestFunction::Sync(test_fn) => {
+            let detached_panic_policy = test_description.props.detached_panic_policy.clone();
             let result =
                 run_with_flakiness_control(output, test_description, idx, count, move |start| {
                     let dependency_view = dependency_view.clone();
                     let test_fn = test_fn.clone();
                     let test_id = crate::panic_hook::next_test_id();
                     crate::panic_hook::set_current_test_id(test_id);
+                    crate::panic_hook::create_detached_collector(test_id);
                     catch_unwind(AssertUnwindSafe(move || {
                         test_fn(dependency_view).into_result()?;
                         if let Some(ensure_time) = ensure_time {
@@ -336,30 +338,82 @@ pub(crate) fn run_sync_test_function(
                         Ok(())
                     }))
                 });
-            let test_result = TestResult::from_result(
+            let mut test_result = TestResult::from_result(
                 &test_description.props.should_panic,
                 start.elapsed(),
                 result,
             );
+            if let Some(test_id) = crate::panic_hook::current_test_id() {
+                if let Some(collector) = crate::panic_hook::take_detached_collector(test_id) {
+                    let panics = match collector.lock() {
+                        Ok(p) => p,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    if !panics.is_empty()
+                        && detached_panic_policy == internal::DetachedPanicPolicy::FailTest
+                        && test_result.is_passed()
+                    {
+                        let messages: Vec<String> = panics.iter().map(|p| p.render()).collect();
+                        test_result = TestResult::failed(
+                            start.elapsed(),
+                            FailureCause::Panic(internal::PanicCause {
+                                message: Some(format!(
+                                    "Detached task(s) panicked:\n{}",
+                                    messages.join("\n---\n")
+                                )),
+                                location: panics.first().and_then(|p| p.location.clone()),
+                                backtrace: panics.first().and_then(|p| p.backtrace.clone()),
+                            }),
+                        );
+                    }
+                }
+            }
             crate::panic_hook::clear_current_test_id();
             test_result
         }
         TestFunction::SyncBench(bench_fn) => {
+            let detached_panic_policy = test_description.props.detached_panic_policy.clone();
             let mut bencher = Bencher::new();
             let test_id = crate::panic_hook::next_test_id();
             crate::panic_hook::set_current_test_id(test_id);
+            crate::panic_hook::create_detached_collector(test_id);
             let result = catch_unwind(AssertUnwindSafe(|| {
                 bench_fn(&mut bencher, dependency_view);
                 bencher
                     .summary()
                     .expect("iter() was not called in bench function")
             }));
-            let test_result = TestResult::from_summary(
+            let mut test_result = TestResult::from_summary(
                 &test_description.props.should_panic,
                 start.elapsed(),
                 result,
                 bencher.bytes,
             );
+            if let Some(test_id) = crate::panic_hook::current_test_id() {
+                if let Some(collector) = crate::panic_hook::take_detached_collector(test_id) {
+                    let panics = match collector.lock() {
+                        Ok(p) => p,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    if !panics.is_empty()
+                        && detached_panic_policy == internal::DetachedPanicPolicy::FailTest
+                        && test_result.is_passed()
+                    {
+                        let messages: Vec<String> = panics.iter().map(|p| p.render()).collect();
+                        test_result = TestResult::failed(
+                            start.elapsed(),
+                            FailureCause::Panic(internal::PanicCause {
+                                message: Some(format!(
+                                    "Detached task(s) panicked:\n{}",
+                                    messages.join("\n---\n")
+                                )),
+                                location: panics.first().and_then(|p| p.location.clone()),
+                                backtrace: panics.first().and_then(|p| p.backtrace.clone()),
+                            }),
+                        );
+                    }
+                }
+            }
             crate::panic_hook::clear_current_test_id();
             test_result
         }

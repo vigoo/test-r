@@ -26,6 +26,7 @@ pub use test_r_core::bench::AsyncBencher;
 pub use test_r_core::bench::Bencher;
 #[cfg(feature = "tokio")]
 pub use test_r_core::spawn::spawn;
+pub use test_r_core::spawn::spawn_thread;
 
 pub mod core {
     use std::time::Duration;
