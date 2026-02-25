@@ -6,7 +6,7 @@ use crate::internal::{
     generate_tests_sync, get_ensure_time, CapturedOutput, FailureCause, FlakinessControl,
     RegisteredTest, SuiteResult, TestFunction, TestResult,
 };
-use crate::ipc::{ipc_name, IpcCommand, IpcResponse, INIT_MARKER};
+use crate::ipc::{ipc_name, is_internal_ipc_line, new_ipc_marker, IpcCommand, IpcResponse, INIT_MARKER};
 use crate::output::{test_runner_output, TestRunnerOutput};
 use bincode::{decode_from_slice, encode_to_vec};
 use interprocess::local_socket::prelude::*;
@@ -168,7 +168,7 @@ fn test_thread(
                 expected_test = None;
 
                 let start_marker = if connection.is_some() {
-                    let marker = Uuid::new_v4().to_string();
+                    let marker = new_ipc_marker();
                     let marker_line = format!("{marker}\n");
                     std::io::stdout().write_all(marker_line.as_bytes()).unwrap();
                     std::io::stderr().write_all(marker_line.as_bytes()).unwrap();
@@ -202,7 +202,7 @@ fn test_thread(
                 output.finished_running_test(&next.test, next.index, count, &result);
 
                 if let Some(connection) = &mut connection {
-                    let finish_marker = Uuid::new_v4().to_string();
+                    let finish_marker = new_ipc_marker();
                     let finish_marker_line = format!("{finish_marker}\n");
                     std::io::stdout()
                         .write_all(finish_marker_line.as_bytes())
@@ -590,7 +590,7 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                                 .lock()
                                 .unwrap()
                                 .push_back(CapturedOutput::stdout(line));
-                        } else {
+                        } else if !is_internal_ipc_line(&line) {
                             println!("{line}");
                         }
                     }
@@ -615,7 +615,7 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                                 .lock()
                                 .unwrap()
                                 .push_back(CapturedOutput::stderr(line));
-                        } else {
+                        } else if !is_internal_ipc_line(&line) {
                             eprintln!("{line}");
                         }
                     }

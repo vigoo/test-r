@@ -6,7 +6,7 @@ use crate::internal::{
     generate_tests, get_ensure_time, CapturedOutput, FailureCause, FlakinessControl,
     RegisteredTest, SuiteResult, TestFunction, TestResult,
 };
-use crate::ipc::{ipc_name, IpcCommand, IpcResponse, INIT_MARKER};
+use crate::ipc::{ipc_name, is_internal_ipc_line, new_ipc_marker, IpcCommand, IpcResponse, INIT_MARKER};
 use crate::output::{test_runner_output, TestRunnerOutput};
 use bincode::{decode_from_slice, encode_to_vec};
 use futures::FutureExt;
@@ -202,7 +202,7 @@ async fn test_thread(
                 let ensure_time = get_ensure_time(&args, &next.test);
 
                 let start_marker = if connection.is_some() {
-                    let marker = Uuid::new_v4().to_string();
+                    let marker = new_ipc_marker();
                     let marker_line = format!("{marker}\n");
                     tokio::io::stdout()
                         .write_all(marker_line.as_bytes())
@@ -235,7 +235,7 @@ async fn test_thread(
                 output.finished_running_test(&next.test, next.index, count, &result);
 
                 if let Some(connection) = &mut connection {
-                    let finish_marker = Uuid::new_v4().to_string();
+                    let finish_marker = new_ipc_marker();
                     let finish_marker_line = format!("{finish_marker}\n");
                     tokio::io::stdout()
                         .write_all(finish_marker_line.as_bytes())
@@ -690,7 +690,7 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                         .lock()
                         .await
                         .push_back(CapturedOutput::stdout(line));
-                } else {
+                } else if !is_internal_ipc_line(&line) {
                     println!("{line}");
                 }
             }
@@ -711,7 +711,7 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                         .lock()
                         .await
                         .push_back(CapturedOutput::stderr(line));
-                } else {
+                } else if !is_internal_ipc_line(&line) {
                     eprintln!("{line}");
                 }
             }
