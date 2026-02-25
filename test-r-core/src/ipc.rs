@@ -101,20 +101,8 @@ impl From<SerializableTestResult> for TestResult {
 pub enum IpcResponse {
     TestFinished {
         result: SerializableTestResult,
-        start_marker: String,
         finish_marker: String,
     },
-}
-
-pub const INIT_MARKER: &str = "__TEST_R_INIT_COMPLETE__";
-pub const IPC_MARKER_PREFIX: &str = "__TEST_R_IPC_MARKER__";
-
-pub fn new_ipc_marker() -> String {
-    format!("{IPC_MARKER_PREFIX}{}", uuid::Uuid::new_v4())
-}
-
-pub fn is_internal_ipc_line(line: &str) -> bool {
-    line == INIT_MARKER || line.starts_with(IPC_MARKER_PREFIX)
 }
 
 pub fn ipc_name<'s>(name: String) -> Name<'s> {

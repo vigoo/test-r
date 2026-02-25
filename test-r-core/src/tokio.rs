@@ -6,9 +6,7 @@ use crate::internal::{
     generate_tests, get_ensure_time, CapturedOutput, FailureCause, FlakinessControl,
     RegisteredTest, SuiteResult, TestFunction, TestResult,
 };
-use crate::ipc::{
-    ipc_name, is_internal_ipc_line, new_ipc_marker, IpcCommand, IpcResponse, INIT_MARKER,
-};
+use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
 use crate::output::{test_runner_output, TestRunnerOutput};
 use bincode::{decode_from_slice, encode_to_vec};
 use futures::FutureExt;
@@ -136,25 +134,7 @@ async fn test_thread(
     results: Arc<Mutex<Vec<(RegisteredTest, TestResult)>>>,
 ) {
     let mut worker = spawn_worker_if_needed(&args).await;
-    if let Some(ref w) = worker {
-        w.drain_init_output().await;
-    }
     let mut connection = if let Some(ref name) = args.ipc {
-        let init_marker_line = format!("{INIT_MARKER}\n");
-        // Flush std::io buffers before writing markers via tokio::io to prevent ordering issues
-        std::io::Write::flush(&mut std::io::stdout()).unwrap();
-        std::io::Write::flush(&mut std::io::stderr()).unwrap();
-        tokio::io::stdout()
-            .write_all(init_marker_line.as_bytes())
-            .await
-            .unwrap();
-        tokio::io::stderr()
-            .write_all(init_marker_line.as_bytes())
-            .await
-            .unwrap();
-        tokio::io::stdout().flush().await.unwrap();
-        tokio::io::stderr().flush().await.unwrap();
-
         let name = ipc_name(name.clone());
         let stream = Stream::connect(name)
             .await
@@ -206,26 +186,6 @@ async fn test_thread(
 
                 let ensure_time = get_ensure_time(&args, &next.test);
 
-                let start_marker = if connection.is_some() {
-                    let marker = new_ipc_marker();
-                    let marker_line = format!("{marker}\n");
-                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
-                    std::io::Write::flush(&mut std::io::stderr()).unwrap();
-                    tokio::io::stdout()
-                        .write_all(marker_line.as_bytes())
-                        .await
-                        .unwrap();
-                    tokio::io::stderr()
-                        .write_all(marker_line.as_bytes())
-                        .await
-                        .unwrap();
-                    tokio::io::stdout().flush().await.unwrap();
-                    tokio::io::stderr().flush().await.unwrap();
-                    Some(marker)
-                } else {
-                    None
-                };
-
                 output.start_running_test(&next.test, next.index, count);
                 let result = run_test(
                     output.clone(),
@@ -242,10 +202,8 @@ async fn test_thread(
                 output.finished_running_test(&next.test, next.index, count, &result);
 
                 if let Some(connection) = &mut connection {
-                    let finish_marker = new_ipc_marker();
+                    let finish_marker = Uuid::new_v4().to_string();
                     let finish_marker_line = format!("{finish_marker}\n");
-                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
-                    std::io::Write::flush(&mut std::io::stderr()).unwrap();
                     tokio::io::stdout()
                         .write_all(finish_marker_line.as_bytes())
                         .await
@@ -259,7 +217,6 @@ async fn test_thread(
 
                     let response = IpcResponse::TestFinished {
                         result: (&result).into(),
-                        start_marker: start_marker.unwrap(),
                         finish_marker,
                     };
                     let msg = encode_to_vec(&response, bincode::config::standard())
@@ -534,11 +491,6 @@ struct Worker {
 }
 
 impl Worker {
-    pub async fn drain_init_output(&self) {
-        Self::drain_until(self.out_lines.clone(), INIT_MARKER.to_string()).await;
-        Self::drain_until(self.err_lines.clone(), INIT_MARKER.to_string()).await;
-    }
-
     pub async fn run_test(&mut self, nocapture: bool, test: &RegisteredTest) -> TestResult {
         let mut capture_enabled = self.capture_enabled.lock().await;
         *capture_enabled = test.props.capture_control.requires_capturing(!nocapture);
@@ -577,19 +529,14 @@ impl Worker {
 
         let IpcResponse::TestFinished {
             result,
-            start_marker,
             finish_marker,
         } = response;
 
-        // Always drain markers to prevent buffer growth, even when not capturing
-        Self::drain_until(self.out_lines.clone(), start_marker.clone()).await;
-        Self::drain_until(self.err_lines.clone(), start_marker.clone()).await;
-        let out_lines: Vec<_> =
-            Self::drain_until(self.out_lines.clone(), finish_marker.clone()).await;
-        let err_lines: Vec<_> =
-            Self::drain_until(self.err_lines.clone(), finish_marker.clone()).await;
-
         if test.props.capture_control.requires_capturing(!nocapture) {
+            let out_lines: Vec<_> =
+                Self::drain_until(self.out_lines.clone(), finish_marker.clone()).await;
+            let err_lines: Vec<_> =
+                Self::drain_until(self.err_lines.clone(), finish_marker.clone()).await;
             result.into_test_result(out_lines, err_lines)
         } else {
             result.into_test_result(Vec::new(), Vec::new())
@@ -695,7 +642,7 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                 .await
                 .expect("Failed to read from worker stdout")
             {
-                if is_internal_ipc_line(&line) || *capture_enabled_clone.lock().await {
+                if *capture_enabled_clone.lock().await {
                     out_lines_clone
                         .lock()
                         .await
@@ -716,7 +663,7 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                 .await
                 .expect("Failed to read from worker stderr")
             {
-                if is_internal_ipc_line(&line) || *capture_enabled_clone.lock().await {
+                if *capture_enabled_clone.lock().await {
                     err_lines_clone
                         .lock()
                         .await

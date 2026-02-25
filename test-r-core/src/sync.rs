@@ -6,9 +6,7 @@ use crate::internal::{
     generate_tests_sync, get_ensure_time, CapturedOutput, FailureCause, FlakinessControl,
     RegisteredTest, SuiteResult, TestFunction, TestResult,
 };
-use crate::ipc::{
-    ipc_name, is_internal_ipc_line, new_ipc_marker, IpcCommand, IpcResponse, INIT_MARKER,
-};
+use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
 use crate::output::{test_runner_output, TestRunnerOutput};
 use bincode::{decode_from_slice, encode_to_vec};
 use interprocess::local_socket::prelude::*;
@@ -109,20 +107,7 @@ fn test_thread(
     count: usize,
 ) -> Vec<(RegisteredTest, TestResult)> {
     let mut worker = spawn_worker_if_needed(&args);
-    if let Some(ref w) = worker {
-        w.drain_init_output();
-    }
     let mut connection = if let Some(ref name) = args.ipc {
-        let init_marker_line = format!("{INIT_MARKER}\n");
-        std::io::stdout()
-            .write_all(init_marker_line.as_bytes())
-            .unwrap();
-        std::io::stderr()
-            .write_all(init_marker_line.as_bytes())
-            .unwrap();
-        std::io::stdout().flush().unwrap();
-        std::io::stderr().flush().unwrap();
-
         let name = ipc_name(name.clone());
         let stream = Stream::connect(name).expect("Failed to connect to IPC socket");
         Some(stream)
@@ -169,18 +154,6 @@ fn test_thread(
             if !skip {
                 expected_test = None;
 
-                let start_marker = if connection.is_some() {
-                    let marker = new_ipc_marker();
-                    let marker_line = format!("{marker}\n");
-                    std::io::stdout().write_all(marker_line.as_bytes()).unwrap();
-                    std::io::stderr().write_all(marker_line.as_bytes()).unwrap();
-                    std::io::stdout().flush().unwrap();
-                    std::io::stderr().flush().unwrap();
-                    Some(marker)
-                } else {
-                    None
-                };
-
                 output.start_running_test(&next.test, next.index, count);
 
                 let result = if next.test.props.is_ignored && !args.include_ignored {
@@ -204,7 +177,7 @@ fn test_thread(
                 output.finished_running_test(&next.test, next.index, count, &result);
 
                 if let Some(connection) = &mut connection {
-                    let finish_marker = new_ipc_marker();
+                    let finish_marker = Uuid::new_v4().to_string();
                     let finish_marker_line = format!("{finish_marker}\n");
                     std::io::stdout()
                         .write_all(finish_marker_line.as_bytes())
@@ -218,7 +191,6 @@ fn test_thread(
 
                     let response = IpcResponse::TestFinished {
                         result: (&result).into(),
-                        start_marker: start_marker.unwrap(),
                         finish_marker,
                     };
 
@@ -437,11 +409,6 @@ struct Worker {
 }
 
 impl Worker {
-    pub fn drain_init_output(&self) {
-        Self::drain_until(self.out_lines.clone(), INIT_MARKER.to_string());
-        Self::drain_until(self.err_lines.clone(), INIT_MARKER.to_string());
-    }
-
     pub fn run_test(&mut self, nocapture: bool, test: &RegisteredTest) -> TestResult {
         let mut capture_enabled = self.capture_enabled.lock().unwrap();
         *capture_enabled = test.props.capture_control.requires_capturing(!nocapture);
@@ -471,17 +438,14 @@ impl Worker {
 
         let IpcResponse::TestFinished {
             result,
-            start_marker,
             finish_marker,
         } = response;
 
-        // Always drain markers to prevent buffer growth, even when not capturing
-        Self::drain_until(self.out_lines.clone(), start_marker.clone());
-        Self::drain_until(self.err_lines.clone(), start_marker.clone());
-        let out_lines: Vec<_> = Self::drain_until(self.out_lines.clone(), finish_marker.clone());
-        let err_lines: Vec<_> = Self::drain_until(self.err_lines.clone(), finish_marker.clone());
-
         if test.props.capture_control.requires_capturing(!nocapture) {
+            let out_lines: Vec<_> =
+                Self::drain_until(self.out_lines.clone(), finish_marker.clone());
+            let err_lines: Vec<_> =
+                Self::drain_until(self.err_lines.clone(), finish_marker.clone());
             result.into_test_result(out_lines, err_lines)
         } else {
             result.into_test_result(Vec::new(), Vec::new())
@@ -586,7 +550,7 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                 match line {
                     Ok(line) => {
                         //eprintln!("[WORKER OUT] {line}");
-                        if is_internal_ipc_line(&line) || *capture_enabled_clone.lock().unwrap() {
+                        if *capture_enabled_clone.lock().unwrap() {
                             out_lines_clone
                                 .lock()
                                 .unwrap()
@@ -611,7 +575,7 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                 match line {
                     Ok(line) => {
                         //eprintln!("[WORKER ERR] {line}");
-                        if is_internal_ipc_line(&line) || *capture_enabled_clone.lock().unwrap() {
+                        if *capture_enabled_clone.lock().unwrap() {
                             err_lines_clone
                                 .lock()
                                 .unwrap()
