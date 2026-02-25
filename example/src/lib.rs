@@ -11,6 +11,7 @@ mod tests {
     #[tag(output_capture_test)]
     fn it_does_work() {
         println!("Print from 'it_does_work'");
+        eprintln!("Stderr from 'it_does_work'");
         let result = 2 + 2;
         assert_eq!(result, 5);
     }
@@ -21,6 +22,7 @@ mod tests {
     #[always_ensure_time]
     fn this_too() {
         println!("Print from 'this_too'");
+        eprintln!("Stderr from 'this_too'");
         let result = 2 + 2;
         assert_eq!(result, 4);
     }
@@ -56,6 +58,7 @@ mod inner {
         #[never_ensure_time]
         fn inner_test_works() {
             println!("Print from inner test");
+            eprintln!("Stderr from inner test");
             let result = 2 + 2;
             assert_eq!(result, 4);
         }

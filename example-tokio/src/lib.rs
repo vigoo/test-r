@@ -14,6 +14,10 @@ mod tests {
             .write(b"Print from 'it_does_work'\n")
             .await
             .unwrap();
+        let _ = tokio::io::stderr()
+            .write(b"Stderr from 'it_does_work'\n")
+            .await
+            .unwrap();
         let result = 2 + 2;
         assert_eq!(result, 5);
     }
@@ -23,6 +27,10 @@ mod tests {
     async fn this_too() {
         let _ = tokio::io::stdout()
             .write(b"Print from 'this_too'\n")
+            .await
+            .unwrap();
+        let _ = tokio::io::stderr()
+            .write(b"Stderr from 'this_too'\n")
             .await
             .unwrap();
         let result = 2 + 2;
@@ -35,6 +43,10 @@ mod tests {
     async fn panic_test_1() {
         let _ = tokio::io::stdout()
             .write(b"Print from 'panic_test_1'\n")
+            .await
+            .unwrap();
+        let _ = tokio::io::stderr()
+            .write(b"Stderr from 'panic_test_1'\n")
             .await
             .unwrap();
         panic!("This test should panic");
