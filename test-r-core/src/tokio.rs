@@ -695,12 +695,7 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                 .await
                 .expect("Failed to read from worker stdout")
             {
-                if is_internal_ipc_line(&line) {
-                    out_lines_clone
-                        .lock()
-                        .await
-                        .push_back(CapturedOutput::stdout(line));
-                } else if *capture_enabled_clone.lock().await {
+                if is_internal_ipc_line(&line) || *capture_enabled_clone.lock().await {
                     out_lines_clone
                         .lock()
                         .await
@@ -721,12 +716,7 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                 .await
                 .expect("Failed to read from worker stderr")
             {
-                if is_internal_ipc_line(&line) {
-                    err_lines_clone
-                        .lock()
-                        .await
-                        .push_back(CapturedOutput::stderr(line));
-                } else if *capture_enabled_clone.lock().await {
+                if is_internal_ipc_line(&line) || *capture_enabled_clone.lock().await {
                     err_lines_clone
                         .lock()
                         .await
