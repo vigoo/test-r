@@ -96,6 +96,16 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
         quote! { test_r::core::ReportTimeControl::Disabled },
     );
 
+    let ignore_detached_panics = ast
+        .attrs
+        .iter()
+        .any(|attr| is_testr_attribute(attr, "ignore_detached_panics"));
+    let detached_panic_policy = if ignore_detached_panics {
+        quote! { test_r::core::DetachedPanicPolicy::Ignore }
+    } else {
+        quote! { test_r::core::DetachedPanicPolicy::FailTest }
+    };
+
     let tag_attrs = ast
         .attrs
         .iter()
@@ -126,6 +136,7 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
         report_time_control,
         ensure_time_control,
         tags,
+        detached_panic_policy,
         dep_getters,
     };
 
@@ -169,6 +180,7 @@ struct TestDetails {
     report_time_control: proc_macro2::TokenStream,
     ensure_time_control: proc_macro2::TokenStream,
     tags: proc_macro2::TokenStream,
+    detached_panic_policy: proc_macro2::TokenStream,
     dep_getters: Vec<proc_macro2::TokenStream>,
 }
 
@@ -187,6 +199,7 @@ fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
         report_time_control,
         ensure_time_control,
         tags,
+        detached_panic_policy,
         dep_getters,
     } = details;
 
@@ -214,6 +227,7 @@ fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
                       #tags,
                       #report_time_control,
                       #ensure_time_control,
+                      #detached_panic_policy,
                       test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|__test_r_bencher_arg, __test_r_deps_arg| Box::pin(async move { #test_name(__test_r_bencher_arg, #(#dep_getters),*).await })))
                   );
             }
@@ -231,6 +245,7 @@ fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
                     #tags,
                     #report_time_control,
                     #ensure_time_control,
+                    #detached_panic_policy,
                     test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|__test_r_bencher_arg, __test_r_deps_arg| #test_name(__test_r_bencher_arg, #(#dep_getters),*)))
                 );
             }
@@ -249,6 +264,7 @@ fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
                   #tags,
                   #report_time_control,
                   #ensure_time_control,
+                  #detached_panic_policy,
                   test_r::core::TestFunction::Async(std::sync::Arc::new(
                     move |__test_r_deps_arg| {
                         Box::pin(async move {
@@ -277,6 +293,7 @@ fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
                 #tags,
                 #report_time_control,
                 #ensure_time_control,
+                #detached_panic_policy,
                 test_r::core::TestFunction::Sync(std::sync::Arc::new(|__test_r_deps_arg| Box::new(#test_name(#(#dep_getters),*))))
             );
         }
@@ -317,6 +334,7 @@ fn matrix_test_impl(
         report_time_control,
         ensure_time_control,
         tags,
+        detached_panic_policy,
         dep_getters,
     } = details;
 
@@ -353,6 +371,7 @@ fn matrix_test_impl(
         props.push(quote! { ensure_time_control: #ensure_time_control });
         props.push(quote! { tags: #tags });
         props.push(quote! { is_ignored: #is_ignored });
+        props.push(quote! { detached_panic_policy: #detached_panic_policy });
 
         props
     };

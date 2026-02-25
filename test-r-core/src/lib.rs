@@ -4,6 +4,8 @@ mod execution;
 pub mod internal;
 mod ipc;
 mod output;
+mod panic_hook;
+pub mod spawn;
 mod stats;
 #[cfg(feature = "tokio")]
 mod tokio;

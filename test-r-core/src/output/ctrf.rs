@@ -123,7 +123,7 @@ impl TestRunnerOutput for Ctrf {
             test.stderr = stderr_lines;
         }
 
-        test.message = result.failure_message().map(|m| m.to_string());
+        test.message = result.failure_message();
         test.suite = Some(registered_test.crate_and_module());
         test.flaky = pending_test.flaky;
         test.retries = pending_test.retries;

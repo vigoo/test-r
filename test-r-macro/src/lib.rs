@@ -99,6 +99,11 @@ pub fn never_ensure_time(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
+pub fn ignore_detached_panics(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
 pub fn tag(attr: TokenStream, item: TokenStream) -> TokenStream {
     suite::tag(attr, item)
 }
