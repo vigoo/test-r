@@ -141,6 +141,9 @@ async fn test_thread(
     }
     let mut connection = if let Some(ref name) = args.ipc {
         let init_marker_line = format!("{INIT_MARKER}\n");
+        // Flush std::io buffers before writing markers via tokio::io to prevent ordering issues
+        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+        std::io::Write::flush(&mut std::io::stderr()).unwrap();
         tokio::io::stdout()
             .write_all(init_marker_line.as_bytes())
             .await
@@ -206,6 +209,8 @@ async fn test_thread(
                 let start_marker = if connection.is_some() {
                     let marker = new_ipc_marker();
                     let marker_line = format!("{marker}\n");
+                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                    std::io::Write::flush(&mut std::io::stderr()).unwrap();
                     tokio::io::stdout()
                         .write_all(marker_line.as_bytes())
                         .await
@@ -239,6 +244,8 @@ async fn test_thread(
                 if let Some(connection) = &mut connection {
                     let finish_marker = new_ipc_marker();
                     let finish_marker_line = format!("{finish_marker}\n");
+                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                    std::io::Write::flush(&mut std::io::stderr()).unwrap();
                     tokio::io::stdout()
                         .write_all(finish_marker_line.as_bytes())
                         .await
@@ -574,14 +581,15 @@ impl Worker {
             finish_marker,
         } = response;
 
+        // Always drain markers to prevent buffer growth, even when not capturing
+        Self::drain_until(self.out_lines.clone(), start_marker.clone()).await;
+        Self::drain_until(self.err_lines.clone(), start_marker.clone()).await;
+        let out_lines: Vec<_> =
+            Self::drain_until(self.out_lines.clone(), finish_marker.clone()).await;
+        let err_lines: Vec<_> =
+            Self::drain_until(self.err_lines.clone(), finish_marker.clone()).await;
+
         if test.props.capture_control.requires_capturing(!nocapture) {
-            // Discard output from before the test started (e.g. dependency materialization)
-            Self::drain_until(self.out_lines.clone(), start_marker.clone()).await;
-            Self::drain_until(self.err_lines.clone(), start_marker.clone()).await;
-            let out_lines: Vec<_> =
-                Self::drain_until(self.out_lines.clone(), finish_marker.clone()).await;
-            let err_lines: Vec<_> =
-                Self::drain_until(self.err_lines.clone(), finish_marker.clone()).await;
             result.into_test_result(out_lines, err_lines)
         } else {
             result.into_test_result(Vec::new(), Vec::new())
@@ -687,12 +695,17 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                 .await
                 .expect("Failed to read from worker stdout")
             {
-                if *capture_enabled_clone.lock().await {
+                if is_internal_ipc_line(&line) {
                     out_lines_clone
                         .lock()
                         .await
                         .push_back(CapturedOutput::stdout(line));
-                } else if !is_internal_ipc_line(&line) {
+                } else if *capture_enabled_clone.lock().await {
+                    out_lines_clone
+                        .lock()
+                        .await
+                        .push_back(CapturedOutput::stdout(line));
+                } else {
                     println!("{line}");
                 }
             }
@@ -708,12 +721,17 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                 .await
                 .expect("Failed to read from worker stderr")
             {
-                if *capture_enabled_clone.lock().await {
+                if is_internal_ipc_line(&line) {
                     err_lines_clone
                         .lock()
                         .await
                         .push_back(CapturedOutput::stderr(line));
-                } else if !is_internal_ipc_line(&line) {
+                } else if *capture_enabled_clone.lock().await {
+                    err_lines_clone
+                        .lock()
+                        .await
+                        .push_back(CapturedOutput::stderr(line));
+                } else {
                     eprintln!("{line}");
                 }
             }

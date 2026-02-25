@@ -475,14 +475,15 @@ impl Worker {
             finish_marker,
         } = response;
 
+        // Always drain markers to prevent buffer growth, even when not capturing
+        Self::drain_until(self.out_lines.clone(), start_marker.clone());
+        Self::drain_until(self.err_lines.clone(), start_marker.clone());
+        let out_lines: Vec<_> =
+            Self::drain_until(self.out_lines.clone(), finish_marker.clone());
+        let err_lines: Vec<_> =
+            Self::drain_until(self.err_lines.clone(), finish_marker.clone());
+
         if test.props.capture_control.requires_capturing(!nocapture) {
-            // Discard output from before the test started (e.g. dependency materialization)
-            Self::drain_until(self.out_lines.clone(), start_marker.clone());
-            Self::drain_until(self.err_lines.clone(), start_marker.clone());
-            let out_lines: Vec<_> =
-                Self::drain_until(self.out_lines.clone(), finish_marker.clone());
-            let err_lines: Vec<_> =
-                Self::drain_until(self.err_lines.clone(), finish_marker.clone());
             result.into_test_result(out_lines, err_lines)
         } else {
             result.into_test_result(Vec::new(), Vec::new())
@@ -587,12 +588,17 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                 match line {
                     Ok(line) => {
                         //eprintln!("[WORKER OUT] {line}");
-                        if *capture_enabled_clone.lock().unwrap() {
+                        if is_internal_ipc_line(&line) {
                             out_lines_clone
                                 .lock()
                                 .unwrap()
                                 .push_back(CapturedOutput::stdout(line));
-                        } else if !is_internal_ipc_line(&line) {
+                        } else if *capture_enabled_clone.lock().unwrap() {
+                            out_lines_clone
+                                .lock()
+                                .unwrap()
+                                .push_back(CapturedOutput::stdout(line));
+                        } else {
                             println!("{line}");
                         }
                     }
@@ -612,12 +618,17 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                 match line {
                     Ok(line) => {
                         //eprintln!("[WORKER ERR] {line}");
-                        if *capture_enabled_clone.lock().unwrap() {
+                        if is_internal_ipc_line(&line) {
                             err_lines_clone
                                 .lock()
                                 .unwrap()
                                 .push_back(CapturedOutput::stderr(line));
-                        } else if !is_internal_ipc_line(&line) {
+                        } else if *capture_enabled_clone.lock().unwrap() {
+                            err_lines_clone
+                                .lock()
+                                .unwrap()
+                                .push_back(CapturedOutput::stderr(line));
+                        } else {
                             eprintln!("{line}");
                         }
                     }
