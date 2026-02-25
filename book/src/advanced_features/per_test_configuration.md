@@ -56,7 +56,7 @@ async fn test1() {
 }
 ```
 
-Alternatively a human-readable duration string can used, to parsed by the `humantime` crate:
+Alternatively a human-readable duration string can be used, parsed by the `humantime` crate:
 
 ```rust
 use test_r::{test, timeout};
@@ -70,6 +70,45 @@ async fn test1() {
 ```
 
 This feature only works when using the async test runner (enabled by the `tokio` feature).
+
+### Suite-level timeout
+
+It is possible to apply a timeout to all tests in a **test suite** by putting the `#[timeout(duration)]` attribute on the module:
+
+```rust
+use test_r::{test, timeout};
+
+#[timeout("3s")]
+mod suite {
+    use super::*;
+
+    #[test]
+    async fn test1() {
+        // This test will be timed out after 3 seconds
+    }
+
+    #[test]
+    #[timeout(60000)]
+    async fn test2() {
+        // This test overrides the suite timeout with its own
+    }
+}
+```
+
+If an individual test within the suite has its own `#[timeout]` attribute, the per-test timeout takes precedence over the suite-level one.
+
+The `#[timeout]` attribute can only be used on _inline modules_ due to a limitation in the current stable Rust compiler.
+For non-inline modules, you can use the `timeout_suite!` macro instead:
+
+```rust
+use test_r::timeout_suite;
+
+mod suite;
+
+timeout_suite!(suite, "3s");
+```
+
+The second parameter of `timeout_suite!` accepts the same values as the `#[timeout]` attribute: an integer (milliseconds) or a human-readable duration string.
 
 ## Reporting / ensuring time per test
 
