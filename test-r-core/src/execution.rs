@@ -1,7 +1,7 @@
 use rand::prelude::{SliceRandom, StdRng};
 use rand::SeedableRng;
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -74,6 +74,7 @@ impl TestSuiteExecution {
             }
 
             root.propagate_sequential(None);
+            root.prune_unused_deps();
 
             (root, filtered_tests)
         }
@@ -503,6 +504,71 @@ impl TestSuiteExecution {
 
     fn drop_deps(&mut self) {
         self.materialized_dependencies.clear();
+    }
+
+    /// Prunes dependencies that are not needed by any test in this subtree.
+    /// Returns `Some(needed_from_parent)` with dep names needed from ancestor levels,
+    /// or `None` if pruning is disabled for this subtree (unknown deps).
+    fn prune_unused_deps(&mut self) -> Option<HashSet<String>> {
+        // Collect dep names needed by tests at this level
+        let mut needed: Option<HashSet<String>> = Some(HashSet::new());
+        for test in &self.tests {
+            match &test.dependencies {
+                None => {
+                    needed = None;
+                    break;
+                }
+                Some(deps) => {
+                    if let Some(ref mut set) = needed {
+                        set.extend(deps.iter().cloned());
+                    }
+                }
+            }
+        }
+
+        // Merge children's needs
+        for inner in &mut self.inner {
+            let child_needs = inner.prune_unused_deps();
+            needed = match (needed, child_needs) {
+                (None, _) | (_, None) => None,
+                (Some(mut a), Some(b)) => {
+                    a.extend(b);
+                    Some(a)
+                }
+            };
+        }
+
+        // If any test has unknown deps, keep everything
+        let needed = needed?;
+
+        // Determine which local deps to keep
+        let local_names: HashSet<String> =
+            self.dependencies.iter().map(|d| d.name.clone()).collect();
+        let mut keep_local: HashSet<String> = needed.intersection(&local_names).cloned().collect();
+
+        // Expand transitive closure for local deps only (fixpoint)
+        let mut queue: VecDeque<String> = keep_local.iter().cloned().collect();
+        let mut needed_from_parent: HashSet<String> =
+            needed.difference(&local_names).cloned().collect();
+
+        while let Some(dep_name) = queue.pop_front() {
+            if let Some(dep) = self.dependencies.iter().find(|d| d.name == dep_name) {
+                for transitive in &dep.dependencies {
+                    if local_names.contains(transitive) {
+                        if keep_local.insert(transitive.clone()) {
+                            queue.push_back(transitive.clone());
+                        }
+                    } else {
+                        needed_from_parent.insert(transitive.clone());
+                    }
+                }
+            }
+        }
+
+        // Prune
+        self.dependencies.retain(|d| keep_local.contains(&d.name));
+
+        Some(needed_from_parent)
     }
 
     fn is_prefix_of(this: &str, that: &str) -> bool {

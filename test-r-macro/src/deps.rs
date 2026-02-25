@@ -156,13 +156,13 @@ pub fn define_matrix_dimension(item: TokenStream) -> TokenStream {
 
         let name = tag.value();
         pushes.push(quote! {
-            result.push((#name.to_string(), std::sync::Arc::new(|dependency_view: std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>| #getter_ident(&dependency_view))));
+            result.push((#name.to_string(), #dep_name_str.to_string(), std::sync::Arc::new(|dependency_view: std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>| #getter_ident(&dependency_view))));
         });
     }
 
     let ast = quote! {
-        fn #get_dep_tags_fn() -> Vec<(String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> {
-            let mut result: Vec<(String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> = Vec::new();
+        fn #get_dep_tags_fn() -> Vec<(String, String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> {
+            let mut result: Vec<(String, String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> = Vec::new();
             #(#pushes)*
             result
         }

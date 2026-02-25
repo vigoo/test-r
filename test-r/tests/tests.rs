@@ -274,3 +274,105 @@ mod timing_tests {
         assert_eq!(process.code(), Some(0));
     }
 }
+
+mod lazy_dep_pruning_tests {
+    use super::*;
+
+    fn run_example_test(filter: &str) -> String {
+        let cwd = std::env::current_dir().unwrap();
+        let root = cwd.parent().unwrap().join("example");
+
+        let process = std::process::Command::new("cargo")
+            .arg("test")
+            .arg(filter)
+            .arg("--")
+            .arg("--exact")
+            .arg("--nocapture")
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        assert_eq!(
+            process.status.code(),
+            Some(0),
+            "Test failed: {}",
+            String::from_utf8_lossy(&process.stderr)
+        );
+
+        let stdout = String::from_utf8(process.stdout).unwrap();
+        let stderr = String::from_utf8(process.stderr).unwrap();
+        format!("{stdout}{stderr}")
+    }
+
+    #[test]
+    #[serial]
+    fn unused_deps_are_not_created() {
+        let output = run_example_test("lazy_dep_pruning::test_uses_dep_a");
+
+        assert!(
+            output.contains("LAZY_DEPS_MARKER: Creating DepA"),
+            "DepA should be created"
+        );
+        assert!(
+            !output.contains("LAZY_DEPS_MARKER: Creating DepB"),
+            "DepB should NOT be created"
+        );
+        assert!(
+            !output.contains("LAZY_DEPS_MARKER: Creating DepC"),
+            "DepC should NOT be created"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn no_deps_created_when_test_uses_none() {
+        let output = run_example_test("lazy_dep_pruning::test_uses_none");
+
+        assert!(
+            !output.contains("LAZY_DEPS_MARKER: Creating DepA"),
+            "DepA should NOT be created"
+        );
+        assert!(
+            !output.contains("LAZY_DEPS_MARKER: Creating DepB"),
+            "DepB should NOT be created"
+        );
+        assert!(
+            !output.contains("LAZY_DEPS_MARKER: Creating DepC"),
+            "DepC should NOT be created"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn transitive_deps_are_kept() {
+        let output = run_example_test("lazy_dep_pruning::test_uses_dep_c");
+
+        assert!(
+            output.contains("LAZY_DEPS_MARKER: Creating DepA"),
+            "DepA should be created (transitive dep of DepC)"
+        );
+        assert!(
+            !output.contains("LAZY_DEPS_MARKER: Creating DepB"),
+            "DepB should NOT be created"
+        );
+        assert!(
+            output.contains("LAZY_DEPS_MARKER: Creating DepC"),
+            "DepC should be created"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn all_deps_created_when_both_used() {
+        let output = run_example_test("lazy_dep_pruning::test_uses_both");
+
+        assert!(
+            output.contains("LAZY_DEPS_MARKER: Creating DepA"),
+            "DepA should be created"
+        );
+        assert!(
+            output.contains("LAZY_DEPS_MARKER: Creating DepB"),
+            "DepB should be created"
+        );
+    }
+}

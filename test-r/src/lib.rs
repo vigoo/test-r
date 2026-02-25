@@ -54,6 +54,7 @@ pub mod core {
         ensure_time_control: ReportTimeControl,
         detached_panic_policy: DetachedPanicPolicy,
         run: TestFunction,
+        dependencies: Option<Vec<String>>,
     ) {
         let (crate_name, module_path) = split_module_path(module_path);
 
@@ -77,6 +78,7 @@ pub mod core {
                     is_ignored,
                     detached_panic_policy,
                 },
+                dependencies,
             });
     }
 

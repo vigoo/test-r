@@ -310,6 +310,7 @@ pub struct RegisteredTest {
     pub module_path: String,
     pub run: TestFunction,
     pub props: TestProperties,
+    pub dependencies: Option<Vec<String>>,
 }
 
 impl RegisteredTest {
@@ -518,6 +519,7 @@ impl DynamicTestRegistration {
         &mut self,
         name: impl AsRef<str>,
         props: TestProperties,
+        dependencies: Option<Vec<String>>,
         run: impl Fn(Arc<dyn DependencyView + Send + Sync>) -> R + Send + Sync + Clone + 'static,
     ) {
         self.tests.push(GeneratedTest {
@@ -526,6 +528,7 @@ impl DynamicTestRegistration {
                 Box::new(run(deps)) as Box<dyn TestReturnValue>
             })),
             props,
+            dependencies,
         });
     }
 
@@ -534,6 +537,7 @@ impl DynamicTestRegistration {
         &mut self,
         name: impl AsRef<str>,
         props: TestProperties,
+        dependencies: Option<Vec<String>>,
         run: impl (Fn(Arc<dyn DependencyView + Send + Sync>) -> Pin<Box<dyn Future<Output = R> + Send>>)
             + Send
             + Sync
@@ -550,6 +554,7 @@ impl DynamicTestRegistration {
                 })
             })),
             props,
+            dependencies,
         });
     }
 }
@@ -559,6 +564,7 @@ pub struct GeneratedTest {
     pub name: String,
     pub run: TestFunction,
     pub props: TestProperties,
+    pub dependencies: Option<Vec<String>>,
 }
 
 #[derive(Clone)]
@@ -714,6 +720,7 @@ fn add_generated_tests(
             module_path: generator.module_path.clone(),
             run: test.run,
             props: test.props,
+            dependencies: test.dependencies,
         }
     }));
 }
