@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-0fa54e21.js";
+            window.path_to_searchindex_js = "../searchindex-d7c6e71b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-9098e925.js"></script>
@@ -268,8 +268,20 @@ fn shared_dependency_tag2() -&gt; SharedDependency {
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>#[test]
-fn test4(shared: #[tagged_as("tag1")] &amp;SharedDependency) {
+fn test4(#[tagged_as("tag1")] shared: &amp;SharedDependency) {
     assert_eq!(shared.value, 1);
+}
+<span class="boring">}</span></code></pre>
+<p>Tagged dependencies can also be used as parameters of <strong>dependency constructors</strong>. This allows a <code>#[test_dep]</code> to depend on a specific tagged instance of another dependency:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>struct DerivedDependency {
+    value: i32,
+}
+
+#[test_dep]
+fn derived_dependency(#[tagged_as("tag1")] shared: &amp;SharedDependency) -&gt; DerivedDependency {
+    DerivedDependency { value: shared.value * 2 }
 }
 <span class="boring">}</span></code></pre>
 <p>It is also possible to <strong>inherit</strong> tagged dependencies from an outer suite:</p>
