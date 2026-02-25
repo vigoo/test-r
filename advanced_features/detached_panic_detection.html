@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Tracing - test-r</title>
+        <title>Detached panic detection - test-r</title>
 
 
         <!-- Custom HTML head -->
@@ -174,38 +174,64 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="tracing"><a class="header" href="#tracing">Tracing</a></h1>
-<p>Subscribers for <a href="https://github.com/tokio-rs/tracing">Tokio tracing</a> usually need to be set up once at the beginning of the application, and further calls to their initialization functions may cause panics.</p>
-<p>With <code>test-r</code>, the <a href="../advanced_features/dependency_injection.html">shared dependency feature</a> can be used to set up the tracing subscriber once before the first test is executed, and keep it alive until the end of the test run.</p>
-<p>The following example demonstrates this using the <code>tracing-subscriber</code> crate:</p>
+                        <h1 id="detached-panic-detection"><a class="header" href="#detached-panic-detection">Detached panic detection</a></h1>
+<p>When a test spawns threads or async tasks that outlive the test body, panics in those detached contexts are normally invisible — the test passes while the panic message is silently printed to stderr. <strong>test-r</strong> can detect these panics and fail the test, but only when using test-r’s own spawn functions.</p>
+<h2 id="spawn-functions"><a class="header" href="#spawn-functions">Spawn functions</a></h2>
+<p>test-r provides two spawn functions that propagate test context and capture panics:</p>
+<ul>
+<li><code>test_r::spawn_thread</code> — wraps <code>std::thread::spawn</code></li>
+<li><code>test_r::spawn</code> — wraps <code>tokio::spawn</code> (requires the <code>tokio</code> feature)</li>
+</ul>
+<p>These are drop-in replacements with the same signatures:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use test_r::{test_dep, test};
-
-struct Tracing;
-
-impl Tracing {
-    pub fn init() -&gt; Self {
-        tracing_subscriber::registry().with(
-            tracing_subscriber::fmt::layer().pretty()
-        ).init();
-        Self
-    }
-}
-
-#[test_dep]
-fn tracing() -&gt; Tracing {
-    Tracing::init()
-}
+</span>use test_r::{test, spawn_thread};
 
 #[test]
-fn test1(_tracing: &amp;Tracing) {
-    tracing::info!("test1");
+fn test_with_background_thread() {
+    let handle = spawn_thread(|| {
+        // If this panics, the test will fail
+        assert_eq!(2 + 2, 4);
+    });
+    handle.join().unwrap();
 }
+<span class="boring">}</span></code></pre>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{test, spawn};
 
 #[test]
-fn test2(_tracing: &amp;Tracing) {
-    tracing::info!("test2");
+async fn test_with_spawned_task() {
+    let handle = spawn(async {
+        // If this panics, the test will fail
+        assert_eq!(2 + 2, 4);
+    });
+    handle.await.unwrap();
+}
+<span class="boring">}</span></code></pre>
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How it works</a></h2>
+<p>By default, every test uses <code>DetachedPanicPolicy::FailTest</code>. When you use <code>spawn_thread</code> or <code>spawn</code>:</p>
+<ol>
+<li>The current test’s identity is propagated to the new thread or task.</li>
+<li>The closure is wrapped in <code>catch_unwind</code> to intercept any panic.</li>
+<li>If a panic occurs, it is recorded and associated with the originating test.</li>
+<li>After the test body completes, the runner checks for collected panics and fails the test if any were found.</li>
+</ol>
+<blockquote>
+<p><strong>Important:</strong> If you use <code>std::thread::spawn</code> or <code>tokio::spawn</code> directly, panics in those threads/tasks will <strong>not</strong> be detected by test-r. They will be printed to stderr by the default panic hook but will not cause the test to fail.</p>
+</blockquote>
+<h2 id="opting-out"><a class="header" href="#opting-out">Opting out</a></h2>
+<p>If a test intentionally spawns work that may panic, you can disable detection with the <code>#[ignore_detached_panics]</code> attribute:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{test, ignore_detached_panics, spawn_thread};
+
+#[ignore_detached_panics]
+#[test]
+fn test_that_expects_detached_panics() {
+    spawn_thread(|| {
+        panic!("this is expected");
+    });
 }
 <span class="boring">}</span></code></pre>
 
@@ -213,11 +239,11 @@ fn test2(_tracing: &amp;Tracing) {
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../how_to.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../advanced_features/dynamic_test_generation.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../how_to/property_based_testing.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../how_to.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -227,11 +253,11 @@ fn test2(_tracing: &amp;Tracing) {
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../how_to.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../advanced_features/dynamic_test_generation.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../how_to/property_based_testing.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../how_to.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

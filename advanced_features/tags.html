@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-e598e960.js";
+            window.path_to_searchindex_js = "../searchindex-b8477f72.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-f3b155d5.js"></script>
+        <script src="../toc-9098e925.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -190,7 +190,7 @@ fn tagged_test() {
 }
 <span class="boring">}</span></code></pre>
 <h2 id="tagging-entire-test-suites"><a class="header" href="#tagging-entire-test-suites">Tagging entire test suites</a></h2>
-<p>It is possible to tag an entire <strong>test suite</strong>. This can be done by using the <code>#[tags]</code> attribute on the module containing the tests,
+<p>It is possible to tag an entire <strong>test suite</strong>. This can be done by using the <code>#[tag]</code> attribute on the module containing the tests,
 or alternatively using the <code>tag_suite!</code> macro:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -200,7 +200,7 @@ mod inner1;
 
 tag_suite!(inner1, tag1);
 
-#[tags(tag2)]
+#[tag(tag2)]
 mod inner2 {
     // ...
 }

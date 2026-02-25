@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-e598e960.js";
+            window.path_to_searchindex_js = "../searchindex-b8477f72.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-f3b155d5.js"></script>
+        <script src="../toc-9098e925.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -224,7 +224,7 @@ fn other_dependency() -&gt; OtherDependency {
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>mod inner {
-    use test_r::{inher_test_dep, test};
+    use test_r::{inherit_test_dep, test};
     use super::SharedDependency;
     
     inherit_test_dep!(SharedDependency);
@@ -276,11 +276,11 @@ fn test4(shared: #[tagged_as("tag1")] &amp;SharedDependency) {
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>mod inner {
-    use test_r::{inher_test_dep, test};
+    use test_r::{inherit_test_dep, test};
     use super::SharedDependency;
     
-    inherit_test_dep!(#[tagged_as("tag1") SharedDependency);
-    inherit_test_dep!(#[tagged_as("tag2") SharedDependency);
+    inherit_test_dep!(#[tagged_as("tag1")] SharedDependency);
+    inherit_test_dep!(#[tagged_as("tag2")] SharedDependency);
 }
 <span class="boring">}</span></code></pre>
 <h2 id="dependency-matrix"><a class="header" href="#dependency-matrix">Dependency matrix</a></h2>

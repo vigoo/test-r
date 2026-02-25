@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e598e960.js";
+            window.path_to_searchindex_js = "searchindex-b8477f72.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-f3b155d5.js"></script>
+        <script src="toc-9098e925.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -179,7 +179,7 @@
 <p>By replicating the built-in test framework’s command line interface, <code>test-r</code> tests work seamlessly with IDEs like Visual Studio Code, IntelliJ IDEA, Zed, and others. <code>test-r</code> also implements many unstable features of the built-in test framework, such as customizable test output, reporting and ensuring execution time, shuffling test execution and running <code>#[bench]</code> benchmarks.</p>
 <p>To start using <code>test-r</code>, add it to the <code>dev-dependencies</code> section of your <code>Cargo.toml</code>:</p>
 <pre><code class="language-toml">[dev-dependencies]
-test-r = "1"
+test-r = "2"
 </code></pre>
 <p>There are three additional steps to take when using <code>test-r</code> in place of the built-in tests:</p>
 <ol>
@@ -199,7 +199,7 @@ edition = "2024"
 harness = false # Disable the built-in test harness
 
 [dev-dependencies]
-test-r = "1"
+test-r = "2"
 </code></pre>
 <p>And a simple <code>src/lib.rs</code> file defining a single public function and a test for it:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -228,7 +228,7 @@ mod tests {
 <p>The <code>test-r</code> test framework with the default set of enabled features supports running both sync and async tests, using <a href="https://tokio.rs">Tokio</a> as the async runtime.
 It is possible to turn off the async support by disabling the <code>tokio</code> feature:</p>
 <pre><code class="language-toml">[dev-dependencies]
-test-r = { version = "1", default-features = false }
+test-r = { version = "2", default-features = false }
 </code></pre>
 <h2 id="real-world-usage"><a class="header" href="#real-world-usage">Real-world usage</a></h2>
 <p>This section lists known projects that use <code>test-r</code>:</p>

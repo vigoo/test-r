@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e598e960.js";
+            window.path_to_searchindex_js = "searchindex-b8477f72.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-f3b155d5.js"></script>
+        <script src="toc-9098e925.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -180,7 +180,7 @@
 <p>By replicating the built-in test framework’s command line interface, <code>test-r</code> tests work seamlessly with IDEs like Visual Studio Code, IntelliJ IDEA, Zed, and others. <code>test-r</code> also implements many unstable features of the built-in test framework, such as customizable test output, reporting and ensuring execution time, shuffling test execution and running <code>#[bench]</code> benchmarks.</p>
 <p>To start using <code>test-r</code>, add it to the <code>dev-dependencies</code> section of your <code>Cargo.toml</code>:</p>
 <pre><code class="language-toml">[dev-dependencies]
-test-r = "1"
+test-r = "2"
 </code></pre>
 <p>There are three additional steps to take when using <code>test-r</code> in place of the built-in tests:</p>
 <ol>
@@ -200,7 +200,7 @@ edition = "2024"
 harness = false # Disable the built-in test harness
 
 [dev-dependencies]
-test-r = "1"
+test-r = "2"
 </code></pre>
 <p>And a simple <code>src/lib.rs</code> file defining a single public function and a test for it:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -229,7 +229,7 @@ mod tests {
 <p>The <code>test-r</code> test framework with the default set of enabled features supports running both sync and async tests, using <a href="https://tokio.rs">Tokio</a> as the async runtime.
 It is possible to turn off the async support by disabling the <code>tokio</code> feature:</p>
 <pre><code class="language-toml">[dev-dependencies]
-test-r = { version = "1", default-features = false }
+test-r = { version = "2", default-features = false }
 </code></pre>
 <h2 id="real-world-usage"><a class="header" href="#real-world-usage">Real-world usage</a></h2>
 <p>This section lists known projects that use <code>test-r</code>:</p>
@@ -522,7 +522,7 @@ fn other_dependency() -&gt; OtherDependency {
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>mod inner {
-    use test_r::{inher_test_dep, test};
+    use test_r::{inherit_test_dep, test};
     use super::SharedDependency;
     
     inherit_test_dep!(SharedDependency);
@@ -574,11 +574,11 @@ fn test4(shared: #[tagged_as("tag1")] &amp;SharedDependency) {
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>mod inner {
-    use test_r::{inher_test_dep, test};
+    use test_r::{inherit_test_dep, test};
     use super::SharedDependency;
     
-    inherit_test_dep!(#[tagged_as("tag1") SharedDependency);
-    inherit_test_dep!(#[tagged_as("tag2") SharedDependency);
+    inherit_test_dep!(#[tagged_as("tag1")] SharedDependency);
+    inherit_test_dep!(#[tagged_as("tag2")] SharedDependency);
 }
 <span class="boring">}</span></code></pre>
 <h2 id="dependency-matrix"><a class="header" href="#dependency-matrix">Dependency matrix</a></h2>
@@ -623,7 +623,7 @@ fn tagged_test() {
 }
 <span class="boring">}</span></code></pre>
 <h2 id="tagging-entire-test-suites"><a class="header" href="#tagging-entire-test-suites">Tagging entire test suites</a></h2>
-<p>It is possible to tag an entire <strong>test suite</strong>. This can be done by using the <code>#[tags]</code> attribute on the module containing the tests,
+<p>It is possible to tag an entire <strong>test suite</strong>. This can be done by using the <code>#[tag]</code> attribute on the module containing the tests,
 or alternatively using the <code>tag_suite!</code> macro:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -633,7 +633,7 @@ mod inner1;
 
 tag_suite!(inner1, tag1);
 
-#[tags(tag2)]
+#[tag(tag2)]
 mod inner2 {
     // ...
 }
@@ -723,7 +723,7 @@ mod suite {
 For non-inline modules, you can use the <code>sequential_suite!</code> macro instead in the following way:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use test_r::sequential_suite};
+</span>use test_r::sequential_suite;
 
 mod suite;
 
@@ -741,11 +741,11 @@ sequential_suite!(suite);
 #[timeout(1000)]
 #[test]
 async fn test1() {
-    tokio::time::sleep(std::time::Duration::from_secs(2));
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     assert!(true);
 }
 <span class="boring">}</span></code></pre>
-<p>Alternatively a human-readable duration string can used, to parsed by the <code>humantime</code> crate:</p>
+<p>Alternatively a human-readable duration string can be used, parsed by the <code>humantime</code> crate:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use test_r::{test, timeout};
@@ -753,11 +753,45 @@ async fn test1() {
 #[timeout("1s")]
 #[test]
 async fn test1() {
-    tokio::time::sleep(std::time::Duration::from_secs(2));
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     assert!(true);
 }
 <span class="boring">}</span></code></pre>
 <p>This feature only works when using the async test runner (enabled by the <code>tokio</code> feature).</p>
+<h3 id="suite-level-timeout"><a class="header" href="#suite-level-timeout">Suite-level timeout</a></h3>
+<p>It is possible to apply a timeout to all tests in a <strong>test suite</strong> by putting the <code>#[timeout(duration)]</code> attribute on the module:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{test, timeout};
+
+#[timeout("3s")]
+mod suite {
+    use super::*;
+
+    #[test]
+    async fn test1() {
+        // This test will be timed out after 3 seconds
+    }
+
+    #[test]
+    #[timeout(60000)]
+    async fn test2() {
+        // This test overrides the suite timeout with its own
+    }
+}
+<span class="boring">}</span></code></pre>
+<p>If an individual test within the suite has its own <code>#[timeout]</code> attribute, the per-test timeout takes precedence over the suite-level one.</p>
+<p>The <code>#[timeout]</code> attribute can only be used on <em>inline modules</em> due to a limitation in the current stable Rust compiler.
+For non-inline modules, you can use the <code>timeout_suite!</code> macro instead:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::timeout_suite;
+
+mod suite;
+
+timeout_suite!(suite, "3s");
+<span class="boring">}</span></code></pre>
+<p>The second parameter of <code>timeout_suite!</code> accepts the same values as the <code>#[timeout]</code> attribute: an integer (milliseconds) or a human-readable duration string.</p>
 <h2 id="reporting--ensuring-time-per-test"><a class="header" href="#reporting--ensuring-time-per-test">Reporting / ensuring time per test</a></h2>
 <p>There are command line arguments to enable <em>reporting</em> test run times and <em>ensuring</em> that each test runs within a certain time limit.
 The command line arguments enable these features for all tests. It is possible to individually configure this behavior per test using
@@ -857,6 +891,67 @@ Test generators are executed in both the main process and in all the child proce
 </div>
 
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="detached-panic-detection"><a class="header" href="#detached-panic-detection">Detached panic detection</a></h1>
+<p>When a test spawns threads or async tasks that outlive the test body, panics in those detached contexts are normally invisible — the test passes while the panic message is silently printed to stderr. <strong>test-r</strong> can detect these panics and fail the test, but only when using test-r’s own spawn functions.</p>
+<h2 id="spawn-functions"><a class="header" href="#spawn-functions">Spawn functions</a></h2>
+<p>test-r provides two spawn functions that propagate test context and capture panics:</p>
+<ul>
+<li><code>test_r::spawn_thread</code> — wraps <code>std::thread::spawn</code></li>
+<li><code>test_r::spawn</code> — wraps <code>tokio::spawn</code> (requires the <code>tokio</code> feature)</li>
+</ul>
+<p>These are drop-in replacements with the same signatures:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{test, spawn_thread};
+
+#[test]
+fn test_with_background_thread() {
+    let handle = spawn_thread(|| {
+        // If this panics, the test will fail
+        assert_eq!(2 + 2, 4);
+    });
+    handle.join().unwrap();
+}
+<span class="boring">}</span></code></pre>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{test, spawn};
+
+#[test]
+async fn test_with_spawned_task() {
+    let handle = spawn(async {
+        // If this panics, the test will fail
+        assert_eq!(2 + 2, 4);
+    });
+    handle.await.unwrap();
+}
+<span class="boring">}</span></code></pre>
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How it works</a></h2>
+<p>By default, every test uses <code>DetachedPanicPolicy::FailTest</code>. When you use <code>spawn_thread</code> or <code>spawn</code>:</p>
+<ol>
+<li>The current test’s identity is propagated to the new thread or task.</li>
+<li>The closure is wrapped in <code>catch_unwind</code> to intercept any panic.</li>
+<li>If a panic occurs, it is recorded and associated with the originating test.</li>
+<li>After the test body completes, the runner checks for collected panics and fails the test if any were found.</li>
+</ol>
+<blockquote>
+<p><strong>Important:</strong> If you use <code>std::thread::spawn</code> or <code>tokio::spawn</code> directly, panics in those threads/tasks will <strong>not</strong> be detected by test-r. They will be printed to stderr by the default panic hook but will not cause the test to fail.</p>
+</blockquote>
+<h2 id="opting-out"><a class="header" href="#opting-out">Opting out</a></h2>
+<p>If a test intentionally spawns work that may panic, you can disable detection with the <code>#[ignore_detached_panics]</code> attribute:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{test, ignore_detached_panics, spawn_thread};
+
+#[ignore_detached_panics]
+#[test]
+fn test_that_expects_detached_panics() {
+    spawn_thread(|| {
+        panic!("this is expected");
+    });
+}
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="how-to"><a class="header" href="#how-to">How to</a></h1>
 <p>This section contains a set of recommendations to solve various testing problems using a combination of <code>test-r</code> and other third party crates.</p>
 <ul>
@@ -872,8 +967,7 @@ Test generators are executed in both the main process and in all the child proce
 <p>The following example demonstrates this using the <code>tracing-subscriber</code> crate:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use tracing_subscriber::fmt::format::FmtSpan;
-use test_r::{test_dep, test};
+</span>use test_r::{test_dep, test};
 
 struct Tracing;
 
