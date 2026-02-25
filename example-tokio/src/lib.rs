@@ -796,3 +796,62 @@ mod generated {
         }
     }
 }
+
+#[cfg(test)]
+mod nested_sequential {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use test_r::sequential;
+
+    static CONCURRENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    async fn assert_no_concurrency() {
+        let prev = CONCURRENT_COUNT.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(
+            prev, 0,
+            "Tests are running concurrently in a sequential subtree!"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        CONCURRENT_COUNT.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    #[sequential]
+    mod parent {
+        use super::assert_no_concurrency;
+        use test_r::test;
+
+        #[test]
+        async fn parent_test_1() {
+            assert_no_concurrency().await;
+        }
+
+        mod child_a {
+            use super::assert_no_concurrency;
+            use test_r::test;
+
+            #[test]
+            async fn child_a_test_1() {
+                assert_no_concurrency().await;
+            }
+
+            #[test]
+            async fn child_a_test_2() {
+                assert_no_concurrency().await;
+            }
+        }
+
+        mod child_b {
+            use super::assert_no_concurrency;
+            use test_r::test;
+
+            #[test]
+            async fn child_b_test_1() {
+                assert_no_concurrency().await;
+            }
+
+            #[test]
+            async fn child_b_test_2() {
+                assert_no_concurrency().await;
+            }
+        }
+    }
+}
