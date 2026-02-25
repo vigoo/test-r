@@ -6,7 +6,9 @@ use crate::internal::{
     generate_tests, get_ensure_time, CapturedOutput, FailureCause, FlakinessControl,
     RegisteredTest, SuiteResult, TestFunction, TestResult,
 };
-use crate::ipc::{ipc_name, is_internal_ipc_line, new_ipc_marker, IpcCommand, IpcResponse, INIT_MARKER};
+use crate::ipc::{
+    ipc_name, is_internal_ipc_line, new_ipc_marker, IpcCommand, IpcResponse, INIT_MARKER,
+};
 use crate::output::{test_runner_output, TestRunnerOutput};
 use bincode::{decode_from_slice, encode_to_vec};
 use futures::FutureExt;

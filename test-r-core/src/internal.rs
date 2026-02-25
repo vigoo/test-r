@@ -1268,8 +1268,11 @@ mod error_reporting_tests {
             let _ = handle.join();
         }));
 
-        let mut test_result =
-            TestResult::from_result(&ShouldPanic::No, Duration::from_millis(1), result.map(|_| Ok(())));
+        let mut test_result = TestResult::from_result(
+            &ShouldPanic::No,
+            Duration::from_millis(1),
+            result.map(|_| Ok(())),
+        );
 
         if let Some(collector) = crate::panic_hook::take_detached_collector(test_id) {
             let panics = match collector.lock() {
@@ -1323,8 +1326,11 @@ mod error_reporting_tests {
             let _ = handle.join();
         }));
 
-        let test_result =
-            TestResult::from_result(&ShouldPanic::No, Duration::from_millis(1), result.map(|_| Ok(())));
+        let test_result = TestResult::from_result(
+            &ShouldPanic::No,
+            Duration::from_millis(1),
+            result.map(|_| Ok(())),
+        );
 
         if let Some(collector) = crate::panic_hook::take_detached_collector(test_id) {
             let panics = match collector.lock() {
