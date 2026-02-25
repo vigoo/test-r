@@ -73,6 +73,7 @@ impl TestSuiteExecution {
                 root.add_test(test.clone());
             }
 
+            root.propagate_sequential(None);
             root.prune_unused_deps();
 
             (root, filtered_tests)
@@ -589,6 +590,23 @@ impl TestSuiteExecution {
         };
         result.trim_start_matches("::").to_string()
     }
+
+    fn propagate_sequential(&mut self, inherited_lock: Option<&SequentialExecutionLock>) {
+        if let Some(parent_lock) = inherited_lock {
+            self.is_sequential = true;
+            self.sequential_lock = parent_lock.clone();
+        }
+
+        let lock_for_children = if self.is_sequential {
+            Some(self.sequential_lock.clone())
+        } else {
+            None
+        };
+
+        for child in &mut self.inner {
+            child.propagate_sequential(lock_for_children.as_ref());
+        }
+    }
 }
 
 impl Debug for TestSuiteExecution {
@@ -650,60 +668,44 @@ enum SequentialExecutionLockGuard {
     Sync(parking_lot::ArcMutexGuard<parking_lot::RawMutex, ()>),
 }
 
+#[derive(Clone)]
 struct SequentialExecutionLock {
     #[cfg(feature = "tokio")]
-    async_mutex: Option<Arc<tokio::sync::Mutex<()>>>,
-    sync_mutex: Option<Arc<parking_lot::Mutex<()>>>,
+    async_mutex: Arc<tokio::sync::Mutex<()>>,
+    sync_mutex: Arc<parking_lot::Mutex<()>>,
 }
 
 impl SequentialExecutionLock {
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "tokio")]
-            async_mutex: None,
-            sync_mutex: None,
+            async_mutex: Arc::new(tokio::sync::Mutex::new(())),
+            sync_mutex: Arc::new(parking_lot::Mutex::new(())),
         }
     }
 
     #[cfg(feature = "tokio")]
     pub async fn is_locked(&self) -> bool {
-        if let Some(mutex) = &self.async_mutex {
-            mutex.try_lock().is_err()
-        } else {
-            false
-        }
+        self.async_mutex.try_lock().is_err()
     }
 
     pub fn is_locked_sync(&self) -> bool {
-        if let Some(mutex) = &self.sync_mutex {
-            mutex.try_lock().is_none()
-        } else {
-            false
-        }
+        self.sync_mutex.try_lock().is_none()
     }
 
     #[cfg(feature = "tokio")]
-    pub async fn lock(&mut self, is_sequential: bool) -> SequentialExecutionLockGuard {
+    pub async fn lock(&self, is_sequential: bool) -> SequentialExecutionLockGuard {
         if is_sequential {
-            if self.async_mutex.is_none() {
-                self.async_mutex = Some(Arc::new(tokio::sync::Mutex::new(())));
-            }
-
-            let permit =
-                tokio::sync::Mutex::lock_owned(self.async_mutex.as_ref().unwrap().clone()).await;
+            let permit = tokio::sync::Mutex::lock_owned(self.async_mutex.clone()).await;
             SequentialExecutionLockGuard::Async(permit)
         } else {
             SequentialExecutionLockGuard::None
         }
     }
 
-    pub fn lock_sync(&mut self, is_sequential: bool) -> SequentialExecutionLockGuard {
+    pub fn lock_sync(&self, is_sequential: bool) -> SequentialExecutionLockGuard {
         if is_sequential {
-            if self.sync_mutex.is_none() {
-                self.sync_mutex = Some(Arc::new(parking_lot::Mutex::new(())));
-            }
-
-            let permit = parking_lot::Mutex::lock_arc(&self.sync_mutex.as_ref().unwrap().clone());
+            let permit = parking_lot::Mutex::lock_arc(&self.sync_mutex);
             SequentialExecutionLockGuard::Sync(permit)
         } else {
             SequentialExecutionLockGuard::None

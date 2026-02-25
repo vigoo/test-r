@@ -24,6 +24,8 @@ mod suite {
 
 The rest of the tests in the crate will still be parallelized based on the `--test-threads` argument.
 
+When `#[sequential]` is applied to a module that contains **nested sub-modules**, the sequential behavior propagates to the entire subtree. All tests in the module and its descendants are guaranteed to run one at a time, gated by a single lock.
+
 The `#[sequential]` attribute can only be used on _inline modules_ due to a limitation in the current stable Rust compiler.
 For non-inline modules, you can use the `sequential_suite!` macro instead in the following way:
 
