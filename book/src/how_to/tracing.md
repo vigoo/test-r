@@ -7,7 +7,6 @@ With `test-r`, the [shared dependency feature](../advanced_features/dependency_i
 The following example demonstrates this using the `tracing-subscriber` crate:
 
 ```rust
-use tracing_subscriber::fmt::format::FmtSpan;
 use test_r::{test_dep, test};
 
 struct Tracing;

@@ -12,6 +12,7 @@
   - [Per-test configuration](./advanced_features/per_test_configuration.md)
   - [Flaky tests](./advanced_features/flaky_tests.md)
   - [Dynamic test generation](./advanced_features/dynamic_test_generation.md)
+  - [Detached panic detection](./advanced_features/detached_panic_detection.md)
 - [How to](./how_to.md)
   - [Tracing](./how_to/tracing.md) 
   - [Property based testing](./how_to/property_based_testing.md)

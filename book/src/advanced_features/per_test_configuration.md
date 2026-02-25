@@ -28,7 +28,7 @@ The `#[sequential]` attribute can only be used on _inline modules_ due to a limi
 For non-inline modules, you can use the `sequential_suite!` macro instead in the following way:
 
 ```rust
-use test_r::sequential_suite};
+use test_r::sequential_suite;
 
 mod suite;
 
@@ -51,7 +51,7 @@ use test_r::{test, timeout};
 #[timeout(1000)]
 #[test]
 async fn test1() {
-    tokio::time::sleep(std::time::Duration::from_secs(2));
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     assert!(true);
 }
 ```
@@ -64,7 +64,7 @@ use test_r::{test, timeout};
 #[timeout("1s")]
 #[test]
 async fn test1() {
-    tokio::time::sleep(std::time::Duration::from_secs(2));
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     assert!(true);
 }
 ```
