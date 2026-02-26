@@ -210,7 +210,9 @@ fn reuse_nextest_archive(
         fs_extra::dir::move_dir(
             &cmd.archive_file,
             &target,
-            &fs_extra::dir::CopyOptions::new().overwrite(true).content_only(true)
+            &fs_extra::dir::CopyOptions::new()
+                .overwrite(true)
+                .content_only(true),
         )?;
     }
 
