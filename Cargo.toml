@@ -7,5 +7,5 @@ members = [
     "test-r",
     "example",
     "example-tokio",
-    "github",
+    "github", "cargo-test-r",
 ]

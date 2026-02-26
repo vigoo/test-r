@@ -244,7 +244,7 @@ test_r::timeout_suite!(suite_timeout_macro_tests, "3s");
 
 #[cfg(test)]
 pub mod flakiness {
-    use rand::Rng;
+    use rand::RngExt;
     use std::time::Duration;
     use test_r::{flaky, non_flaky, tag, test};
 
