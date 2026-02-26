@@ -3,7 +3,7 @@ use test_r::{sequential_suite, tag_suite};
 #[cfg(test)]
 #[test_r::tag(a)]
 mod tests {
-    use rand::Rng;
+    use rand::RngExt;
     use std::error::Error;
     use std::fmt::{Debug, Display, Formatter};
     use std::time::Duration;

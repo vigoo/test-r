@@ -14,9 +14,9 @@ proc-macro = true
 [dependencies]
 test-r-core = { version = "6.0.0", path = "../test-r-core" }
 
-darling = "0.21.0"
-humantime = "2.2.0"
+darling = "0.21.3"
+humantime = "2.3.0"
 proc-macro2 = "1"
 quote = "1"
-rand = "0.9"
+rand = "0.10"
 syn = { version = "2", features = ["full"] }
