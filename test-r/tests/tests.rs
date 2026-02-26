@@ -97,18 +97,17 @@ mod cargo_tests {
                 serde_json::from_str::<serde_json::Value>(line)
             {
                 let event = map.get("event").unwrap().as_str().unwrap();
-                if event == "ok" || event == "failed" {
-                    if let Some(serde_json::Value::String(s)) = map.get("name") {
-                        if s == "test_r_example_tokio::tests::it_does_work" {
-                            output_it_does_work =
-                                map.get("stdout").unwrap().as_str().unwrap().to_string();
-                        } else if s == "test_r_example_tokio::tests::this_too" {
-                            output_this_too =
-                                map.get("stdout").unwrap().as_str().unwrap().to_string();
-                        } else if s == "test_r_example_tokio::tests::panic_test_1" {
-                            output_panic_test_1 =
-                                map.get("stdout").unwrap().as_str().unwrap().to_string();
-                        }
+                if (event == "ok" || event == "failed")
+                    && let Some(serde_json::Value::String(s)) = map.get("name")
+                {
+                    if s == "test_r_example_tokio::tests::it_does_work" {
+                        output_it_does_work =
+                            map.get("stdout").unwrap().as_str().unwrap().to_string();
+                    } else if s == "test_r_example_tokio::tests::this_too" {
+                        output_this_too = map.get("stdout").unwrap().as_str().unwrap().to_string();
+                    } else if s == "test_r_example_tokio::tests::panic_test_1" {
+                        output_panic_test_1 =
+                            map.get("stdout").unwrap().as_str().unwrap().to_string();
                     }
                 }
             }
@@ -149,18 +148,17 @@ mod cargo_tests {
                 serde_json::from_str::<serde_json::Value>(line)
             {
                 let event = map.get("event").unwrap().as_str().unwrap();
-                if event == "ok" || event == "failed" {
-                    if let Some(serde_json::Value::String(s)) = map.get("name") {
-                        if s == "test_r_example::tests::it_does_work" {
-                            output_it_does_work =
-                                map.get("stdout").unwrap().as_str().unwrap().to_string();
-                        } else if s == "test_r_example::tests::this_too" {
-                            output_this_too =
-                                map.get("stdout").unwrap().as_str().unwrap().to_string();
-                        } else if s == "test_r_example::inner::tests::inner_test_works" {
-                            output_inner_test_works =
-                                map.get("stdout").unwrap().as_str().unwrap().to_string();
-                        }
+                if (event == "ok" || event == "failed")
+                    && let Some(serde_json::Value::String(s)) = map.get("name")
+                {
+                    if s == "test_r_example::tests::it_does_work" {
+                        output_it_does_work =
+                            map.get("stdout").unwrap().as_str().unwrap().to_string();
+                    } else if s == "test_r_example::tests::this_too" {
+                        output_this_too = map.get("stdout").unwrap().as_str().unwrap().to_string();
+                    } else if s == "test_r_example::inner::tests::inner_test_works" {
+                        output_inner_test_works =
+                            map.get("stdout").unwrap().as_str().unwrap().to_string();
                     }
                 }
             }
