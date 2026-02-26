@@ -14,6 +14,10 @@ mod tests {
             .write(b"Print from 'it_does_work'\n")
             .await
             .unwrap();
+        let _ = tokio::io::stderr()
+            .write(b"Stderr from 'it_does_work'\n")
+            .await
+            .unwrap();
         let result = 2 + 2;
         assert_eq!(result, 5);
     }
@@ -23,6 +27,10 @@ mod tests {
     async fn this_too() {
         let _ = tokio::io::stdout()
             .write(b"Print from 'this_too'\n")
+            .await
+            .unwrap();
+        let _ = tokio::io::stderr()
+            .write(b"Stderr from 'this_too'\n")
             .await
             .unwrap();
         let result = 2 + 2;
@@ -35,6 +43,10 @@ mod tests {
     async fn panic_test_1() {
         let _ = tokio::io::stdout()
             .write(b"Print from 'panic_test_1'\n")
+            .await
+            .unwrap();
+        let _ = tokio::io::stderr()
+            .write(b"Stderr from 'panic_test_1'\n")
             .await
             .unwrap();
         panic!("This test should panic");
@@ -153,7 +165,7 @@ mod inner {
                 .write(b"Start sleeping in sleeping test 3\n")
                 .await
                 .unwrap();
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
             let _ = tokio::io::stdout()
                 .write(b"Finished sleeping in sleeping test 3\n")
                 .await
@@ -180,6 +192,55 @@ mod inner {
         }
     }
 }
+
+#[cfg(test)]
+#[test_r::timeout("3s")]
+mod suite_timeout_tests {
+    use test_r::test;
+
+    #[test]
+    async fn suite_timeout_short_test() {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let result = 2 + 2;
+        assert_eq!(result, 4);
+    }
+
+    #[test]
+    async fn suite_timeout_exceeds() {
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+        let result = 2 + 2;
+        assert_eq!(result, 4);
+    }
+
+    #[test]
+    #[test_r::timeout(60000)]
+    async fn suite_timeout_overridden() {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let result = 2 + 2;
+        assert_eq!(result, 4);
+    }
+}
+
+#[cfg(test)]
+mod suite_timeout_macro_tests {
+    use test_r::test;
+
+    #[test]
+    async fn suite_timeout_macro_short_test() {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let result = 2 + 2;
+        assert_eq!(result, 4);
+    }
+
+    #[test]
+    async fn suite_timeout_macro_exceeds() {
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+        let result = 2 + 2;
+        assert_eq!(result, 4);
+    }
+}
+
+test_r::timeout_suite!(suite_timeout_macro_tests, "3s");
 
 #[cfg(test)]
 pub mod flakiness {
@@ -411,8 +472,8 @@ mod generated {
     use std::time::Duration;
     use test_r::core::internal::TestProperties;
     use test_r::core::{
-        CaptureControl, DynamicTestRegistration, FlakinessControl, ReportTimeControl, ShouldPanic,
-        TestType,
+        CaptureControl, DetachedPanicPolicy, DynamicTestRegistration, FlakinessControl,
+        ReportTimeControl, ShouldPanic, TestType,
     };
     use test_r::{add_test, define_matrix_dimension, test, test_dep, test_gen};
 
@@ -423,6 +484,7 @@ mod generated {
             r.add_sync_test(
                 format!("test_{i}"),
                 TestProperties::unit_test(),
+                None,
                 move |_| {
                     println!("Running test {i}");
                     let s = i.to_string();
@@ -440,6 +502,7 @@ mod generated {
             r.add_async_test(
                 format!("test_{i}"),
                 TestProperties::unit_test(),
+                None,
                 move |_| {
                     Box::pin(async move {
                         println!("Running test {i}");
@@ -507,6 +570,25 @@ mod generated {
         }
     }
 
+    struct Dep2Derived {
+        base_value: i32,
+        extra: i32,
+    }
+
+    #[test_dep]
+    fn create_dep2_derived(#[tagged_as("secondary")] dep2: &Dep2) -> Dep2Derived {
+        Dep2Derived {
+            base_value: dep2.value,
+            extra: 42,
+        }
+    }
+
+    #[test]
+    fn dep2_derived_uses_secondary(dep2_derived: &Dep2Derived) {
+        assert_eq!(dep2_derived.base_value, 20); // secondary dep2 has value 20
+        assert_eq!(dep2_derived.extra, 42);
+    }
+
     #[test_gen]
     fn generate_tests_3(r: &mut DynamicTestRegistration) {
         println!("Generating some tests with dependencies in a sync generator");
@@ -520,6 +602,24 @@ mod generated {
                     let s = i.to_string();
                     let i2 = s.parse::<i32>().unwrap();
                     assert_eq!(i, i2);
+                }
+            );
+        }
+    }
+
+    #[test_gen]
+    fn generate_tests_3_tagged(r: &mut DynamicTestRegistration) {
+        for i in 0..3 {
+            add_test!(
+                r,
+                format!("test_{i}"),
+                TestProperties::unit_test(),
+                move |dep1: &Dep1, #[tagged_as("secondary")] d2: &Dep2| {
+                    println!(
+                        "Running sync tagged test {} using deps {} {}",
+                        i, dep1.value, d2.value
+                    );
+                    assert_eq!(d2.value, 20);
                 }
             );
         }
@@ -578,7 +678,9 @@ mod generated {
                     ensure_time_control: ReportTimeControl::Disabled,
                     tags: vec!["example".to_string()],
                     is_ignored: false,
+                    detached_panic_policy: DetachedPanicPolicy::FailTest,
                 },
+                None,
                 move |_| {
                     Box::pin(async move {
                         println!("Running test {i}");
@@ -607,6 +709,7 @@ mod generated {
                     ensure_time_control: ReportTimeControl::Disabled,
                     tags: vec!["example".to_string()],
                     is_ignored: false,
+                    detached_panic_policy: DetachedPanicPolicy::FailTest,
                 },
                 move || async {
                     println!("Running test {i}");
@@ -693,6 +796,65 @@ mod generated {
                     assert_eq!(i, i2);
                 }
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod nested_sequential {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use test_r::sequential;
+
+    static CONCURRENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    async fn assert_no_concurrency() {
+        let prev = CONCURRENT_COUNT.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(
+            prev, 0,
+            "Tests are running concurrently in a sequential subtree!"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        CONCURRENT_COUNT.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    #[sequential]
+    mod parent {
+        use super::assert_no_concurrency;
+        use test_r::test;
+
+        #[test]
+        async fn parent_test_1() {
+            assert_no_concurrency().await;
+        }
+
+        mod child_a {
+            use super::assert_no_concurrency;
+            use test_r::test;
+
+            #[test]
+            async fn child_a_test_1() {
+                assert_no_concurrency().await;
+            }
+
+            #[test]
+            async fn child_a_test_2() {
+                assert_no_concurrency().await;
+            }
+        }
+
+        mod child_b {
+            use super::assert_no_concurrency;
+            use test_r::test;
+
+            #[test]
+            async fn child_b_test_1() {
+                assert_no_concurrency().await;
+            }
+
+            #[test]
+            async fn child_b_test_2() {
+                assert_no_concurrency().await;
+            }
         }
     }
 }

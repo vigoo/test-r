@@ -1,4 +1,4 @@
-use crate::internal::{CapturedOutput, RegisteredTest, SuiteResult, TestResult};
+use crate::internal::{RegisteredTest, SuiteResult, TestResult};
 use crate::output::{LogFile, StdoutOrLogFile, TestRunnerOutput};
 use std::io::Write;
 use std::path::PathBuf;
@@ -74,10 +74,7 @@ impl TestRunnerOutput for Json {
             let mut stdout_lines = result
                 .captured_output()
                 .iter()
-                .filter_map(|line| match line {
-                    CapturedOutput::Stdout { line, .. } => Some(line.clone()),
-                    CapturedOutput::Stderr { .. } => None,
-                })
+                .map(|line| line.line().to_string())
                 .collect::<Vec<_>>();
 
             let extra = match result.failure_message() {

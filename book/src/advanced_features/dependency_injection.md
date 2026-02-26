@@ -57,7 +57,7 @@ As explained above, test dependencies must be provided in **each test module**. 
 
 ```rust
 mod inner {
-    use test_r::{inher_test_dep, test};
+    use test_r::{inherit_test_dep, test};
     use super::SharedDependency;
     
     inherit_test_dep!(SharedDependency);
@@ -107,8 +107,21 @@ Tagged dependencies are not injected automatically for parameters of the same ty
 
 ```rust
 #[test]
-fn test4(shared: #[tagged_as("tag1")] &SharedDependency) {
+fn test4(#[tagged_as("tag1")] shared: &SharedDependency) {
     assert_eq!(shared.value, 1);
+}
+```
+
+Tagged dependencies can also be used as parameters of **dependency constructors**. This allows a `#[test_dep]` to depend on a specific tagged instance of another dependency:
+
+```rust
+struct DerivedDependency {
+    value: i32,
+}
+
+#[test_dep]
+fn derived_dependency(#[tagged_as("tag1")] shared: &SharedDependency) -> DerivedDependency {
+    DerivedDependency { value: shared.value * 2 }
 }
 ```
 
@@ -116,11 +129,11 @@ It is also possible to **inherit** tagged dependencies from an outer suite:
 
 ```rust
 mod inner {
-    use test_r::{inher_test_dep, test};
+    use test_r::{inherit_test_dep, test};
     use super::SharedDependency;
     
-    inherit_test_dep!(#[tagged_as("tag1") SharedDependency);
-    inherit_test_dep!(#[tagged_as("tag2") SharedDependency);
+    inherit_test_dep!(#[tagged_as("tag1")] SharedDependency);
+    inherit_test_dep!(#[tagged_as("tag2")] SharedDependency);
 }
 ```
 

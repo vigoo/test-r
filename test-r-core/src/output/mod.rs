@@ -3,6 +3,7 @@ mod ipc;
 mod json;
 mod junit;
 mod pretty;
+mod term_progress;
 mod terse;
 
 use crate::args::{Arguments, FormatSetting};

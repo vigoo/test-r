@@ -11,6 +11,7 @@ mod tests {
     #[tag(output_capture_test)]
     fn it_does_work() {
         println!("Print from 'it_does_work'");
+        eprintln!("Stderr from 'it_does_work'");
         let result = 2 + 2;
         assert_eq!(result, 5);
     }
@@ -21,6 +22,7 @@ mod tests {
     #[always_ensure_time]
     fn this_too() {
         println!("Print from 'this_too'");
+        eprintln!("Stderr from 'this_too'");
         let result = 2 + 2;
         assert_eq!(result, 4);
     }
@@ -56,6 +58,7 @@ mod inner {
         #[never_ensure_time]
         fn inner_test_works() {
             println!("Print from inner test");
+            eprintln!("Stderr from inner test");
             let result = 2 + 2;
             assert_eq!(result, 4);
         }
@@ -147,5 +150,128 @@ mod generic_deps {
     pub fn test_with_deps(dep1: &Arc<Dep1>, dep2: &Arc<Dep2>) {
         println!("Test with deps");
         assert_eq!(dep1.value + dep2.value, 30);
+    }
+}
+
+#[cfg(test)]
+mod lazy_dep_pruning {
+    use test_r::{test, test_dep};
+
+    pub struct DepA {
+        pub value: i32,
+    }
+
+    pub struct DepB {
+        pub value: i32,
+    }
+
+    pub struct DepC {
+        pub value: i32,
+    }
+
+    #[test_dep]
+    fn create_dep_a() -> DepA {
+        println!("LAZY_DEPS_MARKER: Creating DepA");
+        DepA { value: 1 }
+    }
+
+    #[test_dep]
+    fn create_dep_b() -> DepB {
+        println!("LAZY_DEPS_MARKER: Creating DepB");
+        DepB { value: 2 }
+    }
+
+    #[test_dep]
+    fn create_dep_c(dep_a: &DepA) -> DepC {
+        println!("LAZY_DEPS_MARKER: Creating DepC");
+        DepC {
+            value: dep_a.value + 10,
+        }
+    }
+
+    #[test]
+    fn test_uses_dep_a(dep_a: &DepA) {
+        assert_eq!(dep_a.value, 1);
+    }
+
+    #[test]
+    fn test_uses_dep_b(dep_b: &DepB) {
+        assert_eq!(dep_b.value, 2);
+    }
+
+    #[test]
+    fn test_uses_both(dep_a: &DepA, dep_b: &DepB) {
+        assert_eq!(dep_a.value + dep_b.value, 3);
+    }
+
+    #[test]
+    fn test_uses_none() {
+        let x = 4;
+        assert_eq!(x, 4);
+    }
+
+    #[test]
+    fn test_uses_dep_c(dep_c: &DepC) {
+        assert_eq!(dep_c.value, 11);
+    }
+}
+
+#[cfg(test)]
+mod nested_sequential {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use test_r::sequential;
+
+    static CONCURRENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    fn assert_no_concurrency() {
+        let prev = CONCURRENT_COUNT.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(
+            prev, 0,
+            "Tests are running concurrently in a sequential subtree!"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+        CONCURRENT_COUNT.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    #[sequential]
+    mod parent {
+        use super::assert_no_concurrency;
+        use test_r::test;
+
+        #[test]
+        fn parent_test_1() {
+            assert_no_concurrency();
+        }
+
+        mod child_a {
+            use super::assert_no_concurrency;
+            use test_r::test;
+
+            #[test]
+            fn child_a_test_1() {
+                assert_no_concurrency();
+            }
+
+            #[test]
+            fn child_a_test_2() {
+                assert_no_concurrency();
+            }
+        }
+
+        mod child_b {
+            use super::assert_no_concurrency;
+            use test_r::test;
+
+            #[test]
+            fn child_b_test_1() {
+                assert_no_concurrency();
+            }
+
+            #[test]
+            fn child_b_test_2() {
+                assert_no_concurrency();
+            }
+        }
     }
 }

@@ -1,7 +1,7 @@
 use rand::prelude::{SliceRandom, StdRng};
 use rand::SeedableRng;
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -9,8 +9,8 @@ use topological_sort::TopologicalSort;
 
 use crate::args::Arguments;
 use crate::internal::{
-    apply_suite_tags, filter_registered_tests, DependencyConstructor, DependencyView,
-    RegisteredDependency, RegisteredTest, RegisteredTestSuiteProperty,
+    apply_suite_tags, apply_suite_timeouts, filter_registered_tests, DependencyConstructor,
+    DependencyView, RegisteredDependency, RegisteredTest, RegisteredTestSuiteProperty,
 };
 
 pub(crate) struct TestSuiteExecution {
@@ -36,7 +36,8 @@ impl TestSuiteExecution {
         props: &[RegisteredTestSuiteProperty],
     ) -> (Self, Vec<RegisteredTest>) {
         let tagged_tests = apply_suite_tags(tests, props);
-        let mut filtered_tests = filter_registered_tests(arguments, &tagged_tests);
+        let timed_tests = apply_suite_timeouts(&tagged_tests, props);
+        let mut filtered_tests = filter_registered_tests(arguments, &timed_tests);
         Self::shuffle(arguments, &mut filtered_tests);
         filtered_tests.reverse();
 
@@ -71,6 +72,9 @@ impl TestSuiteExecution {
             for test in filtered_tests.clone() {
                 root.add_test(test.clone());
             }
+
+            root.propagate_sequential(None);
+            root.prune_unused_deps();
 
             (root, filtered_tests)
         }
@@ -502,6 +506,71 @@ impl TestSuiteExecution {
         self.materialized_dependencies.clear();
     }
 
+    /// Prunes dependencies that are not needed by any test in this subtree.
+    /// Returns `Some(needed_from_parent)` with dep names needed from ancestor levels,
+    /// or `None` if pruning is disabled for this subtree (unknown deps).
+    fn prune_unused_deps(&mut self) -> Option<HashSet<String>> {
+        // Collect dep names needed by tests at this level
+        let mut needed: Option<HashSet<String>> = Some(HashSet::new());
+        for test in &self.tests {
+            match &test.dependencies {
+                None => {
+                    needed = None;
+                    break;
+                }
+                Some(deps) => {
+                    if let Some(ref mut set) = needed {
+                        set.extend(deps.iter().cloned());
+                    }
+                }
+            }
+        }
+
+        // Merge children's needs
+        for inner in &mut self.inner {
+            let child_needs = inner.prune_unused_deps();
+            needed = match (needed, child_needs) {
+                (None, _) | (_, None) => None,
+                (Some(mut a), Some(b)) => {
+                    a.extend(b);
+                    Some(a)
+                }
+            };
+        }
+
+        // If any test has unknown deps, keep everything
+        let needed = needed?;
+
+        // Determine which local deps to keep
+        let local_names: HashSet<String> =
+            self.dependencies.iter().map(|d| d.name.clone()).collect();
+        let mut keep_local: HashSet<String> = needed.intersection(&local_names).cloned().collect();
+
+        // Expand transitive closure for local deps only (fixpoint)
+        let mut queue: VecDeque<String> = keep_local.iter().cloned().collect();
+        let mut needed_from_parent: HashSet<String> =
+            needed.difference(&local_names).cloned().collect();
+
+        while let Some(dep_name) = queue.pop_front() {
+            if let Some(dep) = self.dependencies.iter().find(|d| d.name == dep_name) {
+                for transitive in &dep.dependencies {
+                    if local_names.contains(transitive) {
+                        if keep_local.insert(transitive.clone()) {
+                            queue.push_back(transitive.clone());
+                        }
+                    } else {
+                        needed_from_parent.insert(transitive.clone());
+                    }
+                }
+            }
+        }
+
+        // Prune
+        self.dependencies.retain(|d| keep_local.contains(&d.name));
+
+        Some(needed_from_parent)
+    }
+
     fn is_prefix_of(this: &str, that: &str) -> bool {
         this.is_empty() || this == that || that.starts_with(&format!("{this}::"))
     }
@@ -520,6 +589,23 @@ impl TestSuiteExecution {
             format!("{from}::{remaining}")
         };
         result.trim_start_matches("::").to_string()
+    }
+
+    fn propagate_sequential(&mut self, inherited_lock: Option<&SequentialExecutionLock>) {
+        if let Some(parent_lock) = inherited_lock {
+            self.is_sequential = true;
+            self.sequential_lock = parent_lock.clone();
+        }
+
+        let lock_for_children = if self.is_sequential {
+            Some(self.sequential_lock.clone())
+        } else {
+            None
+        };
+
+        for child in &mut self.inner {
+            child.propagate_sequential(lock_for_children.as_ref());
+        }
     }
 }
 
@@ -582,60 +668,44 @@ enum SequentialExecutionLockGuard {
     Sync(parking_lot::ArcMutexGuard<parking_lot::RawMutex, ()>),
 }
 
+#[derive(Clone)]
 struct SequentialExecutionLock {
     #[cfg(feature = "tokio")]
-    async_mutex: Option<Arc<tokio::sync::Mutex<()>>>,
-    sync_mutex: Option<Arc<parking_lot::Mutex<()>>>,
+    async_mutex: Arc<tokio::sync::Mutex<()>>,
+    sync_mutex: Arc<parking_lot::Mutex<()>>,
 }
 
 impl SequentialExecutionLock {
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "tokio")]
-            async_mutex: None,
-            sync_mutex: None,
+            async_mutex: Arc::new(tokio::sync::Mutex::new(())),
+            sync_mutex: Arc::new(parking_lot::Mutex::new(())),
         }
     }
 
     #[cfg(feature = "tokio")]
     pub async fn is_locked(&self) -> bool {
-        if let Some(mutex) = &self.async_mutex {
-            mutex.try_lock().is_err()
-        } else {
-            false
-        }
+        self.async_mutex.try_lock().is_err()
     }
 
     pub fn is_locked_sync(&self) -> bool {
-        if let Some(mutex) = &self.sync_mutex {
-            mutex.try_lock().is_none()
-        } else {
-            false
-        }
+        self.sync_mutex.try_lock().is_none()
     }
 
     #[cfg(feature = "tokio")]
-    pub async fn lock(&mut self, is_sequential: bool) -> SequentialExecutionLockGuard {
+    pub async fn lock(&self, is_sequential: bool) -> SequentialExecutionLockGuard {
         if is_sequential {
-            if self.async_mutex.is_none() {
-                self.async_mutex = Some(Arc::new(tokio::sync::Mutex::new(())));
-            }
-
-            let permit =
-                tokio::sync::Mutex::lock_owned(self.async_mutex.as_ref().unwrap().clone()).await;
+            let permit = tokio::sync::Mutex::lock_owned(self.async_mutex.clone()).await;
             SequentialExecutionLockGuard::Async(permit)
         } else {
             SequentialExecutionLockGuard::None
         }
     }
 
-    pub fn lock_sync(&mut self, is_sequential: bool) -> SequentialExecutionLockGuard {
+    pub fn lock_sync(&self, is_sequential: bool) -> SequentialExecutionLockGuard {
         if is_sequential {
-            if self.sync_mutex.is_none() {
-                self.sync_mutex = Some(Arc::new(parking_lot::Mutex::new(())));
-            }
-
-            let permit = parking_lot::Mutex::lock_arc(&self.sync_mutex.as_ref().unwrap().clone());
+            let permit = parking_lot::Mutex::lock_arc(&self.sync_mutex);
             SequentialExecutionLockGuard::Sync(permit)
         } else {
             SequentialExecutionLockGuard::None

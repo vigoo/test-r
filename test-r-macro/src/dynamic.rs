@@ -4,7 +4,7 @@ use proc_macro::TokenStream;
 use proc_macro2::Ident;
 use quote::{ToTokens, quote};
 use syn::punctuated::Punctuated;
-use syn::{Expr, ExprClosure, ItemFn, Token, parse_macro_input, parse2};
+use syn::{Expr, ExprClosure, ItemFn, Pat, Token, parse_macro_input, parse2};
 
 pub fn test_gen(item: TokenStream) -> TokenStream {
     let ast: ItemFn = syn::parse(item).expect("test generator ast");
@@ -89,11 +89,19 @@ pub fn add_test(input: TokenStream) -> TokenStream {
 
     let function_expr = &params[3];
 
-    let function_closure: ExprClosure = parse2(function_expr.to_token_stream())
+    let mut function_closure: ExprClosure = parse2(function_expr.to_token_stream())
         .expect("the third parameter of add_test! must be a closure");
 
-    let (dep_getters, _dep_names, bindings) =
+    let (dep_getters, dep_names, bindings) =
         get_dependency_params_for_closure(function_closure.inputs.iter());
+
+    for input in &mut function_closure.inputs {
+        if let Pat::Type(typed) = input {
+            typed
+                .attrs
+                .retain(|attr| !is_testr_attribute(attr, "tagged_as"));
+        }
+    }
     let is_async = matches!(&*function_closure.body, Expr::Async(_));
 
     let result = if is_async {
@@ -108,7 +116,7 @@ pub fn add_test(input: TokenStream) -> TokenStream {
             _ => panic!("Expected async block"),
         };
         quote! {
-            #dtr_expr.add_async_test(#name_expr, #test_props_expr, move |__test_r_deps_arg| {
+            #dtr_expr.add_async_test(#name_expr, #test_props_expr, Some(vec![#(#dep_names),*]), move |__test_r_deps_arg| {
                 Box::pin(async move {
                     #(#lets)*
                     #body
@@ -117,7 +125,7 @@ pub fn add_test(input: TokenStream) -> TokenStream {
         }
     } else {
         quote! {
-            #dtr_expr.add_sync_test(#name_expr, #test_props_expr, move |__test_r_deps_arg| {
+            #dtr_expr.add_sync_test(#name_expr, #test_props_expr, Some(vec![#(#dep_names),*]), move |__test_r_deps_arg| {
                 let gen_fn = #function_closure;
                 gen_fn(#(#dep_getters),*)
             });

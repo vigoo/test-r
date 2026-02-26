@@ -1,5 +1,6 @@
 use crate::args::{ColorSetting, TimeThreshold};
 use crate::internal::{RegisteredTest, ReportTimeControl, SuiteResult, TestResult};
+use crate::output::term_progress::TermProgress;
 use crate::output::{LogFile, TestRunnerOutput};
 use anstyle::{AnsiColor, Style};
 use std::io::Write;
@@ -17,6 +18,7 @@ pub(crate) struct Pretty {
     style_critical_time: Style,
     style_warn_time: Style,
     lock: Mutex<PrettyImpl>,
+    term_progress: Mutex<TermProgress>,
     show_output: bool,
     report_time: bool,
     unit_test_threshold: TimeThreshold,
@@ -64,6 +66,7 @@ impl Pretty {
                 longest_name: 0,
                 index_field_length: 0,
             }),
+            term_progress: Mutex::new(TermProgress::new()),
             show_output,
             report_time,
             unit_test_threshold,
@@ -74,6 +77,14 @@ impl Pretty {
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, impl Write + use<>> {
         self.lock.lock().unwrap()
+    }
+
+    pub(crate) fn update_term_progress(&self, completed: usize, total: usize, result: &TestResult) {
+        let mut tp = self.term_progress.lock().unwrap();
+        if result.is_failed() {
+            tp.mark_failure();
+        }
+        tp.update(completed, total);
     }
 
     fn write_outputs<'a>(
@@ -350,6 +361,8 @@ impl TestRunnerOutput for Pretty {
             .max()
             .unwrap_or(0);
         out.index_field_length = format!("{}/{}", out.count, out.count).len();
+
+        self.term_progress.lock().unwrap().update(0, tests.len());
     }
 
     fn start_running_test(&self, test: &RegisteredTest, idx: usize, count: usize) {
@@ -408,6 +421,8 @@ impl TestRunnerOutput for Pretty {
         count: usize,
         result: &TestResult,
     ) {
+        self.update_term_progress(idx + 1, count, result);
+
         let mut out = self.lock.lock().unwrap();
 
         let result = match result {
@@ -485,6 +500,8 @@ impl TestRunnerOutput for Pretty {
         results: &[(RegisteredTest, TestResult)],
         exec_time: Duration,
     ) {
+        self.term_progress.lock().unwrap().clear();
+
         let mut out = self.lock.lock().unwrap();
 
         let result = SuiteResult::from_test_results(registered_tests, results, exec_time);
@@ -527,7 +544,7 @@ impl TestRunnerOutput for Pretty {
                     " - {} {}({}){}",
                     failed.0.fully_qualified_name(),
                     self.style_ignored.render(),
-                    failed.1.failure_message().unwrap_or("???"),
+                    failed.1.failure_message().as_deref().unwrap_or("???"),
                     self.style_ignored.render_reset(),
                 )
                 .unwrap();

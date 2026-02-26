@@ -1,10 +1,10 @@
 use crate::deps::get_dependency_params;
-use crate::helpers::is_testr_attribute;
+use crate::helpers::{filter_custom_parameter_attributes, is_testr_attribute};
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{Attribute, FnArg, ItemFn, LitStr, Token};
+use syn::{Attribute, ItemFn, LitStr, Token};
 use test_r_core::internal::ShouldPanic;
 
 pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> TokenStream {
@@ -96,6 +96,16 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
         quote! { test_r::core::ReportTimeControl::Disabled },
     );
 
+    let ignore_detached_panics = ast
+        .attrs
+        .iter()
+        .any(|attr| is_testr_attribute(attr, "ignore_detached_panics"));
+    let detached_panic_policy = if ignore_detached_panics {
+        quote! { test_r::core::DetachedPanicPolicy::Ignore }
+    } else {
+        quote! { test_r::core::DetachedPanicPolicy::FailTest }
+    };
+
     let tag_attrs = ast
         .attrs
         .iter()
@@ -110,7 +120,7 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
     let tags = quote! { vec![#(#tag_attrs),*] };
 
     let is_async = ast.sig.asyncness.is_some();
-    let (dep_getters, _dep_names, dep_dimensions) = get_dependency_params(&ast, is_bench);
+    let (dep_getters, dep_names, dep_dimensions) = get_dependency_params(&ast, is_bench);
 
     let details = TestDetails {
         test_name,
@@ -126,7 +136,9 @@ pub fn test_impl(_attr: TokenStream, item: TokenStream, is_bench: bool) -> Token
         report_time_control,
         ensure_time_control,
         tags,
+        detached_panic_policy,
         dep_getters,
+        dep_names,
     };
 
     if dep_dimensions.is_empty() {
@@ -169,7 +181,9 @@ struct TestDetails {
     report_time_control: proc_macro2::TokenStream,
     ensure_time_control: proc_macro2::TokenStream,
     tags: proc_macro2::TokenStream,
+    detached_panic_policy: proc_macro2::TokenStream,
     dep_getters: Vec<proc_macro2::TokenStream>,
+    dep_names: Vec<proc_macro2::TokenStream>,
 }
 
 fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
@@ -187,7 +201,9 @@ fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
         report_time_control,
         ensure_time_control,
         tags,
+        detached_panic_policy,
         dep_getters,
+        dep_names,
     } = details;
 
     let register_ident = Ident::new(
@@ -214,7 +230,9 @@ fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
                       #tags,
                       #report_time_control,
                       #ensure_time_control,
-                      test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|__test_r_bencher_arg, __test_r_deps_arg| Box::pin(async move { #test_name(__test_r_bencher_arg, #(#dep_getters),*).await })))
+                      #detached_panic_policy,
+                      test_r::core::TestFunction::AsyncBench(std::sync::Arc::new(|__test_r_bencher_arg, __test_r_deps_arg| Box::pin(async move { #test_name(__test_r_bencher_arg, #(#dep_getters),*).await }))),
+                      Some(vec![#(#dep_names),*]),
                   );
             }
         } else {
@@ -231,7 +249,9 @@ fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
                     #tags,
                     #report_time_control,
                     #ensure_time_control,
-                    test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|__test_r_bencher_arg, __test_r_deps_arg| #test_name(__test_r_bencher_arg, #(#dep_getters),*)))
+                    #detached_panic_policy,
+                    test_r::core::TestFunction::SyncBench(std::sync::Arc::new(|__test_r_bencher_arg, __test_r_deps_arg| #test_name(__test_r_bencher_arg, #(#dep_getters),*))),
+                    Some(vec![#(#dep_names),*]),
                 );
             }
         }
@@ -249,6 +269,7 @@ fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
                   #tags,
                   #report_time_control,
                   #ensure_time_control,
+                  #detached_panic_policy,
                   test_r::core::TestFunction::Async(std::sync::Arc::new(
                     move |__test_r_deps_arg| {
                         Box::pin(async move {
@@ -256,7 +277,8 @@ fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
                             Box::new(result) as Box<dyn test_r::core::TestReturnValue>
                         })
                     }
-                ))
+                )),
+                  Some(vec![#(#dep_names),*]),
               );
         }
     } else {
@@ -277,7 +299,9 @@ fn single_test_impl(ast: &mut ItemFn, details: TestDetails) -> TokenStream {
                 #tags,
                 #report_time_control,
                 #ensure_time_control,
-                test_r::core::TestFunction::Sync(std::sync::Arc::new(|__test_r_deps_arg| Box::new(#test_name(#(#dep_getters),*))))
+                #detached_panic_policy,
+                test_r::core::TestFunction::Sync(std::sync::Arc::new(|__test_r_deps_arg| Box::new(#test_name(#(#dep_getters),*)))),
+                Some(vec![#(#dep_names),*]),
             );
         }
     };
@@ -317,12 +341,24 @@ fn matrix_test_impl(
         report_time_control,
         ensure_time_control,
         tags,
+        detached_panic_policy,
         dep_getters,
+        dep_names,
     } = details;
 
     if is_bench {
         panic!("Matrix dependencies are not supported for benchmarks yet");
     }
+
+    // Collect non-dimension dependency names (exclude dimension param indices)
+    let dim_indices: std::collections::HashSet<usize> =
+        dep_dimensions.iter().map(|(idx, _)| *idx).collect();
+    let non_dim_dep_names: Vec<_> = dep_names
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| !dim_indices.contains(idx))
+        .map(|(_, name)| name.clone())
+        .collect();
 
     let test_name_impl = Ident::new(&format!("{test_name}_impl"), Span::call_site());
     ast.sig.ident = test_name_impl.clone();
@@ -353,6 +389,7 @@ fn matrix_test_impl(
         props.push(quote! { ensure_time_control: #ensure_time_control });
         props.push(quote! { tags: #tags });
         props.push(quote! { is_ignored: #is_ignored });
+        props.push(quote! { detached_panic_policy: #detached_panic_policy });
 
         props
     };
@@ -365,12 +402,15 @@ fn matrix_test_impl(
                 tags_as_string.push_str(name);
             }
             #(#clones)*
+            let mut __test_r_deps = vec![#(#non_dim_dep_names),*];
+            __test_r_deps.extend(dep_name_stack.iter().cloned());
             r.add_async_test(
                 format!("{}{}", #test_name_str, tags_as_string),
                 test_r::core::TestProperties {
                     test_type: test_r::core::TestType::from_path(file!()),
                     #(#test_props),*
                 },
+                Some(__test_r_deps),
                 move |__test_r_deps_arg| {
                     #(#clones)*
                     Box::pin(async move {
@@ -387,12 +427,15 @@ fn matrix_test_impl(
                 tags_as_string.push_str(name);
             }
             #(#clones)*
+            let mut __test_r_deps = vec![#(#non_dim_dep_names),*];
+            __test_r_deps.extend(dep_name_stack.iter().cloned());
             r.add_sync_test(
                 format!("{}{}", #test_name_str, tags_as_string),
                 test_r::core::TestProperties {
                     test_type: test_r::core::TestType::from_path(file!()),
                     #(#test_props),*
                 },
+                Some(__test_r_deps),
                 move |__test_r_deps_arg| {
                     #test_name_impl(#(#overridden_dep_getters),*)
                 },
@@ -402,12 +445,15 @@ fn matrix_test_impl(
 
     for (idx, dim) in dep_dimensions {
         let dep_name_var = Ident::new(&format!("tag_{idx}"), Span::call_site());
+        let dep_actual_name_var = Ident::new(&format!("dep_name_{idx}"), Span::call_site());
         let dep_var = Ident::new(&format!("dep_{idx}"), Span::call_site());
         let get_dep_tags_fn = Ident::new(&format!("test_r_get_dep_tags_{dim}"), Span::call_site());
         loops = quote! {
-            for (#dep_name_var, #dep_var) in #get_dep_tags_fn() {
+            for (#dep_name_var, #dep_actual_name_var, #dep_var) in #get_dep_tags_fn() {
                 name_stack.push(#dep_name_var);
+                dep_name_stack.push(#dep_actual_name_var);
                 #loops
+                dep_name_stack.pop();
                 name_stack.pop();
             }
         };
@@ -418,6 +464,7 @@ fn matrix_test_impl(
         #[test_r::test_gen]
         fn #test_name(r: &mut test_r::core::DynamicTestRegistration) {
             let mut name_stack = Vec::new();
+            let mut dep_name_stack: Vec<String> = Vec::new();
             #loops
         }
 
@@ -481,15 +528,4 @@ fn should_panic_message(attr: &Attribute) -> ShouldPanic {
         Some(message) => ShouldPanic::WithMessage(message.value()),
         None => ShouldPanic::Yes,
     }
-}
-
-/// Removes custom attributes from parameters that are only interpreted by the #[test] macro
-fn filter_custom_parameter_attributes(ast: &mut ItemFn) {
-    ast.sig.inputs.iter_mut().for_each(|param| {
-        if let FnArg::Typed(typed) = param {
-            typed.attrs.retain(|attr| {
-                !is_testr_attribute(attr, "tagged_as") && !is_testr_attribute(attr, "dimension")
-            });
-        }
-    });
 }

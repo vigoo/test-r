@@ -54,8 +54,13 @@ pub fn add_test(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn timeout(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+pub fn timeout(attr: TokenStream, item: TokenStream) -> TokenStream {
+    suite::timeout(attr, item)
+}
+
+#[proc_macro]
+pub fn timeout_suite(input: TokenStream) -> TokenStream {
+    suite::timeout_suite(input)
 }
 
 #[proc_macro_attribute]
@@ -95,6 +100,11 @@ pub fn always_ensure_time(_attr: TokenStream, item: TokenStream) -> TokenStream 
 
 #[proc_macro_attribute]
 pub fn never_ensure_time(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn ignore_detached_panics(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 

@@ -8,7 +8,7 @@ To start using `test-r`, add it to the `dev-dependencies` section of your `Cargo
 
 ```toml
 [dev-dependencies]
-test-r = "1"
+test-r = "2"
 ```
 
 There are three additional steps to take when using `test-r` in place of the built-in tests:
@@ -33,7 +33,7 @@ edition = "2024"
 harness = false # Disable the built-in test harness
 
 [dev-dependencies]
-test-r = "1"
+test-r = "2"
 ```
 
 And a simple `src/lib.rs` file defining a single public function and a test for it:
@@ -66,7 +66,7 @@ It is possible to turn off the async support by disabling the `tokio` feature:
 
 ```toml
 [dev-dependencies]
-test-r = { version = "1", default-features = false }
+test-r = { version = "2", default-features = false }
 ```
 
 ## Real-world usage

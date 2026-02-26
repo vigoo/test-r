@@ -5,6 +5,7 @@ pub use test_r_macro::always_report_time;
 pub use test_r_macro::bench;
 pub use test_r_macro::define_matrix_dimension;
 pub use test_r_macro::flaky;
+pub use test_r_macro::ignore_detached_panics;
 pub use test_r_macro::inherit_test_dep;
 pub use test_r_macro::never_capture;
 pub use test_r_macro::never_ensure_time;
@@ -18,18 +19,23 @@ pub use test_r_macro::test;
 pub use test_r_macro::test_dep;
 pub use test_r_macro::test_gen;
 pub use test_r_macro::timeout;
+pub use test_r_macro::timeout_suite;
 pub use test_r_macro::uses_test_r as enable;
 
 #[cfg(feature = "tokio")]
 pub use test_r_core::bench::AsyncBencher;
 pub use test_r_core::bench::Bencher;
+#[cfg(feature = "tokio")]
+pub use test_r_core::spawn::spawn;
+pub use test_r_core::spawn::spawn_thread;
 
 pub mod core {
     use std::time::Duration;
     pub use test_r_core::internal::{
-        CaptureControl, DependencyConstructor, DependencyView, DynamicTestRegistration,
-        FlakinessControl, GeneratedTest, ReportTimeControl, ShouldPanic, TestFunction,
-        TestGeneratorFunction, TestProperties, TestReturnValue, TestType,
+        CaptureControl, DependencyConstructor, DependencyView, DetachedPanicPolicy,
+        DynamicTestRegistration, FailureCause, FlakinessControl, GeneratedTest, ReportTimeControl,
+        ShouldPanic, TestFunction, TestGeneratorFunction, TestProperties, TestReturnValue,
+        TestType,
     };
     pub use test_r_core::*;
 
@@ -46,7 +52,9 @@ pub mod core {
         tags: Vec<String>,
         report_time_control: ReportTimeControl,
         ensure_time_control: ReportTimeControl,
+        detached_panic_policy: DetachedPanicPolicy,
         run: TestFunction,
+        dependencies: Option<Vec<String>>,
     ) {
         let (crate_name, module_path) = split_module_path(module_path);
 
@@ -68,7 +76,9 @@ pub mod core {
                     ensure_time_control,
                     tags,
                     is_ignored,
+                    detached_panic_policy,
                 },
+                dependencies,
             });
     }
 
@@ -100,6 +110,19 @@ pub mod core {
                 name: name.to_string(),
                 crate_name,
                 module_path,
+            },
+        );
+    }
+
+    pub fn register_suite_timeout(name: &str, module_path: &str, timeout: Duration) {
+        let (crate_name, module_path) = split_module_path(module_path);
+
+        internal::REGISTERED_TESTSUITE_PROPS.lock().unwrap().push(
+            internal::RegisteredTestSuiteProperty::Timeout {
+                name: name.to_string(),
+                crate_name,
+                module_path,
+                timeout,
             },
         );
     }

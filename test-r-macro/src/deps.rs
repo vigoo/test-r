@@ -1,4 +1,4 @@
-use crate::helpers::is_testr_attribute;
+use crate::helpers::{filter_custom_parameter_attributes, is_testr_attribute};
 use darling::ast::NestedMeta;
 use darling::{Error, FromMeta};
 use proc_macro::TokenStream;
@@ -26,7 +26,7 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    let ast: ItemFn = syn::parse(item).expect("test ast");
+    let mut ast: ItemFn = syn::parse(item).expect("test ast");
     let ctor_name = ast.sig.ident.clone();
 
     let dep_type = match &ast.sig.output {
@@ -48,6 +48,11 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let is_async = ast.sig.asyncness.is_some();
     let (dep_getters, dep_names, _dep_dimensions) = get_dependency_params(&ast, false);
+
+    if !_dep_dimensions.is_empty() {
+        panic!("Matrix dimensions are not supported on #[test_dep] constructor parameters");
+    }
+    filter_custom_parameter_attributes(&mut ast);
 
     let register_call = if is_async {
         quote! {
@@ -151,13 +156,13 @@ pub fn define_matrix_dimension(item: TokenStream) -> TokenStream {
 
         let name = tag.value();
         pushes.push(quote! {
-            result.push((#name.to_string(), std::sync::Arc::new(|dependency_view: std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>| #getter_ident(&dependency_view))));
+            result.push((#name.to_string(), #dep_name_str.to_string(), std::sync::Arc::new(|dependency_view: std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>| #getter_ident(&dependency_view))));
         });
     }
 
     let ast = quote! {
-        fn #get_dep_tags_fn() -> Vec<(String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> {
-            let mut result: Vec<(String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> = Vec::new();
+        fn #get_dep_tags_fn() -> Vec<(String, String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> {
+            let mut result: Vec<(String, String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> = Vec::new();
             #(#pushes)*
             result
         }

@@ -3,14 +3,15 @@ use crate::bench::Bencher;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
 use crate::internal::{
-    generate_tests_sync, get_ensure_time, CapturedOutput, FlakinessControl, RegisteredTest,
-    SuiteResult, TestFunction, TestResult,
+    generate_tests_sync, get_ensure_time, CapturedOutput, FailureCause, FlakinessControl,
+    RegisteredTest, SuiteResult, TestFunction, TestResult,
 };
 use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
 use crate::output::{test_runner_output, TestRunnerOutput};
-use bincode::{decode_from_slice, encode_to_vec};
+use desert_rust::{deserialize, serialize_to_byte_vec};
 use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToNsName};
+use std::any::Any;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -21,6 +22,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 pub fn test_runner() -> ExitCode {
+    crate::panic_hook::install_panic_hook();
     let mut args = Arguments::from_args();
     let output = test_runner_output(&args);
 
@@ -127,9 +129,8 @@ fn test_thread(
                 connection
                     .read_exact(&mut command)
                     .expect("Failed to read IPC command");
-                let (command, _): (IpcCommand, usize) =
-                    decode_from_slice(&command, bincode::config::standard())
-                        .expect("Failed to decode IPC command");
+                let command: IpcCommand =
+                    deserialize(&command).expect("Failed to decode IPC command");
 
                 let IpcCommand::RunTest {
                     name,
@@ -192,8 +193,8 @@ fn test_thread(
                         finish_marker,
                     };
 
-                    let msg = encode_to_vec(&response, bincode::config::standard())
-                        .expect("Failed to encode IPC response");
+                    let msg =
+                        serialize_to_byte_vec(&response).expect("Failed to encode IPC response");
                     let message_size = (msg.len() as u16).to_le_bytes();
                     connection
                         .write_all(&message_size)
@@ -220,13 +221,13 @@ fn pick_next(execution: &Arc<Mutex<TestSuiteExecution>>) -> Option<TestExecution
     execution.pick_next_sync()
 }
 
-fn run_with_flakiness_control<R>(
+fn run_with_flakiness_control(
     output: Arc<dyn TestRunnerOutput>,
     test_description: &RegisteredTest,
     idx: usize,
     count: usize,
-    test: impl Fn(Instant) -> Result<(), R>,
-) -> Result<(), R> {
+    test: impl Fn(Instant) -> Result<Result<(), FailureCause>, Box<dyn Any + Send>>,
+) -> Result<Result<(), FailureCause>, Box<dyn Any + Send>> {
     match &test_description.props.flakiness_control {
         FlakinessControl::None => {
             let start = Instant::now();
@@ -245,9 +246,13 @@ fn run_with_flakiness_control<R>(
                     );
                 }
                 let start = Instant::now();
-                test(start)?;
+                match test(start) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Ok(Err(e)),
+                    Err(e) => return Err(e),
+                };
             }
-            Ok(())
+            Ok(Ok(()))
         }
         FlakinessControl::RetryKnownFlaky(max_retries) => {
             let mut tries = 1;
@@ -285,43 +290,105 @@ pub(crate) fn run_sync_test_function(
     let start = Instant::now();
     match test_description.run.clone() {
         TestFunction::Sync(test_fn) => {
+            let detached_panic_policy = test_description.props.detached_panic_policy.clone();
             let result =
                 run_with_flakiness_control(output, test_description, idx, count, move |start| {
                     let dependency_view = dependency_view.clone();
                     let test_fn = test_fn.clone();
+                    let test_id = crate::panic_hook::next_test_id();
+                    crate::panic_hook::set_current_test_id(test_id);
+                    crate::panic_hook::create_detached_collector(test_id);
                     catch_unwind(AssertUnwindSafe(move || {
-                        let result = test_fn(dependency_view).as_result();
-                        if let Err(failure) = result {
-                            panic!("{failure}");
-                        }
+                        test_fn(dependency_view).into_result()?;
                         if let Some(ensure_time) = ensure_time {
                             let elapsed = start.elapsed();
                             if ensure_time.is_critical(&elapsed) {
-                                panic!("Test run time exceeds critical threshold: {elapsed:?}");
+                                return Err(FailureCause::HarnessError(format!(
+                                    "Test run time exceeds critical threshold: {elapsed:?}"
+                                )));
                             }
-                        }
+                        };
+                        Ok(())
                     }))
                 });
-            TestResult::from_result(
+            let mut test_result = TestResult::from_result(
                 &test_description.props.should_panic,
                 start.elapsed(),
                 result,
-            )
+            );
+            if let Some(test_id) = crate::panic_hook::current_test_id() {
+                if let Some(collector) = crate::panic_hook::take_detached_collector(test_id) {
+                    let panics = match collector.lock() {
+                        Ok(p) => p,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    if !panics.is_empty()
+                        && detached_panic_policy == internal::DetachedPanicPolicy::FailTest
+                        && test_result.is_passed()
+                    {
+                        let messages: Vec<String> = panics.iter().map(|p| p.render()).collect();
+                        test_result = TestResult::failed(
+                            start.elapsed(),
+                            FailureCause::Panic(internal::PanicCause {
+                                message: Some(format!(
+                                    "Detached task(s) panicked:\n{}",
+                                    messages.join("\n---\n")
+                                )),
+                                location: panics.first().and_then(|p| p.location.clone()),
+                                backtrace: panics.first().and_then(|p| p.backtrace.clone()),
+                            }),
+                        );
+                    }
+                }
+            }
+            crate::panic_hook::clear_current_test_id();
+            test_result
         }
         TestFunction::SyncBench(bench_fn) => {
+            let detached_panic_policy = test_description.props.detached_panic_policy.clone();
             let mut bencher = Bencher::new();
+            let test_id = crate::panic_hook::next_test_id();
+            crate::panic_hook::set_current_test_id(test_id);
+            crate::panic_hook::create_detached_collector(test_id);
             let result = catch_unwind(AssertUnwindSafe(|| {
                 bench_fn(&mut bencher, dependency_view);
                 bencher
                     .summary()
                     .expect("iter() was not called in bench function")
             }));
-            TestResult::from_summary(
+            let mut test_result = TestResult::from_summary(
                 &test_description.props.should_panic,
                 start.elapsed(),
                 result,
                 bencher.bytes,
-            )
+            );
+            if let Some(test_id) = crate::panic_hook::current_test_id() {
+                if let Some(collector) = crate::panic_hook::take_detached_collector(test_id) {
+                    let panics = match collector.lock() {
+                        Ok(p) => p,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    if !panics.is_empty()
+                        && detached_panic_policy == internal::DetachedPanicPolicy::FailTest
+                        && test_result.is_passed()
+                    {
+                        let messages: Vec<String> = panics.iter().map(|p| p.render()).collect();
+                        test_result = TestResult::failed(
+                            start.elapsed(),
+                            FailureCause::Panic(internal::PanicCause {
+                                message: Some(format!(
+                                    "Detached task(s) panicked:\n{}",
+                                    messages.join("\n---\n")
+                                )),
+                                location: panics.first().and_then(|p| p.location.clone()),
+                                backtrace: panics.first().and_then(|p| p.backtrace.clone()),
+                            }),
+                        );
+                    }
+                }
+            }
+            crate::panic_hook::clear_current_test_id();
+            test_result
         }
         _ => {
             panic!("Async tests are not supported in sync mode, enable the 'tokio' feature")
@@ -355,8 +422,7 @@ impl Worker {
 
         let dump_on_ipc_failure = self.dump_on_failure();
 
-        let msg =
-            encode_to_vec(&cmd, bincode::config::standard()).expect("Failed to encode IPC command");
+        let msg = serialize_to_byte_vec(&cmd).expect("Failed to encode IPC command");
         let message_size = (msg.len() as u16).to_le_bytes();
         dump_on_ipc_failure.run(self.connection.write_all(&message_size));
         dump_on_ipc_failure.run(self.connection.write_all(&msg));
@@ -365,8 +431,7 @@ impl Worker {
         dump_on_ipc_failure.run(self.connection.read_exact(&mut response_size));
         let mut response = vec![0; u16::from_le_bytes(response_size) as usize];
         dump_on_ipc_failure.run(self.connection.read_exact(&mut response));
-        let (response, _): (IpcResponse, usize) =
-            dump_on_ipc_failure.run(decode_from_slice(&response, bincode::config::standard()));
+        let response: IpcResponse = dump_on_ipc_failure.run(deserialize(&response));
 
         let IpcResponse::TestFinished {
             result,

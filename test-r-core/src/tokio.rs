@@ -3,16 +3,17 @@ use crate::bench::AsyncBencher;
 use crate::execution::{TestExecution, TestSuiteExecution};
 use crate::internal;
 use crate::internal::{
-    generate_tests, get_ensure_time, CapturedOutput, FlakinessControl, RegisteredTest, SuiteResult,
-    TestFunction, TestResult,
+    generate_tests, get_ensure_time, CapturedOutput, FailureCause, FlakinessControl,
+    RegisteredTest, SuiteResult, TestFunction, TestResult,
 };
 use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
 use crate::output::{test_runner_output, TestRunnerOutput};
-use bincode::{decode_from_slice, encode_to_vec};
+use desert_rust::{deserialize, serialize_to_byte_vec};
 use futures::FutureExt;
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::tokio::{Listener, Stream};
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions};
+use std::any::Any;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -37,6 +38,7 @@ pub fn test_runner() -> ExitCode {
 
 #[allow(clippy::await_holding_lock)]
 async fn async_test_runner() -> ExitCode {
+    crate::panic_hook::install_panic_hook();
     let mut args = Arguments::from_args();
     let output = test_runner_output(&args);
 
@@ -157,9 +159,8 @@ async fn test_thread(
                     .read_exact(&mut command)
                     .await
                     .expect("Failed to read IPC command");
-                let (command, _): (IpcCommand, usize) =
-                    decode_from_slice(&command, bincode::config::standard())
-                        .expect("Failed to decode IPC command");
+                let command: IpcCommand =
+                    deserialize(&command).expect("Failed to decode IPC command");
 
                 let IpcCommand::RunTest {
                     name,
@@ -217,8 +218,8 @@ async fn test_thread(
                         result: (&result).into(),
                         finish_marker,
                     };
-                    let msg = encode_to_vec(&response, bincode::config::standard())
-                        .expect("Failed to encode IPC response");
+                    let msg =
+                        serialize_to_byte_vec(&response).expect("Failed to encode IPC response");
                     let message_size = (msg.len() as u16).to_le_bytes();
                     connection
                         .write_all(&message_size)
@@ -246,15 +247,20 @@ async fn pick_next(execution: &Arc<Mutex<TestSuiteExecution>>) -> Option<TestExe
     execution.pick_next().await
 }
 
-async fn run_with_flakiness_control<F, R>(
+async fn run_with_flakiness_control<F>(
     output: Arc<dyn TestRunnerOutput>,
     test_description: &RegisteredTest,
     idx: usize,
     count: usize,
     test: F,
-) -> Result<(), R>
+) -> Result<Result<(), FailureCause>, Box<dyn Any + Send>>
 where
-    F: Fn(Instant) -> Pin<Box<dyn Future<Output = Result<(), R>>>> + Send + Sync,
+    F: Fn(
+            Instant,
+        )
+            -> Pin<Box<dyn Future<Output = Result<Result<(), FailureCause>, Box<dyn Any + Send>>>>>
+        + Send
+        + Sync,
 {
     match &test_description.props.flakiness_control {
         FlakinessControl::None => {
@@ -274,9 +280,13 @@ where
                     );
                 }
                 let start = Instant::now();
-                test(start).await?;
+                match test(start).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Ok(Err(e)),
+                    Err(e) => return Err(e),
+                };
             }
-            Ok(())
+            Ok(Ok(()))
         }
         FlakinessControl::RetryKnownFlaky(max_retries) => {
             let mut tries = 1;
@@ -335,18 +345,27 @@ async fn run_test(
                     )
                 });
                 handle.await.unwrap_or_else(|join_error| {
-                    TestResult::failed(start.elapsed(), Box::new(join_error))
+                    TestResult::failed(
+                        start.elapsed(),
+                        FailureCause::HarnessError(format!(
+                            "Failed joining test task: {join_error}"
+                        )),
+                    )
                 })
             }
             TestFunction::Async(test_fn) => {
                 let timeout = test.props.timeout;
                 let test_fn = test_fn.clone();
+                let detached_panic_policy = test.props.detached_panic_policy.clone();
                 let result = run_with_flakiness_control(output, &test, idx, count, |start| {
                     let dependency_view = dependency_view.clone();
                     let test_fn = test_fn.clone();
                     Box::pin(async move {
-                        AssertUnwindSafe(Box::pin(async move {
-                            let result = match timeout {
+                        let test_id = crate::panic_hook::next_test_id();
+                        crate::panic_hook::set_current_test_id(test_id);
+                        crate::panic_hook::create_detached_collector(test_id);
+                        let result = AssertUnwindSafe(Box::pin(async move {
+                            match timeout {
                                 None => test_fn(dependency_view).await,
                                 Some(duration) => {
                                     let result =
@@ -354,27 +373,60 @@ async fn run_test(
                                             .await;
                                     match result {
                                         Ok(result) => result,
-                                        Err(_) => panic!("Test timed out"),
+                                        Err(_) => {
+                                            return Err(FailureCause::HarnessError(
+                                                "Test timed out".to_string(),
+                                            ))
+                                        }
                                     }
                                 }
-                            };
-                            match result.as_result() {
-                                Ok(_) => (),
-                                Err(message) => panic!("{message}"),
-                            };
+                            }
+                            .into_result()?;
                             if let Some(ensure_time) = ensure_time {
                                 let elapsed = start.elapsed();
                                 if ensure_time.is_critical(&elapsed) {
-                                    panic!("Test run time exceeds critical threshold: {elapsed:?}");
+                                    return Err(FailureCause::HarnessError(format!(
+                                        "Test run time exceeds critical threshold: {elapsed:?}"
+                                    )));
                                 }
                             }
+                            Ok(())
                         }))
                         .catch_unwind()
-                        .await
+                        .await;
+                        result
                     })
                 })
                 .await;
-                TestResult::from_result(&test.props.should_panic, start.elapsed(), result)
+                let mut test_result =
+                    TestResult::from_result(&test.props.should_panic, start.elapsed(), result);
+                if let Some(test_id) = crate::panic_hook::current_test_id() {
+                    if let Some(collector) = crate::panic_hook::take_detached_collector(test_id) {
+                        let panics = match collector.lock() {
+                            Ok(p) => p,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        if !panics.is_empty()
+                            && detached_panic_policy == internal::DetachedPanicPolicy::FailTest
+                            && test_result.is_passed()
+                        {
+                            let messages: Vec<String> = panics.iter().map(|p| p.render()).collect();
+                            test_result = TestResult::failed(
+                                start.elapsed(),
+                                FailureCause::Panic(internal::PanicCause {
+                                    message: Some(format!(
+                                        "Detached task(s) panicked:\n{}",
+                                        messages.join("\n---\n")
+                                    )),
+                                    location: panics.first().and_then(|p| p.location.clone()),
+                                    backtrace: panics.first().and_then(|p| p.backtrace.clone()),
+                                }),
+                            );
+                        }
+                    }
+                }
+                crate::panic_hook::clear_current_test_id();
+                test_result
             }
             TestFunction::SyncBench(_) => {
                 let handle = spawn_blocking(move || {
@@ -389,11 +441,18 @@ async fn run_test(
                     )
                 });
                 handle.await.unwrap_or_else(|join_error| {
-                    TestResult::failed(start.elapsed(), Box::new(join_error))
+                    TestResult::failed(
+                        start.elapsed(),
+                        FailureCause::HarnessError(format!(
+                            "Failed joining test task: {join_error}"
+                        )),
+                    )
                 })
             }
             TestFunction::AsyncBench(bench_fn) => {
                 let mut bencher = AsyncBencher::new();
+                let test_id = crate::panic_hook::next_test_id();
+                crate::panic_hook::set_current_test_id(test_id);
                 let result = AssertUnwindSafe(async move {
                     bench_fn(&mut bencher, dependency_view).await;
                     (
@@ -406,12 +465,14 @@ async fn run_test(
                 .catch_unwind()
                 .await;
                 let bytes = result.as_ref().map(|(_, bytes)| *bytes).unwrap_or_default();
-                TestResult::from_summary(
+                let test_result = TestResult::from_summary(
                     &test.props.should_panic,
                     start.elapsed(),
                     result.map(|(summary, _)| summary),
                     bytes,
-                )
+                );
+                crate::panic_hook::clear_current_test_id();
+                test_result
             }
         }
     }
@@ -443,8 +504,7 @@ impl Worker {
 
         let dump_on_ipc_failure = self.dump_on_failure();
 
-        let msg =
-            encode_to_vec(&cmd, bincode::config::standard()).expect("Failed to encode IPC command");
+        let msg = serialize_to_byte_vec(&cmd).expect("Failed to encode IPC command");
         let message_size = (msg.len() as u16).to_le_bytes();
         dump_on_ipc_failure
             .run(self.connection.write_all(&message_size).await)
@@ -461,9 +521,7 @@ impl Worker {
         dump_on_ipc_failure
             .run(self.connection.read_exact(&mut response).await)
             .await;
-        let (response, _): (IpcResponse, usize) = dump_on_ipc_failure
-            .run(decode_from_slice(&response, bincode::config::standard()))
-            .await;
+        let response: IpcResponse = dump_on_ipc_failure.run(deserialize(&response)).await;
 
         let IpcResponse::TestFinished {
             result,

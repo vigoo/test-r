@@ -76,7 +76,7 @@ impl JUnit {
     fn write_junit_report(
         &self,
         registered_tests: &[RegisteredTest],
-        results: &[(RegisteredTest, TestResult<String>)],
+        results: &[(RegisteredTest, TestResult)],
         exec_time: Duration,
         is_final: bool,
     ) {
@@ -158,8 +158,10 @@ impl JUnit {
                                                     .with_attribute(("type", "assert"));
 
                                                 if let Some(message) = result.failure_message() {
-                                                    failure = failure
-                                                        .with_attribute(("message", message));
+                                                    failure = failure.with_attribute((
+                                                        "message",
+                                                        message.as_str(),
+                                                    ));
                                                 }
 
                                                 failure.write_empty()?;
@@ -267,5 +269,5 @@ impl TestRunnerOutput for JUnit {
 struct IntermediateState {
     start: Instant,
     tests: Vec<RegisteredTest>,
-    results: Vec<(RegisteredTest, TestResult<String>)>,
+    results: Vec<(RegisteredTest, TestResult)>,
 }
