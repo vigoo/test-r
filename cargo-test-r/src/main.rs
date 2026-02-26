@@ -151,7 +151,17 @@ struct RunSubcommand {
 
 fn main() {
     match try_main() {
-        Ok(status) => std::process::exit(status.code().unwrap_or(0)),
+        Ok(status) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                if let Some(signal) = status.signal() {
+                    // Follow Unix convention: 128 + signal number
+                    std::process::exit(128 + signal);
+                }
+            }
+            std::process::exit(status.code().unwrap_or(1));
+        }
         Err(err) => {
             eprintln!("Error: {:#}", err);
             std::process::exit(1);
