@@ -61,3 +61,13 @@ cargo test ':tag:tag1|tag2&tag3'
 ```
 
 is going to run tests tagged as either `tag1` or both `tag2` and `tag3`.
+
+### Skipping tests by tag
+
+The `:tag:` syntax also works with the `--skip` option. This allows skipping all tests with a specific tag:
+
+```sh
+cargo test -- --skip ':tag:slow'
+```
+
+This runs all tests except those tagged as `slow`.

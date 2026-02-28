@@ -23,6 +23,14 @@ cargo test hello
 
 executes all tests that have the `hello` substring in their **fully qualified name** (module path + function name).
 
+Multiple filter strings can be passed after `--`, which will run all tests matching **any** of the filters:
+
+```sh
+cargo test -- hello world
+```
+
+This runs all tests whose name contains `hello` **or** `world`.
+
 ```sh
 cargo test hello -- --exact
 ```
@@ -46,7 +54,17 @@ The framework supports not only tests (defined with `#[test]`), but also benchma
 
 ### Skipping some tests
 
-The `--skip` option can be used to skip some tests (just like if they were marked with `#[ignore]`). It can be used multiple times to mark multiple tests to skip. 
+The `--skip` option can be used to skip tests whose names contain the given substring (just like if they were marked with `#[ignore]`). It can be used multiple times to skip multiple groups of tests. When `--exact` is also passed, `--skip` requires an exact name match instead of a substring match.
+
+```sh
+cargo test -- --skip slow
+```
+
+This skips all tests whose name contains `slow`. Tags can also be used with `--skip`:
+
+```sh
+cargo test -- --skip ':tag:expensive'
+```
 
 ## Parallelism
 By default, the test runner uses as many threads as there are logical cores on the machine. This can be changed with the `--test-threads` flag.
