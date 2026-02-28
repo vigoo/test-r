@@ -683,17 +683,17 @@ pub(crate) fn filter_registered_tests(
     registered_tests
         .iter()
         .filter(|registered_test| {
-            args.skip
+            !args
+                .skip
                 .iter()
-                .all(|skip| &registered_test.filterable_name() != skip)
+                .any(|skip| filter_test(registered_test, skip, args.exact))
         })
         .filter(|registered_test| {
-            args.filter.as_ref().is_none()
+            args.filter.is_empty()
                 || args
                     .filter
-                    .as_ref()
-                    .map(|filter| filter_test(registered_test, filter, args.exact))
-                    .unwrap_or(false)
+                    .iter()
+                    .any(|filter| filter_test(registered_test, filter, args.exact))
         })
         .filter(|registered_tests| {
             (args.bench && registered_tests.run.is_bench())
@@ -1466,5 +1466,250 @@ mod error_reporting_tests {
         });
         assert_eq!(cause.render(), "panic msg");
         assert_eq!(cause.panic_message(), Some("panic msg"));
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+
+    fn make_test(name: &str, module_path: &str) -> RegisteredTest {
+        RegisteredTest {
+            name: name.to_string(),
+            crate_name: "mycrate".to_string(),
+            module_path: module_path.to_string(),
+            run: TestFunction::Sync(Arc::new(|_| Box::new(()))),
+            props: TestProperties::default(),
+            dependencies: None,
+        }
+    }
+
+    fn make_tagged_test(name: &str, module_path: &str, tags: Vec<&str>) -> RegisteredTest {
+        let mut test = make_test(name, module_path);
+        test.props.tags = tags.into_iter().map(String::from).collect();
+        test
+    }
+
+    fn make_args(filters: Vec<&str>, skip: Vec<&str>, exact: bool) -> Arguments {
+        Arguments {
+            filter: filters.into_iter().map(String::from).collect(),
+            skip: skip.into_iter().map(String::from).collect(),
+            exact,
+            ..Default::default()
+        }
+    }
+
+    fn filtered_names(args: &Arguments, tests: &[RegisteredTest]) -> Vec<String> {
+        filter_registered_tests(args, tests)
+            .into_iter()
+            .map(|t| t.filterable_name())
+            .collect()
+    }
+
+    // --- filter_test unit tests ---
+
+    #[test]
+    fn filter_test_substring_match() {
+        let test = make_test("hello_world", "mod1");
+        assert!(filter_test(&test, "hello", false));
+        assert!(filter_test(&test, "world", false));
+        assert!(filter_test(&test, "mod1::hello", false));
+        assert!(!filter_test(&test, "nonexistent", false));
+    }
+
+    #[test]
+    fn filter_test_exact_match() {
+        let test = make_test("hello_world", "mod1");
+        assert!(filter_test(&test, "mod1::hello_world", true));
+        assert!(!filter_test(&test, "hello_world", true));
+        assert!(!filter_test(&test, "hello", true));
+    }
+
+    #[test]
+    fn filter_test_tag_match() {
+        let test = make_tagged_test("t1", "mod1", vec!["fast", "unit"]);
+        assert!(filter_test(&test, ":tag:fast", false));
+        assert!(filter_test(&test, ":tag:unit", false));
+        assert!(!filter_test(&test, ":tag:slow", false));
+    }
+
+    #[test]
+    fn filter_test_tag_empty_matches_untagged() {
+        let untagged = make_test("t1", "mod1");
+        let tagged = make_tagged_test("t2", "mod1", vec!["fast"]);
+        assert!(filter_test(&untagged, ":tag:", false));
+        assert!(!filter_test(&tagged, ":tag:", false));
+    }
+
+    // --- filter_registered_tests: multiple include filters (OR semantics) ---
+
+    #[test]
+    fn no_filters_includes_all() {
+        let tests = vec![make_test("a", "m"), make_test("b", "m")];
+        let args = make_args(vec![], vec![], false);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::a", "m::b"]);
+    }
+
+    #[test]
+    fn single_filter_substring() {
+        let tests = vec![
+            make_test("alpha", "m"),
+            make_test("beta", "m"),
+            make_test("alphabet", "m"),
+        ];
+        let args = make_args(vec!["alpha"], vec![], false);
+        assert_eq!(
+            filtered_names(&args, &tests),
+            vec!["m::alpha", "m::alphabet"]
+        );
+    }
+
+    #[test]
+    fn multiple_filters_or_semantics() {
+        let tests = vec![
+            make_test("alpha", "m"),
+            make_test("beta", "m"),
+            make_test("gamma", "m"),
+        ];
+        let args = make_args(vec!["alpha", "gamma"], vec![], false);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::alpha", "m::gamma"]);
+    }
+
+    #[test]
+    fn multiple_filters_exact() {
+        let tests = vec![
+            make_test("alpha", "m"),
+            make_test("alphabet", "m"),
+            make_test("beta", "m"),
+        ];
+        let args = make_args(vec!["m::alpha", "m::beta"], vec![], true);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::alpha", "m::beta"]);
+    }
+
+    // --- skip behavior ---
+
+    #[test]
+    fn skip_substring_match() {
+        let tests = vec![
+            make_test("fast_test", "m"),
+            make_test("slow_test", "m"),
+            make_test("slower_test", "m"),
+        ];
+        let args = make_args(vec![], vec!["slow"], false);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::fast_test"]);
+    }
+
+    #[test]
+    fn skip_exact_match() {
+        let tests = vec![make_test("slow_test", "m"), make_test("slower_test", "m")];
+        let args = make_args(vec![], vec!["m::slow_test"], true);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::slower_test"]);
+    }
+
+    #[test]
+    fn skip_with_tag() {
+        let tests = vec![
+            make_tagged_test("t1", "m", vec!["slow"]),
+            make_tagged_test("t2", "m", vec!["fast"]),
+            make_test("t3", "m"),
+        ];
+        let args = make_args(vec![], vec![":tag:slow"], false);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::t2", "m::t3"]);
+    }
+
+    // --- combined include + skip ---
+
+    #[test]
+    fn include_and_skip_combined() {
+        let tests = vec![
+            make_test("alpha_fast", "m"),
+            make_test("alpha_slow", "m"),
+            make_test("beta_fast", "m"),
+        ];
+        // Include anything with "alpha", but skip anything with "slow"
+        let args = make_args(vec!["alpha"], vec!["slow"], false);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::alpha_fast"]);
+    }
+
+    #[test]
+    fn skip_wins_over_include() {
+        let tests = vec![make_test("target", "m")];
+        // Both include and skip match the same test — skip should win
+        let args = make_args(vec!["target"], vec!["target"], false);
+        assert_eq!(filtered_names(&args, &tests), Vec::<String>::new());
+    }
+
+    // --- tag boolean expression syntax ---
+
+    #[test]
+    fn filter_test_tag_or_expression() {
+        // `:tag:a|b` matches tests tagged with `a` OR `b`
+        let test_a = make_tagged_test("t1", "m", vec!["a"]);
+        let test_b = make_tagged_test("t2", "m", vec!["b"]);
+        let test_c = make_tagged_test("t3", "m", vec!["c"]);
+        assert!(filter_test(&test_a, ":tag:a|b", false));
+        assert!(filter_test(&test_b, ":tag:a|b", false));
+        assert!(!filter_test(&test_c, ":tag:a|b", false));
+    }
+
+    #[test]
+    fn filter_test_tag_and_expression() {
+        // `:tag:a&b` matches tests tagged with BOTH `a` AND `b`
+        let test_ab = make_tagged_test("t1", "m", vec!["a", "b"]);
+        let test_a = make_tagged_test("t2", "m", vec!["a"]);
+        let test_b = make_tagged_test("t3", "m", vec!["b"]);
+        assert!(filter_test(&test_ab, ":tag:a&b", false));
+        assert!(!filter_test(&test_a, ":tag:a&b", false));
+        assert!(!filter_test(&test_b, ":tag:a&b", false));
+    }
+
+    #[test]
+    fn filter_test_tag_mixed_and_or() {
+        // `:tag:a|b&c` means `a OR (b AND c)` — `&` has higher precedence
+        let test_a = make_tagged_test("t1", "m", vec!["a"]);
+        let test_bc = make_tagged_test("t2", "m", vec!["b", "c"]);
+        let test_b = make_tagged_test("t3", "m", vec!["b"]);
+        let test_c = make_tagged_test("t4", "m", vec!["c"]);
+        let test_none = make_test("t5", "m");
+        assert!(filter_test(&test_a, ":tag:a|b&c", false));
+        assert!(filter_test(&test_bc, ":tag:a|b&c", false));
+        assert!(!filter_test(&test_b, ":tag:a|b&c", false));
+        assert!(!filter_test(&test_c, ":tag:a|b&c", false));
+        assert!(!filter_test(&test_none, ":tag:a|b&c", false));
+    }
+
+    #[test]
+    fn filter_test_tag_exact_flag_does_not_affect_tags() {
+        // `--exact` should not change tag matching behavior
+        let test = make_tagged_test("t1", "m", vec!["fast"]);
+        assert!(filter_test(&test, ":tag:fast", true));
+        assert!(!filter_test(&test, ":tag:slow", true));
+    }
+
+    #[test]
+    fn include_by_tag_or_expression() {
+        let tests = vec![
+            make_tagged_test("t1", "m", vec!["unit"]),
+            make_tagged_test("t2", "m", vec!["integration"]),
+            make_tagged_test("t3", "m", vec!["e2e"]),
+        ];
+        let args = make_args(vec![":tag:unit|integration"], vec![], false);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::t1", "m::t2"]);
+    }
+
+    #[test]
+    fn skip_by_tag_and_expression() {
+        let tests = vec![
+            make_tagged_test("t1", "m", vec!["slow", "network"]),
+            make_tagged_test("t2", "m", vec!["slow"]),
+            make_tagged_test("t3", "m", vec!["network"]),
+            make_test("t4", "m"),
+        ];
+        // Skip only tests that are BOTH slow AND network
+        let args = make_args(vec![], vec![":tag:slow&network"], false);
+        assert_eq!(
+            filtered_names(&args, &tests),
+            vec!["m::t2", "m::t3", "m::t4"]
+        );
     }
 }

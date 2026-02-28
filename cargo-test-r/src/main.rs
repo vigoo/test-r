@@ -141,8 +141,8 @@ struct RunSubcommand {
     #[clap(long)]
     all: bool,
 
-    /// Test name filter
-    testname: Option<String>,
+    /// Test name filters
+    testname: Vec<String>,
 
     /// Arguments to be passed to the tests
     #[arg(last = true, num_args = 0..)]
@@ -234,10 +234,7 @@ fn run(workspace_root: &Utf8Path, cmd: RunSubcommand) -> anyhow::Result<ExitStat
         let test_binaries = filter_binaries(binary_list, workspace_root, &cmd)?;
         println!("{test_binaries:#?}"); // TODO: remove
 
-        let mut test_args = vec![];
-        if let Some(test_name) = &cmd.testname {
-            test_args.push(test_name.clone());
-        }
+        let mut test_args = cmd.testname.clone();
         test_args.extend(cmd.test_args);
 
         println!("{test_args:?}"); // TODO: remove

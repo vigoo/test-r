@@ -117,7 +117,7 @@ pub struct Arguments {
     /// tests whose names contain the filter are run. Multiple filter strings may
     /// be passed, which will run all tests matching any of the filters.
     #[arg(value_name = "FILTER")]
-    pub filter: Option<String>,
+    pub filter: Vec<String>,
 
     /// Marks the whole run (all the selected tests) as expected to be flaky, to
     /// be retried on top level a given number of times if needed.
@@ -258,10 +258,6 @@ impl Arguments {
             result.push(OsString::from("--show-stats"));
         }
 
-        if let Some(filter) = &self.filter {
-            result.push(OsString::from(filter));
-        }
-
         if let Some(flaky_run) = &self.flaky_run {
             result.push(OsString::from("--flaky-run"));
             result.push(OsString::from(flaky_run.to_string()));
@@ -274,6 +270,10 @@ impl Arguments {
 
         if self.spawn_workers {
             result.push(OsString::from("--spawn-workers"));
+        }
+
+        for filter in &self.filter {
+            result.push(OsString::from(filter));
         }
 
         result
