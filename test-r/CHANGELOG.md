@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.2](https://github.com/vigoo/test-r/compare/test-r-v3.0.1...test-r-v3.0.2) - 2026-02-28
+
+### Added
+
+- support multiple filter arguments ([#156](https://github.com/vigoo/test-r/pull/156))
+
 ## [3.0.1](https://github.com/vigoo/test-r/compare/test-r-v3.0.0...test-r-v3.0.1) - 2026-02-26
 
 ### Added
