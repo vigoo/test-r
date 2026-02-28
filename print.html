@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4589b218.js";
+            window.path_to_searchindex_js = "searchindex-7337a8b6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-9098e925.js"></script>
@@ -393,6 +393,10 @@ This includes some of the unstable flags too, <code>test-r</code> let’s use th
 <pre><code class="language-sh">cargo test hello
 </code></pre>
 <p>executes all tests that have the <code>hello</code> substring in their <strong>fully qualified name</strong> (module path + function name).</p>
+<p>Multiple filter strings can be passed after <code>--</code>, which will run all tests matching <strong>any</strong> of the filters:</p>
+<pre><code class="language-sh">cargo test -- hello world
+</code></pre>
+<p>This runs all tests whose name contains <code>hello</code> <strong>or</strong> <code>world</code>.</p>
 <pre><code class="language-sh">cargo test hello -- --exact
 </code></pre>
 <p>will only run the test that has the exact <strong>fully qualified name</strong> <code>hello</code>, which in this case means a function named <code>hello</code> in the root module.</p>
@@ -405,7 +409,12 @@ It is also possible to run <strong>only the ignored tests</strong> with the <cod
 <h3 id="tests-vs-benchmarks"><a class="header" href="#tests-vs-benchmarks">Tests vs benchmarks</a></h3>
 <p>The framework supports not only tests (defined with <code>#[test]</code>), but also benchmarks (defined with <code>#[bench]</code>). By default, the test runner executes both. It is possible to only run tests or benches with the <code>--test</code> and <code>--bench</code> flags.</p>
 <h3 id="skipping-some-tests"><a class="header" href="#skipping-some-tests">Skipping some tests</a></h3>
-<p>The <code>--skip</code> option can be used to skip some tests (just like if they were marked with <code>#[ignore]</code>). It can be used multiple times to mark multiple tests to skip.</p>
+<p>The <code>--skip</code> option can be used to skip tests whose names contain the given substring (just like if they were marked with <code>#[ignore]</code>). It can be used multiple times to skip multiple groups of tests. When <code>--exact</code> is also passed, <code>--skip</code> requires an exact name match instead of a substring match.</p>
+<pre><code class="language-sh">cargo test -- --skip slow
+</code></pre>
+<p>This skips all tests whose name contains <code>slow</code>. Tags can also be used with <code>--skip</code>:</p>
+<pre><code class="language-sh">cargo test -- --skip ':tag:expensive'
+</code></pre>
 <h2 id="parallelism"><a class="header" href="#parallelism">Parallelism</a></h2>
 <p>By default, the test runner uses as many threads as there are logical cores on the machine. This can be changed with the <code>--test-threads</code> flag.</p>
 <pre><code>cargo test -- --test-threads=1
@@ -666,6 +675,11 @@ mod inner2 {
 <pre><code class="language-sh">cargo test ':tag:tag1|tag2&amp;tag3'
 </code></pre>
 <p>is going to run tests tagged as either <code>tag1</code> or both <code>tag2</code> and <code>tag3</code>.</p>
+<h3 id="skipping-tests-by-tag"><a class="header" href="#skipping-tests-by-tag">Skipping tests by tag</a></h3>
+<p>The <code>:tag:</code> syntax also works with the <code>--skip</code> option. This allows skipping all tests with a specific tag:</p>
+<pre><code class="language-sh">cargo test -- --skip ':tag:slow'
+</code></pre>
+<p>This runs all tests except those tagged as <code>slow</code>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="benches"><a class="header" href="#benches">Benches</a></h1>
 <p><code>test-r</code> provides a simple benchmark runner as well, very similar to the built-in one in unstable Rust. The main differences are that <code>test-r</code> allows defining async bench functions too (when the <code>tokio</code> feature is enabled), and that benchmark functions also support <a href="#dependency-injection">dependency injection</a>.</p>

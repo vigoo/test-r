@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-4589b218.js";
+            window.path_to_searchindex_js = "../searchindex-7337a8b6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-9098e925.js"></script>
@@ -221,6 +221,11 @@ mod inner2 {
 <pre><code class="language-sh">cargo test ':tag:tag1|tag2&amp;tag3'
 </code></pre>
 <p>is going to run tests tagged as either <code>tag1</code> or both <code>tag2</code> and <code>tag3</code>.</p>
+<h3 id="skipping-tests-by-tag"><a class="header" href="#skipping-tests-by-tag">Skipping tests by tag</a></h3>
+<p>The <code>:tag:</code> syntax also works with the <code>--skip</code> option. This allows skipping all tests with a specific tag:</p>
+<pre><code class="language-sh">cargo test -- --skip ':tag:slow'
+</code></pre>
+<p>This runs all tests except those tagged as <code>slow</code>.</p>
 
                     </main>
 
