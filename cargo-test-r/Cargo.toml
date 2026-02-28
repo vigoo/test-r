@@ -1,6 +1,6 @@
 [package]
 name = "cargo-test-r"
-version = "2.2.2"
+version = "2.2.3"
 edition = "2024"
 license = "Apache-2.0"
 description = "Test framework for Rust - cargo extensions"
