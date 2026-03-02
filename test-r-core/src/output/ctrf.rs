@@ -1,5 +1,5 @@
 use crate::internal::{FlakinessControl, RegisteredTest, TestResult};
-use crate::output::{LogFile, StdoutOrLogFile, TestRunnerOutput};
+use crate::output::{write_failure_summary_to_stderr, LogFile, StdoutOrLogFile, TestRunnerOutput};
 use ctrf_rs::report::Report;
 use ctrf_rs::results::ResultsBuilder;
 use ctrf_rs::test::{Status, Test};
@@ -141,7 +141,7 @@ impl TestRunnerOutput for Ctrf {
     fn finished_suite(
         &self,
         _registered_tests: &[RegisteredTest],
-        _results: &[(RegisteredTest, TestResult)],
+        results: &[(RegisteredTest, TestResult)],
         exec_time: Duration,
     ) {
         let mut state = self.state.lock().unwrap();
@@ -149,7 +149,7 @@ impl TestRunnerOutput for Ctrf {
             .start
             .take()
             .expect("finished_suite called without a start time");
-        let results = state
+        let ctrf_results = state
             .builder
             .take()
             .unwrap()
@@ -158,12 +158,14 @@ impl TestRunnerOutput for Ctrf {
             None,
             Some(SystemTime::now()),
             Some("test-r".to_string()),
-            results,
+            ctrf_results,
         );
 
         let raw = serde_json::to_string(&report).expect("Failed to serialize CTRF document");
         let out = &mut state.target;
         writeln!(out, "{}", raw).expect("Failed to write to output");
+
+        write_failure_summary_to_stderr(results, exec_time);
     }
 
     fn test_list(&self, _registered_tests: &[RegisteredTest]) {}
