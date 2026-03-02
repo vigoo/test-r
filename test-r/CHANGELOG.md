@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.3](https://github.com/vigoo/test-r/compare/test-r-v3.0.2...test-r-v3.0.3) - 2026-03-02
+
+### Added
+
+- still output test run summary to stderr when using the ctrf or junit reporters ([#158](https://github.com/vigoo/test-r/pull/158))
+
 ## [3.0.2](https://github.com/vigoo/test-r/compare/test-r-v3.0.1...test-r-v3.0.2) - 2026-02-28
 
 ### Added
