@@ -45,6 +45,46 @@ pub trait TestRunnerOutput: Send + Sync {
     }
 }
 
+pub(crate) fn write_failure_summary_to_stderr(
+    results: &[(RegisteredTest, TestResult)],
+    exec_time: Duration,
+) {
+    let failed: Vec<_> = results
+        .iter()
+        .filter(|(_, result)| result.is_failed())
+        .collect();
+    if failed.is_empty() {
+        return;
+    }
+    let passed = results
+        .iter()
+        .filter(|(_, result)| result.is_passed() || result.is_benchmarked())
+        .count();
+    let ignored = results
+        .iter()
+        .filter(|(_, result)| result.is_ignored())
+        .count();
+
+    eprintln!();
+    eprintln!(
+        "test result: FAILED; {} passed; {} failed; {} ignored; finished in {:.3}s",
+        passed,
+        failed.len(),
+        ignored,
+        exec_time.as_secs_f64()
+    );
+    eprintln!();
+    eprintln!("Failed tests:");
+    for (test, result) in &failed {
+        eprintln!(
+            " - {} ({})",
+            test.fully_qualified_name(),
+            result.failure_message().as_deref().unwrap_or("???"),
+        );
+    }
+    eprintln!();
+}
+
 pub fn test_runner_output(args: &Arguments) -> Arc<dyn TestRunnerOutput> {
     if args.ipc.is_some() {
         Arc::new(ipc::IpcWorkerOutput::new())

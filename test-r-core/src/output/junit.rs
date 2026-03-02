@@ -1,5 +1,5 @@
 use crate::internal::{CapturedOutput, RegisteredTest, SuiteResult, TestResult};
-use crate::output::{LogFile, StdoutOrLogFile, TestRunnerOutput};
+use crate::output::{write_failure_summary_to_stderr, LogFile, StdoutOrLogFile, TestRunnerOutput};
 use quick_xml::events::Event::Decl;
 use quick_xml::events::{BytesCData, BytesDecl};
 use quick_xml::Writer;
@@ -236,6 +236,7 @@ impl TestRunnerOutput for JUnit {
             .map(|(test, result)| (test.clone(), result.clone()))
             .collect::<Vec<_>>();
         self.write_junit_report(registered_tests, &results, exec_time, true);
+        write_failure_summary_to_stderr(&results, exec_time);
     }
 
     fn test_list(&self, registered_tests: &[RegisteredTest]) {
