@@ -8,6 +8,17 @@ homepage = "https://github.com/vigoo/test-r"
 repository = "https://github.com/vigoo/test-r"
 readme = "../README.md"
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/cargo-test-r-v{ version }/cargo-test-r-{ target }.{ archive-format }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [dependencies]
 anyhow = "1.0.102"
 camino = "1.2.2"

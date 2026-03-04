@@ -20,6 +20,10 @@ changelog_update = true
 changelog_include = ["test-r-core", "test-r-macro"]
 
 [[package]]
+name = "cargo-test-r"
+changelog_update = true
+
+[[package]]
 name = "test-r-core"
 
 [[package]]

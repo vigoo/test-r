@@ -9,6 +9,10 @@ on:
     branches:
       - master
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   release-plz:
     name: Release-plz
@@ -16,6 +20,9 @@ jobs:
     concurrency:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false
+    outputs:
+      releases: ${{ steps.release-plz.outputs.releases }}
+      releases_created: ${{ steps.release-plz.outputs.releases_created }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -36,7 +43,75 @@ jobs:
             echo "No open release PR"
           fi
       - name: Run release-plz
+        id: release-plz
         uses: MarcoIeni/release-plz-action@v0.5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  extract-cargo-test-r-tag:
+    name: Extract cargo-test-r release tag
+    needs: release-plz
+    if: contains(needs.release-plz.outputs.releases, 'cargo-test-r')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.extract.outputs.tag }}
+    steps:
+      - name: Extract tag
+        id: extract
+        run: |
+          TAG=$(echo '${{ needs.release-plz.outputs.releases }}' | jq -r '.[] | select(.package_name == "cargo-test-r") | .tag')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  upload-cargo-test-r:
+    name: Upload cargo-test-r (${{ matrix.target }})
+    needs: extract-cargo-test-r-tag
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-22.04
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+          - target: aarch64-pc-windows-msvc
+            os: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ needs.extract-cargo-test-r-tag.outputs.tag }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Setup cross toolchain
+        if: startsWith(matrix.os, 'ubuntu') && !contains(matrix.target, '-musl')
+        uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: ${{ matrix.target }}
+      - name: Install cross
+        if: contains(matrix.target, '-musl')
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Configure static CRT
+        if: endsWith(matrix.target, 'windows-msvc')
+        run: echo "RUSTFLAGS=${RUSTFLAGS} -C target-feature=+crt-static" >> "${GITHUB_ENV}"
+      - name: Upload binary
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: cargo-test-r
+          target: ${{ matrix.target }}
+          tar: all
+          zip: windows
+          ref: refs/tags/${{ needs.extract-cargo-test-r-tag.outputs.tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
