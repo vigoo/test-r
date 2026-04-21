@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.4](https://github.com/vigoo/test-r/compare/test-r-v3.0.3...test-r-v3.0.4) - 2026-04-21
+
+### Other
+
+- apply suite tags to submodules ([#163](https://github.com/vigoo/test-r/pull/163))
+
 ## [3.0.3](https://github.com/vigoo/test-r/compare/test-r-v3.0.2...test-r-v3.0.3) - 2026-03-02
 
 ### Added
