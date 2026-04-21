@@ -33,6 +33,7 @@ deny = []
 
 skip = [
     "getrandom",
+    "r-efi",
 ]
 skip-tree = [
     "wasi",
