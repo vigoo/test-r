@@ -620,55 +620,33 @@ pub(crate) fn filter_test(test: &RegisteredTest, filter: &str, exact: bool) -> b
     }
 }
 
-pub(crate) fn apply_suite_tags(
+pub(crate) fn apply_suite_props_to_tests(
     tests: &[RegisteredTest],
     props: &[RegisteredTestSuiteProperty],
 ) -> Vec<RegisteredTest> {
-    let tag_props = props
+    let props_with_prefix = props
         .iter()
-        .filter_map(|prop| match prop {
-            RegisteredTestSuiteProperty::Tag { tag, .. } => {
-                let prefix = prop.crate_and_module();
-                Some((prefix, tag.clone()))
-            }
-            _ => None,
-        })
+        .map(|prop| (prop.crate_and_module(), prop))
         .collect::<Vec<_>>();
 
     let mut result = Vec::new();
     for test in tests {
         let mut test = test.clone();
-        for (prefix, tag) in &tag_props {
-            if &test.crate_and_module() == prefix {
-                test.props.tags.push(tag.clone());
-            }
-        }
-        result.push(test);
-    }
-    result
-}
-
-pub(crate) fn apply_suite_timeouts(
-    tests: &[RegisteredTest],
-    props: &[RegisteredTestSuiteProperty],
-) -> Vec<RegisteredTest> {
-    let timeout_props = props
-        .iter()
-        .filter_map(|prop| match prop {
-            RegisteredTestSuiteProperty::Timeout { timeout, .. } => {
-                let prefix = prop.crate_and_module();
-                Some((prefix, *timeout))
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    let mut result = Vec::new();
-    for test in tests {
-        let mut test = test.clone();
-        for (prefix, timeout) in &timeout_props {
-            if &test.crate_and_module() == prefix && test.props.timeout.is_none() {
-                test.props.timeout = Some(*timeout);
+        for (prefix, prop) in &props_with_prefix {
+            if test.crate_and_module().starts_with(prefix) {
+                match prop {
+                    RegisteredTestSuiteProperty::Tag { tag, .. } => {
+                        test.props.tags.push(tag.clone());
+                    }
+                    RegisteredTestSuiteProperty::Timeout { timeout, .. } => {
+                        if test.props.timeout.is_none() {
+                            test.props.timeout = Some(*timeout);
+                        }
+                    }
+                    RegisteredTestSuiteProperty::Sequential { .. } => {
+                        // handled in TestSuiteExecution
+                    }
+                }
             }
         }
         result.push(test);

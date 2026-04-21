@@ -64,6 +64,18 @@ mod tests {
         println!("Print from failing result based test");
         Err(CustomError)
     }
+
+    #[test_r::tag(c)]
+    mod nested {
+        use test_r::test;
+
+        #[test]
+        fn nested_module_test_works() {
+            println!("Print from nested module's test");
+            let result = 2 + 2;
+            assert_eq!(result, 4);
+        }
+    }
 }
 
 tag_suite!(tests, b);

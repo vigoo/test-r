@@ -171,6 +171,115 @@ mod cargo_tests {
         assert!(output_inner_test_works.contains("Print from inner test"));
         assert!(output_inner_test_works.contains("Stderr from inner test"));
     }
+
+    #[test]
+    #[serial]
+    fn nested_module_can_be_executed_by_suite_tag() {
+        let cwd = std::env::current_dir().unwrap();
+        let root = cwd.parent().unwrap().join("example");
+
+        let process = std::process::Command::new("cargo")
+            .arg("test")
+            .arg(":tag:a")
+            .arg("--")
+            .arg("--format")
+            .arg("json")
+            .arg("--show-output")
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let output = String::from_utf8(process.stdout).unwrap();
+
+        let mut found = false;
+        for line in output.lines() {
+            if let Ok(serde_json::Value::Object(map)) =
+                serde_json::from_str::<serde_json::Value>(line)
+            {
+                let event = map.get("event").unwrap().as_str().unwrap();
+                if event == "ok"
+                    && let Some(serde_json::Value::String(name)) = map.get("name")
+                    && name == "test_r_example::other::tests::nested::nested_module_test_works"
+                {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found)
+    }
+
+    #[test]
+    #[serial]
+    fn nested_module_can_be_executed_by_standalone_suite_tag() {
+        let cwd = std::env::current_dir().unwrap();
+        let root = cwd.parent().unwrap().join("example");
+
+        let process = std::process::Command::new("cargo")
+            .arg("test")
+            .arg(":tag:b")
+            .arg("--")
+            .arg("--format")
+            .arg("json")
+            .arg("--show-output")
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let output = String::from_utf8(process.stdout).unwrap();
+        let mut found = false;
+        for line in output.lines() {
+            if let Ok(serde_json::Value::Object(map)) =
+                serde_json::from_str::<serde_json::Value>(line)
+            {
+                let event = map.get("event").unwrap().as_str().unwrap();
+                if event == "ok"
+                    && let Some(serde_json::Value::String(name)) = map.get("name")
+                    && name == "test_r_example::other::tests::nested::nested_module_test_works"
+                {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found)
+    }
+
+    #[test]
+    #[serial]
+    fn nested_module_can_be_executed_by_nested_suite_tag() {
+        let cwd = std::env::current_dir().unwrap();
+        let root = cwd.parent().unwrap().join("example");
+
+        let process = std::process::Command::new("cargo")
+            .arg("test")
+            .arg(":tag:c")
+            .arg("--")
+            .arg("--format")
+            .arg("json")
+            .arg("--show-output")
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let output = String::from_utf8(process.stdout).unwrap();
+        let mut found = false;
+        for line in output.lines() {
+            if let Ok(serde_json::Value::Object(map)) =
+                serde_json::from_str::<serde_json::Value>(line)
+            {
+                let event = map.get("event").unwrap().as_str().unwrap();
+                if event == "ok"
+                    && let Some(serde_json::Value::String(name)) = map.get("name")
+                    && name == "test_r_example::other::tests::nested::nested_module_test_works"
+                {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found)
+    }
 }
 
 mod timing_tests {
