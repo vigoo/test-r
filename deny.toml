@@ -34,6 +34,7 @@ deny = []
 skip = [
     "getrandom",
     "r-efi",
+    "redox_syscall",
 ]
 skip-tree = [
     "wasi",
