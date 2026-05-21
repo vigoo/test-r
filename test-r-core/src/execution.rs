@@ -9,9 +9,24 @@ use topological_sort::TopologicalSort;
 
 use crate::args::Arguments;
 use crate::internal::{
-    apply_suite_props_to_tests, filter_registered_tests, DependencyConstructor, DependencyView,
-    RegisteredDependency, RegisteredTest, RegisteredTestSuiteProperty,
+    apply_suite_props_to_tests, filter_registered_tests, DepScope, DependencyConstructor,
+    DependencyView, HostedRpcOwnerCell, RegisteredDependency, RegisteredTest,
+    RegisteredTestSuiteProperty,
 };
+
+/// Wire bytes for a single Cloneable / Hosted dependency, keyed by its
+/// fully-qualified id (`{crate}::{module}::{name}`).
+pub type DepWireBytes = (String, Vec<u8>);
+
+/// Parent-held owner value (used only for `Hosted` deps — the parent keeps
+/// the owner alive for the suite's duration).
+pub type HostedOwner = Arc<dyn Any + Send + Sync>;
+
+/// Result of [`TestSuiteExecution::collect_hosted_descriptor_bytes_sync`] /
+/// [`TestSuiteExecution::collect_hosted_descriptor_bytes_async`]: the
+/// descriptor bytes that get shipped to workers, plus the parent-held owner
+/// values that must outlive every worker.
+pub type HostedDescriptorCollection = (Vec<DepWireBytes>, Vec<HostedOwner>);
 
 pub(crate) struct TestSuiteExecution {
     crate_and_module: String,
@@ -108,8 +123,367 @@ impl TestSuiteExecution {
     }
 
     /// Returns true if either this level, or any of the inner levels have dependencies
+    #[allow(dead_code)]
     pub fn has_dependencies(&self) -> bool {
         !self.dependencies.is_empty() || self.inner.iter().any(|inner| inner.has_dependencies())
+    }
+
+    /// Returns true if any dependency in this subtree uses `DepScope::Shared`
+    /// — those force single-threaded execution when output capture is on,
+    /// because the materialised value cannot cross the parent/worker boundary.
+    pub fn has_shared_dependencies(&self) -> bool {
+        self.dependencies
+            .iter()
+            .any(|d| d.scope == DepScope::Shared)
+            || self
+                .inner
+                .iter()
+                .any(|inner| inner.has_shared_dependencies())
+    }
+
+    /// Returns true if any dependency in this subtree uses `DepScope::Cloneable`.
+    #[allow(dead_code)] // used by Phase 1A.5 wiring (see sync.rs / tokio.rs)
+    pub fn has_cloneable_dependencies(&self) -> bool {
+        self.dependencies
+            .iter()
+            .any(|d| d.scope == DepScope::Cloneable)
+            || self
+                .inner
+                .iter()
+                .any(|inner| inner.has_cloneable_dependencies())
+    }
+
+    /// Phase 1B: returns true if any dependency in this subtree uses
+    /// `DepScope::Hosted`. The parent runs Hosted owners exactly once and
+    /// keeps them alive for the duration of the suite while shipping
+    /// descriptors to workers.
+    #[allow(dead_code)] // used by Phase 1B wiring (see sync.rs / tokio.rs)
+    pub fn has_hosted_dependencies(&self) -> bool {
+        self.dependencies
+            .iter()
+            .any(|d| d.scope == DepScope::Hosted)
+            || self
+                .inner
+                .iter()
+                .any(|inner| inner.has_hosted_dependencies())
+    }
+
+    /// Phase 1C: returns true if any dependency in this subtree uses
+    /// `DepScope::HostedRpc`. The parent runs HostedRpc owners exactly once,
+    /// keeps the owner cells alive for the suite, and routes worker-initiated
+    /// IPC calls to those cells.
+    #[allow(dead_code)]
+    pub fn has_hosted_rpc_dependencies(&self) -> bool {
+        self.dependencies
+            .iter()
+            .any(|d| d.scope == DepScope::HostedRpc)
+            || self
+                .inner
+                .iter()
+                .any(|inner| inner.has_hosted_rpc_dependencies())
+    }
+
+    /// Collects every Cloneable dependency in this subtree (depth-first).
+    #[allow(dead_code)] // used by Phase 1A.5 wiring (see sync.rs / tokio.rs)
+    pub fn collect_cloneable_dependencies(&self) -> Vec<RegisteredDependency> {
+        let mut out = Vec::new();
+        self.collect_cloneable_dependencies_into(&mut out);
+        out
+    }
+
+    #[allow(dead_code)]
+    fn collect_cloneable_dependencies_into(&self, out: &mut Vec<RegisteredDependency>) {
+        for dep in &self.dependencies {
+            if dep.scope == DepScope::Cloneable {
+                out.push(dep.clone());
+            }
+        }
+        for inner in &self.inner {
+            inner.collect_cloneable_dependencies_into(out);
+        }
+    }
+
+    /// Phase 1A: walks the subtree, runs every Cloneable dep's constructor in
+    /// the parent (passing an empty dep view — Cloneable deps must not take
+    /// other dependencies in 1A), encodes the result to wire bytes via the
+    /// registered [`crate::internal::CloneableCodec`], and discards the
+    /// materialised value. The returned items are keyed by the dep's
+    /// fully-qualified id (`{crate}::{module}::{name}`) so deps with the same
+    /// local name registered in different modules don't collide on the wire.
+    /// The parent ships them to each worker via
+    /// [`crate::ipc::IpcCommand::ProvideCloneable`].
+    pub fn collect_cloneable_wire_bytes_sync(&self) -> Vec<(String, Vec<u8>)> {
+        let mut out = Vec::new();
+        self.collect_cloneable_wire_bytes_into(&mut out);
+        out
+    }
+
+    fn collect_cloneable_wire_bytes_into(&self, out: &mut Vec<(String, Vec<u8>)>) {
+        for dep in &self.dependencies {
+            if dep.scope == DepScope::Cloneable {
+                assert!(
+                    dep.dependencies.is_empty(),
+                    "Phase 1A Cloneable dep '{}' may not depend on other deps (depends on {:?})",
+                    dep.name,
+                    dep.dependencies
+                );
+                let codec = dep.cloneable_codec.as_ref().unwrap_or_else(|| {
+                    panic!("Cloneable dep '{}' missing CloneableCodec", dep.name)
+                });
+                let empty: HashMap<String, Arc<dyn Any + Send + Sync>> = HashMap::new();
+                let value = match &dep.constructor {
+                    DependencyConstructor::Sync(cons) => cons(Arc::new(empty)),
+                    DependencyConstructor::Async(_) => {
+                        panic!(
+                            "Cloneable dep '{}' has async constructor; not supported in sync runner",
+                            dep.name
+                        );
+                    }
+                };
+                let bytes = (codec.to_wire)(value);
+                out.push((dep.qualified_id(), bytes));
+            }
+        }
+        for inner in &self.inner {
+            inner.collect_cloneable_wire_bytes_into(out);
+        }
+    }
+
+    /// Phase 1B: parent-side materialisation for `Hosted` dependencies.
+    ///
+    /// For each Hosted dep in this subtree, runs the owner constructor on
+    /// the parent (with an empty dep view — Hosted owners may not depend on
+    /// other test deps in Phase 1B), encodes the descriptor via the
+    /// registered [`crate::internal::CloneableCodec`] stored in
+    /// `hosted_codec`, and returns BOTH the descriptor bytes (keyed by the
+    /// dep's fully-qualified id) AND the owner values themselves so the
+    /// caller can keep them alive for the duration of the suite. Unlike
+    /// Cloneable, Hosted owners must NOT be dropped — they hold resources
+    /// (TCP listeners, Docker containers, gRPC clients, etc.) that workers'
+    /// reconstructed handles depend on.
+    pub fn collect_hosted_descriptor_bytes_sync(&self) -> HostedDescriptorCollection {
+        let mut descriptors = Vec::new();
+        let mut owners = Vec::new();
+        self.collect_hosted_descriptor_bytes_into(&mut descriptors, &mut owners);
+        (descriptors, owners)
+    }
+
+    fn collect_hosted_descriptor_bytes_into(
+        &self,
+        descriptors: &mut Vec<DepWireBytes>,
+        owners: &mut Vec<HostedOwner>,
+    ) {
+        for dep in &self.dependencies {
+            if dep.scope == DepScope::Hosted {
+                assert!(
+                    dep.dependencies.is_empty(),
+                    "Phase 1B Hosted dep '{}' may not depend on other deps (depends on {:?})",
+                    dep.name,
+                    dep.dependencies
+                );
+                let codec = dep
+                    .hosted_codec
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("Hosted dep '{}' missing hosted codec", dep.name));
+                let empty: HashMap<String, Arc<dyn Any + Send + Sync>> = HashMap::new();
+                let value = match &dep.constructor {
+                    DependencyConstructor::Sync(cons) => cons(Arc::new(empty)),
+                    DependencyConstructor::Async(_) => {
+                        panic!(
+                            "Hosted dep '{}' has async constructor; not supported in sync runner",
+                            dep.name
+                        );
+                    }
+                };
+                let bytes = (codec.to_wire)(value.clone());
+                descriptors.push((dep.qualified_id(), bytes));
+                owners.push(value);
+            }
+        }
+        for inner in &self.inner {
+            inner.collect_hosted_descriptor_bytes_into(descriptors, owners);
+        }
+    }
+
+    /// Phase 1C: parent-side materialisation for `HostedRpc` dependencies.
+    ///
+    /// For each HostedRpc dep in this subtree, runs the owner constructor on
+    /// the parent (with an empty dep view — HostedRpc owners may not depend
+    /// on other test deps in Phase 1C), downcasts the resulting
+    /// `Arc<dyn Any>` to the dep's `HostedRpcOwnerCell` via the registered
+    /// [`crate::internal::RpcFactory::owner_into_cell`], and returns
+    /// `(qualified_id, cell)` pairs that the runtime keeps alive for the
+    /// suite's lifetime and uses to dispatch worker-initiated RPC calls.
+    pub fn collect_hosted_rpc_owner_cells_sync(&self) -> Vec<(String, Arc<HostedRpcOwnerCell>)> {
+        let mut out = Vec::new();
+        self.collect_hosted_rpc_owner_cells_into(&mut out);
+        out
+    }
+
+    fn collect_hosted_rpc_owner_cells_into(
+        &self,
+        out: &mut Vec<(String, Arc<HostedRpcOwnerCell>)>,
+    ) {
+        for dep in &self.dependencies {
+            if dep.scope == DepScope::HostedRpc {
+                assert!(
+                    dep.dependencies.is_empty(),
+                    "Phase 1C HostedRpc dep '{}' may not depend on other deps (depends on {:?})",
+                    dep.name,
+                    dep.dependencies
+                );
+                let factory = dep
+                    .rpc_factory
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("HostedRpc dep '{}' missing RpcFactory", dep.name));
+                let empty: HashMap<String, Arc<dyn Any + Send + Sync>> = HashMap::new();
+                let value = match &dep.constructor {
+                    DependencyConstructor::Sync(cons) => cons(Arc::new(empty)),
+                    DependencyConstructor::Async(_) => {
+                        panic!(
+                            "HostedRpc dep '{}' has async constructor; not supported in sync runner (Phase 1C MVP)",
+                            dep.name
+                        );
+                    }
+                };
+                let cell = (factory.owner_into_cell)(value);
+                out.push((dep.qualified_id(), cell));
+            }
+        }
+        for inner in &self.inner {
+            inner.collect_hosted_rpc_owner_cells_into(out);
+        }
+    }
+
+    /// Phase 1B async counterpart of [`Self::collect_hosted_descriptor_bytes_sync`].
+    /// Same semantics, but `async fn` owner constructors are awaited on the
+    /// parent. Like its Cloneable sibling this future is intentionally
+    /// `!Send` and must be awaited on the root runner task.
+    #[cfg(feature = "tokio")]
+    pub async fn collect_hosted_descriptor_bytes_async(&self) -> HostedDescriptorCollection {
+        let mut descriptors = Vec::new();
+        let mut owners = Vec::new();
+        self.collect_hosted_descriptor_bytes_into_async(&mut descriptors, &mut owners)
+            .await;
+        (descriptors, owners)
+    }
+
+    #[cfg(feature = "tokio")]
+    fn collect_hosted_descriptor_bytes_into_async<'a>(
+        &'a self,
+        descriptors: &'a mut Vec<DepWireBytes>,
+        owners: &'a mut Vec<HostedOwner>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
+        Box::pin(async move {
+            for dep in &self.dependencies {
+                if dep.scope == DepScope::Hosted {
+                    assert!(
+                        dep.dependencies.is_empty(),
+                        "Phase 1B Hosted dep '{}' may not depend on other deps (depends on {:?})",
+                        dep.name,
+                        dep.dependencies
+                    );
+                    let codec = dep.hosted_codec.as_ref().unwrap_or_else(|| {
+                        panic!("Hosted dep '{}' missing hosted codec", dep.name)
+                    });
+                    let empty: HashMap<String, Arc<dyn Any + Send + Sync>> = HashMap::new();
+                    let value = match &dep.constructor {
+                        DependencyConstructor::Sync(cons) => cons(Arc::new(empty)),
+                        DependencyConstructor::Async(cons) => cons(Arc::new(empty)).await,
+                    };
+                    let bytes = (codec.to_wire)(value.clone());
+                    descriptors.push((dep.qualified_id(), bytes));
+                    owners.push(value);
+                }
+            }
+            for inner in &self.inner {
+                inner
+                    .collect_hosted_descriptor_bytes_into_async(descriptors, owners)
+                    .await;
+            }
+        })
+    }
+
+    /// Async counterpart of [`Self::collect_cloneable_wire_bytes_sync`]. Used by
+    /// the tokio runner so that `async fn` Cloneable constructors are awaited
+    /// on the parent. Mirrors the sync collector otherwise: parent-side
+    /// materialisation with an empty dep view, the result is encoded via the
+    /// registered codec and discarded.
+    ///
+    /// **Intentionally `!Send`.** The underlying `DependencyConstructor::Async`
+    /// future is not `Send`, so the returned future from this collector cannot
+    /// be either. Must be awaited on the root runner task (i.e., under
+    /// `Runtime::block_on` or directly inside `test_runner`) — never inside
+    /// `tokio::spawn` / a `JoinSet`. If we ever want to spawn Cloneable
+    /// collection onto a worker, the constructor type would need to require
+    /// `Send` first.
+    #[cfg(feature = "tokio")]
+    pub async fn collect_cloneable_wire_bytes_async(&self) -> Vec<(String, Vec<u8>)> {
+        let mut out = Vec::new();
+        self.collect_cloneable_wire_bytes_into_async(&mut out).await;
+        out
+    }
+
+    #[cfg(feature = "tokio")]
+    fn collect_cloneable_wire_bytes_into_async<'a>(
+        &'a self,
+        out: &'a mut Vec<(String, Vec<u8>)>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
+        Box::pin(async move {
+            for dep in &self.dependencies {
+                if dep.scope == DepScope::Cloneable {
+                    assert!(
+                        dep.dependencies.is_empty(),
+                        "Phase 1A Cloneable dep '{}' may not depend on other deps (depends on {:?})",
+                        dep.name,
+                        dep.dependencies
+                    );
+                    let codec = dep.cloneable_codec.as_ref().unwrap_or_else(|| {
+                        panic!("Cloneable dep '{}' missing CloneableCodec", dep.name)
+                    });
+                    let empty: HashMap<String, Arc<dyn Any + Send + Sync>> = HashMap::new();
+                    let value = match &dep.constructor {
+                        DependencyConstructor::Sync(cons) => cons(Arc::new(empty)),
+                        DependencyConstructor::Async(cons) => cons(Arc::new(empty)).await,
+                    };
+                    let bytes = (codec.to_wire)(value);
+                    out.push((dep.qualified_id(), bytes));
+                }
+            }
+            for inner in &self.inner {
+                inner.collect_cloneable_wire_bytes_into_async(out).await;
+            }
+        })
+    }
+
+    /// Worker-side counterpart to [`Self::collect_cloneable_wire_bytes_sync`]:
+    /// pre-populates the Cloneable dep value at the node where the dep is
+    /// registered, so the upcoming `materialize_deps_sync` call uses the
+    /// provided value instead of running the original constructor. The lookup
+    /// is keyed by the dep's fully-qualified id
+    /// (`{crate}::{module}::{name}`), but the value is stored under the local
+    /// `name` so the rest of the materialisation logic keeps working unchanged.
+    /// Returns `true` if a matching dep was found in any node of the subtree.
+    pub fn provide_cloneable_value(
+        &mut self,
+        dep_id: &str,
+        value: Arc<dyn Any + Send + Sync>,
+    ) -> bool {
+        let mut applied = false;
+        if let Some(local_name) = self
+            .dependencies
+            .iter()
+            .find(|d| d.qualified_id() == dep_id)
+            .map(|d| d.name.clone())
+        {
+            self.materialized_dependencies
+                .insert(local_name, value.clone());
+            applied = true;
+        }
+        for inner in &mut self.inner {
+            applied |= inner.provide_cloneable_value(dep_id, value.clone());
+        }
+        applied
     }
 
     /// Returns true if there are any tests that require capturing, based on the given default setting
@@ -436,11 +810,19 @@ impl TestSuiteExecution {
         &mut self,
         parent_map: &HashMap<String, Arc<dyn Any + Send + Sync>>,
     ) -> HashMap<String, Arc<dyn Any + Send + Sync>> {
-        let mut deps = HashMap::with_capacity(self.dependencies.len());
+        // Start with any pre-populated values (e.g. Cloneable deps received
+        // from the parent via ProvideCloneable IPC).
+        let mut deps = self.materialized_dependencies.clone();
         let mut dependency_map = parent_map.clone();
+        for (k, v) in &deps {
+            dependency_map.insert(k.clone(), v.clone());
+        }
 
         let sorted_dependencies = self.sorted_dependencies();
         for dep in &sorted_dependencies {
+            if deps.contains_key(&dep.name) {
+                continue;
+            }
             let materialized_dep = match &dep.constructor {
                 DependencyConstructor::Sync(cons) => cons(Arc::new(dependency_map.clone())),
                 DependencyConstructor::Async(cons) => cons(Arc::new(dependency_map.clone())).await,
@@ -456,11 +838,19 @@ impl TestSuiteExecution {
         &mut self,
         parent_map: &HashMap<String, Arc<dyn Any + Send + Sync>>,
     ) -> HashMap<String, Arc<dyn Any + Send + Sync>> {
-        let mut deps = HashMap::with_capacity(self.dependencies.len());
+        // Start with any pre-populated values (e.g. Cloneable deps received
+        // from the parent via ProvideCloneable IPC).
+        let mut deps = self.materialized_dependencies.clone();
         let mut dependency_map = parent_map.clone();
+        for (k, v) in &deps {
+            dependency_map.insert(k.clone(), v.clone());
+        }
 
         let sorted_dependencies = self.sorted_dependencies();
         for dep in &sorted_dependencies {
+            if deps.contains_key(&dep.name) {
+                continue;
+            }
             let materialized_dep = match &dep.constructor {
                 DependencyConstructor::Sync(cons) => cons(Arc::new(dependency_map.clone())),
                 DependencyConstructor::Async(_cons) => {
@@ -709,5 +1099,1014 @@ impl SequentialExecutionLock {
         } else {
             SequentialExecutionLockGuard::None
         }
+    }
+}
+
+#[cfg(test)]
+mod cloneable_tests {
+    use super::*;
+    use crate::internal::{
+        CloneableCodec, DependencyConstructor, RegisteredDependency, RegisteredTest, TestFunction,
+        TestProperties,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn registered_test(name: &str, deps: Vec<String>) -> RegisteredTest {
+        registered_test_in_module(name, "", deps)
+    }
+
+    fn registered_test_in_module(
+        name: &str,
+        module_path: &str,
+        deps: Vec<String>,
+    ) -> RegisteredTest {
+        RegisteredTest {
+            name: name.to_string(),
+            crate_name: "tcrate".to_string(),
+            module_path: module_path.to_string(),
+            run: TestFunction::Sync(Arc::new(|_| Box::new(()))),
+            props: TestProperties::default(),
+            dependencies: Some(deps),
+        }
+    }
+
+    /// A Cloneable dep whose constructor increments a counter (so we can
+    /// assert it ran exactly once), encodes via simple little-endian bytes.
+    fn registered_cloneable_dep(name: &str, counter: Arc<AtomicUsize>) -> RegisteredDependency {
+        registered_cloneable_dep_in(name, "", 0xdead_beef, counter)
+    }
+
+    /// Like [`registered_cloneable_dep`] but lets the caller pick the
+    /// dep's module path and the constant the constructor emits — so a
+    /// collision test can assert two same-named deps in different modules
+    /// don't get crossed up.
+    fn registered_cloneable_dep_in(
+        name: &str,
+        module_path: &str,
+        constructor_value: u64,
+        counter: Arc<AtomicUsize>,
+    ) -> RegisteredDependency {
+        let constructor_counter = counter.clone();
+        let constructor = DependencyConstructor::Sync(Arc::new(move |_view| {
+            constructor_counter.fetch_add(1, Ordering::SeqCst);
+            Arc::new(constructor_value) as Arc<dyn Any + Send + Sync>
+        }));
+        let codec = CloneableCodec {
+            to_wire: Arc::new(|any: Arc<dyn Any + Send + Sync>| {
+                let value: Arc<u64> = any.downcast::<u64>().unwrap();
+                (*value).to_le_bytes().to_vec()
+            }),
+            from_wire_bytes: Arc::new(|bytes: &[u8]| {
+                let arr: [u8; 8] = bytes.try_into().unwrap();
+                let value = u64::from_le_bytes(arr);
+                Arc::new(value) as Arc<dyn Any + Send + Sync>
+            }),
+        };
+        RegisteredDependency {
+            name: name.to_string(),
+            crate_name: "tcrate".to_string(),
+            module_path: module_path.to_string(),
+            constructor,
+            dependencies: Vec::new(),
+            scope: DepScope::Cloneable,
+            worker_fn: Some(crate::internal::WorkerReconstructor::Sync(Arc::new(
+                |wire_payload, _deps| wire_payload,
+            ))),
+            cloneable_codec: Some(codec),
+            hosted_codec: None,
+            rpc_factory: None,
+        }
+    }
+
+    #[test]
+    fn cloneable_wire_collection_runs_constructor_once_and_encodes_value() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let dep = registered_cloneable_dep("clone_dep", counter.clone());
+        let test = registered_test("t1", vec!["clone_dep".to_string()]);
+
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+
+        let collected = execution.collect_cloneable_wire_bytes_sync();
+        assert_eq!(collected.len(), 1, "exactly one cloneable dep expected");
+        let (dep_id, wire_bytes) = &collected[0];
+        assert_eq!(
+            dep_id, "tcrate::clone_dep",
+            "wire bytes must be keyed by the fully-qualified id, not the local name"
+        );
+        assert_eq!(
+            wire_bytes.as_slice(),
+            &0xdead_beef_u64.to_le_bytes(),
+            "expected the codec-encoded value to round-trip via to_wire"
+        );
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "constructor must have run exactly once when collecting"
+        );
+    }
+
+    #[test]
+    fn provide_cloneable_value_short_circuits_constructor() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let dep = registered_cloneable_dep("clone_dep", counter.clone());
+        let test = registered_test("t1", vec!["clone_dep".to_string()]);
+
+        let (mut execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+
+        let pre_value: Arc<dyn Any + Send + Sync> = Arc::new(99_u64);
+        let applied = execution.provide_cloneable_value("tcrate::clone_dep", pre_value);
+        assert!(
+            applied,
+            "pre-populated value should match the dep's qualified id"
+        );
+
+        // Pick the test — materialize_deps_sync must reuse the pre-populated
+        // value instead of running the original constructor.
+        let next = execution.pick_next_sync().expect("test should be picked");
+        assert_eq!(next.test.name, "t1");
+
+        let view = next.deps.get("clone_dep").expect("dep available");
+        let value: Arc<u64> = view.downcast::<u64>().unwrap();
+        assert_eq!(*value, 99);
+
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            0,
+            "constructor must not run when a pre-populated value is supplied"
+        );
+    }
+
+    /// Async-constructor counterpart for the parent-side collector used by the
+    /// tokio runner. Verifies that a Cloneable owner declared with
+    /// `async fn` is awaited on the parent and its wire bytes are produced
+    /// keyed by the dep's qualified id.
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn async_cloneable_wire_collection_awaits_async_constructor() {
+        use std::pin::Pin;
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let constructor_counter = counter.clone();
+
+        // Build a RegisteredDependency with an Async constructor that
+        // genuinely awaits a future (tokio::task::yield_now) on the parent
+        // side, then returns a u64.
+        let constructor = DependencyConstructor::Async(Arc::new(move |_view| {
+            let counter = constructor_counter.clone();
+            Box::pin(async move {
+                tokio::task::yield_now().await;
+                counter.fetch_add(1, Ordering::SeqCst);
+                let value: u64 = 0xdead_beef;
+                Arc::new(value) as Arc<dyn Any + Send + Sync>
+            }) as Pin<Box<dyn std::future::Future<Output = Arc<dyn Any + Send + Sync>>>>
+        }));
+        let codec = CloneableCodec {
+            to_wire: Arc::new(|any| {
+                let v: Arc<u64> = any.downcast::<u64>().unwrap();
+                (*v).to_le_bytes().to_vec()
+            }),
+            from_wire_bytes: Arc::new(|bytes| {
+                let arr: [u8; 8] = bytes.try_into().unwrap();
+                Arc::new(u64::from_le_bytes(arr)) as Arc<dyn Any + Send + Sync>
+            }),
+        };
+        let dep = RegisteredDependency {
+            name: "clone_dep".to_string(),
+            crate_name: "tcrate".to_string(),
+            module_path: String::new(),
+            constructor,
+            dependencies: Vec::new(),
+            scope: DepScope::Cloneable,
+            worker_fn: Some(crate::internal::WorkerReconstructor::Sync(Arc::new(
+                |wire_payload, _| wire_payload,
+            ))),
+            cloneable_codec: Some(codec),
+            hosted_codec: None,
+            rpc_factory: None,
+        };
+        let test = registered_test("t1", vec!["clone_dep".to_string()]);
+
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let collected = runtime.block_on(execution.collect_cloneable_wire_bytes_async());
+
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].0, "tcrate::clone_dep");
+        assert_eq!(collected[0].1.as_slice(), &0xdead_beef_u64.to_le_bytes());
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "async constructor must have run exactly once"
+        );
+    }
+
+    /// Regression test for the oracle's "Cloneable dep identity" bug:
+    /// two cloneable deps that share a local `name` but live in different
+    /// modules must not collide on the wire and must not cross-apply on the
+    /// worker side.
+    #[test]
+    fn cloneable_value_routing_uses_qualified_id_across_modules() {
+        let counter_a = Arc::new(AtomicUsize::new(0));
+        let counter_b = Arc::new(AtomicUsize::new(0));
+
+        // Same local name `clone_dep`, different module paths.
+        let dep_a = registered_cloneable_dep_in("clone_dep", "mod_a", 11, counter_a.clone());
+        let dep_b = registered_cloneable_dep_in("clone_dep", "mod_b", 22, counter_b.clone());
+
+        // One test per module, each takes "clone_dep" from its own module.
+        let test_a = registered_test_in_module("t_a", "mod_a", vec!["clone_dep".to_string()]);
+        let test_b = registered_test_in_module("t_b", "mod_b", vec!["clone_dep".to_string()]);
+
+        let (execution, _filtered) = TestSuiteExecution::construct(
+            &Arguments::default(),
+            &[dep_a, dep_b],
+            &[test_a, test_b],
+            &[],
+        );
+
+        // The wire bytes must carry distinct qualified ids and distinct payloads.
+        let mut collected = execution.collect_cloneable_wire_bytes_sync();
+        collected.sort_by(|l, r| l.0.cmp(&r.0));
+        assert_eq!(collected.len(), 2);
+        assert_eq!(collected[0].0, "tcrate::mod_a::clone_dep");
+        assert_eq!(collected[1].0, "tcrate::mod_b::clone_dep");
+        assert_eq!(collected[0].1.as_slice(), &11_u64.to_le_bytes());
+        assert_eq!(collected[1].1.as_slice(), &22_u64.to_le_bytes());
+
+        // Worker-side routing: pre-populating with `mod_a`'s qualified id must
+        // apply only to `mod_a`'s dep, and similarly for `mod_b`. If the
+        // routing fell back to plain `name`, both nodes would be updated.
+        let mut execution_a = execution;
+        let applied_a =
+            execution_a.provide_cloneable_value("tcrate::mod_a::clone_dep", Arc::new(111_u64));
+        assert!(applied_a, "mod_a dep must be reachable by qualified id");
+        let applied_b =
+            execution_a.provide_cloneable_value("tcrate::mod_b::clone_dep", Arc::new(222_u64));
+        assert!(applied_b, "mod_b dep must be reachable by qualified id");
+
+        // An unrelated qualified id must not apply to anything.
+        let applied_unknown =
+            execution_a.provide_cloneable_value("tcrate::mod_c::clone_dep", Arc::new(333_u64));
+        assert!(
+            !applied_unknown,
+            "unknown qualified id must not be applied anywhere"
+        );
+
+        // Pick both tests and confirm the per-module values stayed separate.
+        let first = execution_a.pick_next_sync().expect("first test");
+        let second = execution_a.pick_next_sync().expect("second test");
+
+        let pairs: Vec<(String, u64)> = [first, second]
+            .into_iter()
+            .map(|n| {
+                let v: Arc<u64> = n
+                    .deps
+                    .get("clone_dep")
+                    .expect("dep available")
+                    .clone()
+                    .downcast()
+                    .unwrap();
+                (n.test.name.clone(), *v)
+            })
+            .collect();
+
+        let val_a = pairs
+            .iter()
+            .find(|(n, _)| n == "t_a")
+            .expect("t_a picked")
+            .1;
+        let val_b = pairs
+            .iter()
+            .find(|(n, _)| n == "t_b")
+            .expect("t_b picked")
+            .1;
+        assert_eq!(
+            val_a, 111,
+            "mod_a test must see mod_a's pre-populated value"
+        );
+        assert_eq!(
+            val_b, 222,
+            "mod_b test must see mod_b's pre-populated value"
+        );
+
+        // Each per-module constructor ran exactly once — during the parent-side
+        // wire-bytes collection above. The worker-side `provide_cloneable_value`
+        // calls must NOT have triggered the constructor a second time on either
+        // node (otherwise the qualified-id routing is wrong / it cross-applied).
+        assert_eq!(
+            counter_a.load(Ordering::SeqCst),
+            1,
+            "mod_a constructor must have run exactly once (during wire collection)"
+        );
+        assert_eq!(
+            counter_b.load(Ordering::SeqCst),
+            1,
+            "mod_b constructor must have run exactly once (during wire collection)"
+        );
+    }
+
+    // -------- Phase 1B: Hosted dep tests --------
+
+    /// Builds a Hosted RegisteredDependency for tests. Owner value is a u64
+    /// (`payload`). `descriptor()` is modelled by the codec's `to_wire` as
+    /// the LE bytes of `payload`, and `from_descriptor` is modelled by the
+    /// worker_fn which downcasts the bytes and rebuilds a u64 — so we can
+    /// observe both halves of the Hosted round-trip without depending on
+    /// the user-facing `HostedDep` trait inside this private test helper.
+    fn registered_hosted_dep(
+        name: &str,
+        payload: u64,
+        owner_counter: Arc<AtomicUsize>,
+    ) -> RegisteredDependency {
+        registered_hosted_dep_in(name, "", payload, owner_counter)
+    }
+
+    /// Like [`registered_hosted_dep`] but lets the caller pick the dep's
+    /// module path — so a collision test can assert two same-named Hosted
+    /// deps in different modules don't get crossed up on the wire / in the
+    /// worker routing.
+    fn registered_hosted_dep_in(
+        name: &str,
+        module_path: &str,
+        payload: u64,
+        owner_counter: Arc<AtomicUsize>,
+    ) -> RegisteredDependency {
+        let constructor = DependencyConstructor::Sync(Arc::new(move |_view| {
+            owner_counter.fetch_add(1, Ordering::SeqCst);
+            Arc::new(payload) as Arc<dyn Any + Send + Sync>
+        }));
+        let codec = CloneableCodec {
+            // descriptor() on the owner: encode the payload as LE bytes
+            to_wire: Arc::new(|any: Arc<dyn Any + Send + Sync>| {
+                let v: Arc<u64> = any.downcast::<u64>().unwrap();
+                (*v).to_le_bytes().to_vec()
+            }),
+            // worker side: box the bytes as Any (worker_fn does
+            // from_descriptor on them)
+            from_wire_bytes: Arc::new(|bytes: &[u8]| {
+                let boxed: Vec<u8> = bytes.to_vec();
+                Arc::new(boxed) as Arc<dyn Any + Send + Sync>
+            }),
+        };
+        let worker_fn =
+            crate::internal::WorkerReconstructor::Sync(Arc::new(|wire_payload, _deps| {
+                let bytes_arc: Arc<Vec<u8>> = wire_payload.downcast::<Vec<u8>>().unwrap();
+                let arr: [u8; 8] = (*bytes_arc).as_slice().try_into().unwrap();
+                let value: u64 = u64::from_le_bytes(arr);
+                Arc::new(value) as Arc<dyn Any + Send + Sync>
+            }));
+        RegisteredDependency {
+            name: name.to_string(),
+            crate_name: "tcrate".to_string(),
+            module_path: module_path.to_string(),
+            constructor,
+            dependencies: Vec::new(),
+            scope: DepScope::Hosted,
+            worker_fn: Some(worker_fn),
+            cloneable_codec: None,
+            hosted_codec: Some(codec),
+            rpc_factory: None,
+        }
+    }
+
+    #[test]
+    fn hosted_descriptor_collection_runs_owner_once_and_keeps_it_alive() {
+        let owner_counter = Arc::new(AtomicUsize::new(0));
+        let dep = registered_hosted_dep("hosted_dep", 0xcafe_babe_dead_beef, owner_counter.clone());
+        let test = registered_test("t1", vec!["hosted_dep".to_string()]);
+
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+
+        let (descriptors, owners) = execution.collect_hosted_descriptor_bytes_sync();
+        assert_eq!(descriptors.len(), 1, "exactly one hosted dep expected");
+        assert_eq!(owners.len(), 1, "exactly one hosted owner kept alive");
+
+        let (dep_id, descriptor_bytes) = &descriptors[0];
+        assert_eq!(
+            dep_id, "tcrate::hosted_dep",
+            "descriptor must be keyed by the fully-qualified id"
+        );
+        assert_eq!(
+            descriptor_bytes.as_slice(),
+            &0xcafe_babe_dead_beef_u64.to_le_bytes(),
+            "expected descriptor bytes to match codec.to_wire of payload"
+        );
+        assert_eq!(
+            owner_counter.load(Ordering::SeqCst),
+            1,
+            "owner constructor must have run exactly once"
+        );
+
+        // The returned owner Arc<dyn Any> must wrap the same payload value
+        // — i.e. the parent really is holding the owner alive.
+        let held: Arc<u64> = owners[0].clone().downcast::<u64>().unwrap();
+        assert_eq!(*held, 0xcafe_babe_dead_beef);
+    }
+
+    #[test]
+    fn hosted_descriptor_roundtrips_to_worker_value_via_provide_cloneable_value() {
+        let owner_counter = Arc::new(AtomicUsize::new(0));
+        let dep = registered_hosted_dep("hosted_dep", 0x1234_5678_u64, owner_counter.clone());
+        let test = registered_test("t1", vec!["hosted_dep".to_string()]);
+
+        let (mut execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+
+        // Worker-side simulation: pre-populate a reconstructed value (this
+        // is what `apply_provided_wire_bytes` does after running the worker_fn
+        // against the descriptor bytes).
+        let pre_value: Arc<dyn Any + Send + Sync> = Arc::new(0x1234_5678_u64);
+        let applied = execution.provide_cloneable_value("tcrate::hosted_dep", pre_value);
+        assert!(
+            applied,
+            "Hosted dep must accept pre-populated values via the same path as Cloneable"
+        );
+
+        // Pick the test — the owner constructor must NOT run on the worker
+        // side (we provided a value directly).
+        let next = execution.pick_next_sync().expect("test should be picked");
+        let view = next.deps.get("hosted_dep").expect("dep available");
+        let value: Arc<u64> = view.downcast::<u64>().unwrap();
+        assert_eq!(*value, 0x1234_5678);
+        assert_eq!(
+            owner_counter.load(Ordering::SeqCst),
+            0,
+            "Hosted owner constructor must not run on the worker side"
+        );
+    }
+
+    #[test]
+    fn has_hosted_dependencies_reports_correctly() {
+        let dep = registered_hosted_dep("h", 0, Arc::new(AtomicUsize::new(0)));
+        let test = registered_test("t1", vec!["h".to_string()]);
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+        assert!(execution.has_hosted_dependencies());
+        assert!(!execution.has_shared_dependencies());
+        assert!(!execution.has_cloneable_dependencies());
+    }
+
+    /// The parent-hosted Phase 1B design: the owner constructor must run
+    /// EXACTLY once even with multiple workers — descriptors are computed
+    /// once on the parent and shipped to each worker.
+    #[test]
+    fn hosted_owner_runs_exactly_once_even_when_collecting_multiple_times() {
+        // The collector is what the parent calls once; we verify the
+        // expected invariant: a single collect call invokes the owner once
+        // (even if multiple Hosted deps share the same dep id structure).
+        let counter_a = Arc::new(AtomicUsize::new(0));
+        let counter_b = Arc::new(AtomicUsize::new(0));
+
+        // Two distinct Hosted deps in the same module/crate.
+        let mut dep_a = registered_hosted_dep("hosted_a", 1, counter_a.clone());
+        dep_a.name = "hosted_a".to_string();
+        let mut dep_b = registered_hosted_dep("hosted_b", 2, counter_b.clone());
+        dep_b.name = "hosted_b".to_string();
+        let test = registered_test("t1", vec!["hosted_a".to_string(), "hosted_b".to_string()]);
+
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep_a, dep_b], &[test], &[]);
+
+        let (descriptors, owners) = execution.collect_hosted_descriptor_bytes_sync();
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(owners.len(), 2);
+        assert_eq!(counter_a.load(Ordering::SeqCst), 1);
+        assert_eq!(counter_b.load(Ordering::SeqCst), 1);
+    }
+
+    /// Regression test for qualified-id routing on Hosted deps: two Hosted
+    /// deps that share a local `name` but live in different modules must
+    /// not collide on the wire and must not cross-apply on the worker side.
+    /// This mirrors `cloneable_value_routing_uses_qualified_id_across_modules`
+    /// to make sure the same hardened routing applies to descriptor bytes.
+    #[test]
+    fn hosted_descriptor_routing_uses_qualified_id_across_modules() {
+        let counter_a = Arc::new(AtomicUsize::new(0));
+        let counter_b = Arc::new(AtomicUsize::new(0));
+
+        // Same local name `hosted_dep`, different module paths.
+        let dep_a = registered_hosted_dep_in("hosted_dep", "mod_a", 11, counter_a.clone());
+        let dep_b = registered_hosted_dep_in("hosted_dep", "mod_b", 22, counter_b.clone());
+
+        let test_a = registered_test_in_module("t_a", "mod_a", vec!["hosted_dep".to_string()]);
+        let test_b = registered_test_in_module("t_b", "mod_b", vec!["hosted_dep".to_string()]);
+
+        let (execution, _filtered) = TestSuiteExecution::construct(
+            &Arguments::default(),
+            &[dep_a, dep_b],
+            &[test_a, test_b],
+            &[],
+        );
+
+        // Descriptor bytes must carry distinct qualified ids and distinct payloads.
+        let (mut descriptors, _owners) = execution.collect_hosted_descriptor_bytes_sync();
+        descriptors.sort_by(|l, r| l.0.cmp(&r.0));
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(descriptors[0].0, "tcrate::mod_a::hosted_dep");
+        assert_eq!(descriptors[1].0, "tcrate::mod_b::hosted_dep");
+        assert_eq!(descriptors[0].1.as_slice(), &11_u64.to_le_bytes());
+        assert_eq!(descriptors[1].1.as_slice(), &22_u64.to_le_bytes());
+
+        // Worker-side routing: pre-populating with `mod_a`'s qualified id
+        // must apply only to `mod_a`'s dep, and similarly for `mod_b`.
+        // Hosted deps use the same routing pathway as Cloneable, so the same
+        // qualified-id-routing guarantee applies here.
+        let mut execution = execution;
+        let applied_a =
+            execution.provide_cloneable_value("tcrate::mod_a::hosted_dep", Arc::new(111_u64));
+        assert!(
+            applied_a,
+            "mod_a hosted dep must be reachable by qualified id"
+        );
+        let applied_b =
+            execution.provide_cloneable_value("tcrate::mod_b::hosted_dep", Arc::new(222_u64));
+        assert!(
+            applied_b,
+            "mod_b hosted dep must be reachable by qualified id"
+        );
+
+        let applied_unknown =
+            execution.provide_cloneable_value("tcrate::mod_c::hosted_dep", Arc::new(333_u64));
+        assert!(
+            !applied_unknown,
+            "unknown qualified id must not be applied to any dep"
+        );
+
+        let first = execution.pick_next_sync().expect("first test");
+        let second = execution.pick_next_sync().expect("second test");
+        let pairs: Vec<(String, u64)> = [first, second]
+            .into_iter()
+            .map(|n| {
+                let v: Arc<u64> = n
+                    .deps
+                    .get("hosted_dep")
+                    .expect("dep available")
+                    .clone()
+                    .downcast()
+                    .unwrap();
+                (n.test.name.clone(), *v)
+            })
+            .collect();
+
+        let val_a = pairs
+            .iter()
+            .find(|(n, _)| n == "t_a")
+            .expect("t_a picked")
+            .1;
+        let val_b = pairs
+            .iter()
+            .find(|(n, _)| n == "t_b")
+            .expect("t_b picked")
+            .1;
+        assert_eq!(val_a, 111);
+        assert_eq!(val_b, 222);
+
+        // Each per-module owner constructor must have run exactly once
+        // (during the parent-side descriptor collection above); the
+        // worker-side provide_cloneable_value calls must not have re-run
+        // them on either node.
+        assert_eq!(counter_a.load(Ordering::SeqCst), 1);
+        assert_eq!(counter_b.load(Ordering::SeqCst), 1);
+    }
+
+    /// Mode-consistency regression test for the Hosted scope: when the
+    /// runner does NOT spawn workers (e.g. `--nocapture`), tests must
+    /// still see the *worker-side handle* produced by the registered
+    /// `worker_fn` (i.e. `HostedDep::from_descriptor`), not the raw owner
+    /// value returned by the parent constructor. This exercises the same
+    /// codec + worker_fn round-trip that the runner-side
+    /// `apply_hosted_descriptors_locally` helpers in sync.rs / tokio.rs
+    /// perform on the no-spawn-workers path.
+    #[test]
+    fn hosted_no_spawn_workers_uses_worker_side_handle() {
+        // Build a Hosted dep whose owner is one u64 value but whose
+        // worker reconstructor produces a DIFFERENT u64 value. If the
+        // local code path goes through descriptor->worker_fn correctly,
+        // the test must see the worker value (not the owner value).
+        let owner_counter = Arc::new(AtomicUsize::new(0));
+        let constructor_counter = owner_counter.clone();
+        let owner_value: u64 = 0xAAAA_AAAA_AAAA_AAAA_u64;
+        let constructor = DependencyConstructor::Sync(Arc::new(move |_view| {
+            constructor_counter.fetch_add(1, Ordering::SeqCst);
+            Arc::new(owner_value) as Arc<dyn Any + Send + Sync>
+        }));
+        // Owner-side codec serialises the owner value as raw LE bytes.
+        // The worker side wraps those bytes in `Vec<u8>` and the
+        // worker_fn flips every bit to demonstrate the worker reconstruction
+        // path is taken (the bit-flip stands in for any non-identity
+        // `HostedDep::from_descriptor` implementation).
+        let codec = CloneableCodec {
+            to_wire: Arc::new(|any: Arc<dyn Any + Send + Sync>| {
+                let v: Arc<u64> = any.downcast::<u64>().unwrap();
+                (*v).to_le_bytes().to_vec()
+            }),
+            from_wire_bytes: Arc::new(|bytes: &[u8]| {
+                let boxed: Vec<u8> = bytes.to_vec();
+                Arc::new(boxed) as Arc<dyn Any + Send + Sync>
+            }),
+        };
+        let worker_fn =
+            crate::internal::WorkerReconstructor::Sync(Arc::new(|wire_payload, _deps| {
+                let bytes_arc: Arc<Vec<u8>> = wire_payload.downcast::<Vec<u8>>().unwrap();
+                let arr: [u8; 8] = (*bytes_arc).as_slice().try_into().unwrap();
+                let raw: u64 = u64::from_le_bytes(arr);
+                let handle_value: u64 = !raw;
+                Arc::new(handle_value) as Arc<dyn Any + Send + Sync>
+            }));
+        let dep = RegisteredDependency {
+            name: "hosted_dep".to_string(),
+            crate_name: "tcrate".to_string(),
+            module_path: String::new(),
+            constructor,
+            dependencies: Vec::new(),
+            scope: DepScope::Hosted,
+            worker_fn: Some(worker_fn.clone()),
+            cloneable_codec: None,
+            hosted_codec: Some(codec.clone()),
+            rpc_factory: None,
+        };
+        let test = registered_test("t1", vec!["hosted_dep".to_string()]);
+
+        let (mut execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+
+        // Step 1: parent runs owner constructor once and collects descriptor
+        // bytes (mirroring `collect_hosted_descriptor_bytes_sync` invoked by
+        // the no-spawn-workers parent runner).
+        let (descriptors, owners) = execution.collect_hosted_descriptor_bytes_sync();
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(owners.len(), 1);
+        let (dep_id, wire_bytes) = &descriptors[0];
+
+        // Step 2: parent reconstructs the WORKER-side handle locally via
+        // codec.from_wire_bytes + worker_fn (mirroring
+        // `apply_hosted_descriptors_locally` in sync.rs / tokio.rs).
+        let wire_payload = (codec.from_wire_bytes)(wire_bytes.as_slice());
+        let empty_deps: Arc<dyn crate::internal::DependencyView + Send + Sync> =
+            Arc::new(HashMap::<String, Arc<dyn Any + Send + Sync>>::new());
+        let reconstructed = match &worker_fn {
+            crate::internal::WorkerReconstructor::Sync(f) => f(wire_payload, empty_deps),
+            crate::internal::WorkerReconstructor::Async(_) => unreachable!(),
+        };
+        let applied = execution.provide_cloneable_value(dep_id, reconstructed);
+        assert!(applied);
+
+        // Step 3: pick the test — it must see the WORKER handle (~owner),
+        // NOT the owner constructor's return value.
+        let next = execution.pick_next_sync().expect("test picked");
+        let view = next.deps.get("hosted_dep").expect("dep available");
+        let value: Arc<u64> = view.clone().downcast::<u64>().unwrap();
+        assert_eq!(
+            *value,
+            !owner_value,
+            "Hosted dep must expose the worker-side handle (from_descriptor) even in the no-spawn-workers path"
+        );
+        assert_eq!(
+            owner_counter.load(Ordering::SeqCst),
+            1,
+            "owner constructor must have run exactly once during descriptor collection"
+        );
+    }
+
+    /// Phase 1B Hosted owners that depend on other test deps must be
+    /// rejected at descriptor-collection time. (The macro layer also rejects
+    /// this at compile time; this exercises the runtime backstop.)
+    #[test]
+    #[should_panic(expected = "may not depend on other deps")]
+    fn hosted_dep_with_owner_dependencies_panics_at_collection() {
+        let mut dep = registered_hosted_dep("h_with_deps", 0, Arc::new(AtomicUsize::new(0)));
+        dep.dependencies = vec!["some_other_dep".to_string()];
+        let test = registered_test("t1", vec!["h_with_deps".to_string()]);
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+        let _ = execution.collect_hosted_descriptor_bytes_sync();
+    }
+
+    /// Phase 1B tokio path: async owner constructors are awaited on the
+    /// parent's collector.
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn async_hosted_descriptor_collection_awaits_async_constructor() {
+        use std::pin::Pin;
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let constructor_counter = counter.clone();
+
+        let constructor = DependencyConstructor::Async(Arc::new(move |_view| {
+            let counter = constructor_counter.clone();
+            Box::pin(async move {
+                tokio::task::yield_now().await;
+                counter.fetch_add(1, Ordering::SeqCst);
+                let value: u64 = 42;
+                Arc::new(value) as Arc<dyn Any + Send + Sync>
+            }) as Pin<Box<dyn std::future::Future<Output = Arc<dyn Any + Send + Sync>>>>
+        }));
+        let codec = CloneableCodec {
+            to_wire: Arc::new(|any| {
+                let v: Arc<u64> = any.downcast::<u64>().unwrap();
+                (*v).to_le_bytes().to_vec()
+            }),
+            from_wire_bytes: Arc::new(|bytes| {
+                let boxed: Vec<u8> = bytes.to_vec();
+                Arc::new(boxed) as Arc<dyn Any + Send + Sync>
+            }),
+        };
+        let dep = RegisteredDependency {
+            name: "hosted_async".to_string(),
+            crate_name: "tcrate".to_string(),
+            module_path: String::new(),
+            constructor,
+            dependencies: Vec::new(),
+            scope: DepScope::Hosted,
+            worker_fn: Some(crate::internal::WorkerReconstructor::Sync(Arc::new(
+                |wire_payload, _| {
+                    let bytes_arc: Arc<Vec<u8>> = wire_payload.downcast::<Vec<u8>>().unwrap();
+                    let arr: [u8; 8] = (*bytes_arc).as_slice().try_into().unwrap();
+                    let value: u64 = u64::from_le_bytes(arr);
+                    Arc::new(value) as Arc<dyn Any + Send + Sync>
+                },
+            ))),
+            cloneable_codec: None,
+            hosted_codec: Some(codec),
+            rpc_factory: None,
+        };
+        let test = registered_test("t1", vec!["hosted_async".to_string()]);
+
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (descriptors, owners) =
+            runtime.block_on(execution.collect_hosted_descriptor_bytes_async());
+
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(owners.len(), 1);
+        assert_eq!(descriptors[0].0, "tcrate::hosted_async");
+        assert_eq!(descriptors[0].1.as_slice(), &42_u64.to_le_bytes());
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+        let held: Arc<u64> = owners[0].clone().downcast::<u64>().unwrap();
+        assert_eq!(*held, 42);
+    }
+
+    // ===========================================================
+    // Phase 1C — HostedRpc unit tests
+    // ===========================================================
+
+    use crate::internal::{
+        HostedRpcChannel, HostedRpcDep, HostedRpcError, HostedRpcOwnerCell, HostedRpcTransport,
+        InProcessHostedRpcTransport, RpcFactory,
+    };
+
+    /// Owner type for HostedRpc unit tests. A trivial monotonic counter
+    /// that increments on every `dispatch(method_idx=1, _)` call and
+    /// returns the new value as big-endian bytes.
+    struct RpcCounter {
+        n: u64,
+    }
+
+    impl HostedRpcDep for RpcCounter {
+        type Stub = RpcCounterStub;
+        fn dispatch(&mut self, method_idx: u32, _args: &[u8]) -> Result<Vec<u8>, String> {
+            match method_idx {
+                1 => {
+                    self.n += 1;
+                    Ok(self.n.to_be_bytes().to_vec())
+                }
+                other => Err(format!("RpcCounter: unknown method_idx {other}")),
+            }
+        }
+        fn build_stub(channel: HostedRpcChannel) -> Self::Stub {
+            RpcCounterStub { channel }
+        }
+    }
+
+    /// Worker-visible stub for the test owner above.
+    struct RpcCounterStub {
+        channel: HostedRpcChannel,
+    }
+
+    impl RpcCounterStub {
+        fn next(&self) -> u64 {
+            let bytes = self.channel.call(1, Vec::new()).expect("rpc call");
+            let arr: [u8; 8] = bytes.as_slice().try_into().unwrap();
+            u64::from_be_bytes(arr)
+        }
+    }
+
+    /// Builds a HostedRpc `RegisteredDependency` for tests. The constructor
+    /// wraps an [`RpcCounter`] into a [`HostedRpcOwnerCell`] (mirroring the
+    /// macro-emitted code), counts its own runs in `counter`, and the
+    /// `RpcFactory` performs the symmetric downcast back to a cell.
+    fn registered_hosted_rpc_dep(
+        name: &str,
+        module_path: &str,
+        owner_counter: Arc<AtomicUsize>,
+    ) -> RegisteredDependency {
+        let ctor_counter = owner_counter.clone();
+        let constructor = DependencyConstructor::Sync(Arc::new(move |_view| {
+            ctor_counter.fetch_add(1, Ordering::SeqCst);
+            let cell = HostedRpcOwnerCell::from_owner(RpcCounter { n: 0 });
+            Arc::new(cell) as Arc<dyn Any + Send + Sync>
+        }));
+        let factory = RpcFactory {
+            owner_into_cell: Arc::new(|any: Arc<dyn Any + Send + Sync>| {
+                any.downcast::<HostedRpcOwnerCell>()
+                    .expect("HostedRpc owner downcast")
+            }),
+            build_stub: Arc::new(|channel: HostedRpcChannel| {
+                let stub = <RpcCounter as HostedRpcDep>::build_stub(channel);
+                Arc::new(stub) as Arc<dyn Any + Send + Sync>
+            }),
+        };
+        RegisteredDependency {
+            name: name.to_string(),
+            crate_name: "tcrate".to_string(),
+            module_path: module_path.to_string(),
+            constructor,
+            dependencies: Vec::new(),
+            scope: DepScope::HostedRpc,
+            worker_fn: None,
+            cloneable_codec: None,
+            hosted_codec: None,
+            rpc_factory: Some(factory),
+        }
+    }
+
+    #[test]
+    fn hosted_rpc_owner_cells_collected_once_and_keyed_by_qualified_id() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let dep = registered_hosted_rpc_dep("rpc_dep", "", counter.clone());
+        let test = registered_test("t1", vec!["rpc_dep".to_string()]);
+
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+
+        assert!(execution.has_hosted_rpc_dependencies());
+
+        let cells = execution.collect_hosted_rpc_owner_cells_sync();
+        assert_eq!(cells.len(), 1, "exactly one hosted rpc dep expected");
+        let (dep_id, _cell) = &cells[0];
+        assert_eq!(dep_id, "tcrate::rpc_dep");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "owner constructor must run exactly once on the parent"
+        );
+
+        // Collecting again must not re-run the constructor in the same
+        // execution tree (the constructor is called inside collect, not
+        // memoised). This asserts that we don't accidentally double-collect
+        // when the runner makes the call.
+        let cells_b = execution.collect_hosted_rpc_owner_cells_sync();
+        assert_eq!(cells_b.len(), 1);
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            2,
+            "collect_hosted_rpc_owner_cells_sync runs the constructor on every call; \
+             callers (the runner) are responsible for only calling it once per suite"
+        );
+    }
+
+    #[test]
+    fn hosted_rpc_in_process_transport_routes_to_owner_cell() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let dep = registered_hosted_rpc_dep("rpc_dep", "", counter.clone());
+        let test = registered_test("t1", vec!["rpc_dep".to_string()]);
+
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+
+        let cells: HashMap<String, Arc<HostedRpcOwnerCell>> = execution
+            .collect_hosted_rpc_owner_cells_sync()
+            .into_iter()
+            .collect();
+
+        let transport: Arc<dyn HostedRpcTransport> =
+            Arc::new(InProcessHostedRpcTransport::new(cells.clone()));
+        let channel = HostedRpcChannel::new("tcrate::rpc_dep".to_string(), transport.clone());
+        let stub = <RpcCounter as HostedRpcDep>::build_stub(channel);
+
+        assert_eq!(stub.next(), 1);
+        assert_eq!(stub.next(), 2);
+        assert_eq!(stub.next(), 3);
+    }
+
+    #[test]
+    fn hosted_rpc_in_process_transport_returns_dispatch_error_on_unknown_method() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let dep = registered_hosted_rpc_dep("rpc_dep", "", counter);
+        let test = registered_test("t1", vec!["rpc_dep".to_string()]);
+
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+
+        let cells: HashMap<String, Arc<HostedRpcOwnerCell>> = execution
+            .collect_hosted_rpc_owner_cells_sync()
+            .into_iter()
+            .collect();
+        let transport: Arc<dyn HostedRpcTransport> =
+            Arc::new(InProcessHostedRpcTransport::new(cells.clone()));
+        let channel = HostedRpcChannel::new("tcrate::rpc_dep".to_string(), transport.clone());
+
+        // Call an unknown method index directly; the owner's `dispatch`
+        // returns `Err("…")` which the transport surfaces as a Dispatch error.
+        let err = channel.call(999, Vec::new()).unwrap_err();
+        match err {
+            HostedRpcError::Dispatch(msg) => {
+                assert!(
+                    msg.contains("unknown method_idx 999"),
+                    "expected dispatch error to mention method_idx, got '{msg}'"
+                );
+            }
+            HostedRpcError::Transport(msg) => {
+                panic!("expected Dispatch error, got Transport({msg})");
+            }
+        }
+    }
+
+    #[test]
+    fn hosted_rpc_in_process_transport_returns_transport_error_on_unknown_dep_id() {
+        let cells: HashMap<String, Arc<HostedRpcOwnerCell>> = HashMap::new();
+        let transport: Arc<dyn HostedRpcTransport> =
+            Arc::new(InProcessHostedRpcTransport::new(cells));
+        let channel = HostedRpcChannel::new("tcrate::missing_dep".to_string(), transport.clone());
+        let err = channel.call(1, Vec::new()).unwrap_err();
+        match err {
+            HostedRpcError::Transport(msg) => {
+                assert!(
+                    msg.contains("unknown dep id 'tcrate::missing_dep'"),
+                    "expected transport error to mention dep id, got '{msg}'"
+                );
+            }
+            HostedRpcError::Dispatch(msg) => {
+                panic!("expected Transport error, got Dispatch({msg})");
+            }
+        }
+    }
+
+    // -------------------------------------------------------------
+    // Optional oracle-suggested coverage: owner panic + mutex
+    // poisoning. The owner-cell catches the panic, turns it into
+    // `Err("hosted rpc owner panicked: ...")` for the first call, and
+    // subsequent calls hit the poisoned mutex and get the stable
+    // `"hosted rpc owner poisoned"` error.
+    // -------------------------------------------------------------
+
+    /// Owner that panics on every dispatch call. Used to exercise the
+    /// catch_unwind + poisoned-mutex paths in `HostedRpcOwnerCell::dispatch`.
+    struct PanickingRpcOwner;
+
+    impl HostedRpcDep for PanickingRpcOwner {
+        type Stub = RpcCounterStub;
+        fn dispatch(&mut self, _method_idx: u32, _args: &[u8]) -> Result<Vec<u8>, String> {
+            panic!("owner_panic_for_test");
+        }
+        fn build_stub(channel: HostedRpcChannel) -> Self::Stub {
+            RpcCounterStub { channel }
+        }
+    }
+
+    #[test]
+    fn hosted_rpc_owner_panic_surfaces_then_poisons() {
+        let cell = HostedRpcOwnerCell::from_owner(PanickingRpcOwner);
+
+        // First call: the owner's `dispatch` panics with the literal string
+        // "owner_panic_for_test"; `HostedRpcOwnerCell::dispatch` catches the
+        // unwind and converts it into a textual error containing the panic
+        // payload prefixed with "hosted rpc owner panicked: ".
+        //
+        // The catch_unwind catches the panic AFTER the MutexGuard has
+        // started unwinding, which still leaves the mutex poisoned (verified
+        // by direct std::sync::Mutex behaviour).
+        let err1 = cell
+            .dispatch(1, &[])
+            .expect_err("first call must surface the panic as Err");
+        assert!(
+            err1.contains("hosted rpc owner panicked: owner_panic_for_test"),
+            "expected first-call error to wrap the panic payload, got '{err1}'"
+        );
+
+        // Second call: the mutex is now poisoned from the panic above.
+        // The cell must short-circuit with the stable "hosted rpc owner
+        // poisoned" error and must NOT retry the owner.
+        let err2 = cell
+            .dispatch(1, &[])
+            .expect_err("second call must short-circuit on the poisoned cell");
+        assert_eq!(
+            err2, "hosted rpc owner poisoned",
+            "expected poisoned-cell error on the second call, got '{err2}'"
+        );
     }
 }

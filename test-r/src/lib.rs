@@ -29,13 +29,17 @@ pub use test_r_core::bench::Bencher;
 pub use test_r_core::spawn::spawn;
 pub use test_r_core::spawn::spawn_thread;
 
+pub use test_r_core::internal::{CloneableDep, HostedDep, HostedRpcDep};
+
 pub mod core {
     use std::time::Duration;
     pub use test_r_core::internal::{
-        CaptureControl, DependencyConstructor, DependencyView, DetachedPanicPolicy,
-        DynamicTestRegistration, FailureCause, FlakinessControl, GeneratedTest, ReportTimeControl,
-        ShouldPanic, TestFunction, TestGeneratorFunction, TestProperties, TestReturnValue,
-        TestType,
+        CaptureControl, CloneableCodec, CloneableDep, DepScope, DependencyConstructor,
+        DependencyView, DetachedPanicPolicy, DynamicTestRegistration, FailureCause,
+        FlakinessControl, GeneratedTest, HostedDep, HostedRpcChannel, HostedRpcDep,
+        HostedRpcDispatcher, HostedRpcError, HostedRpcOwnerCell, HostedRpcTransport,
+        InProcessHostedRpcTransport, ReportTimeControl, RpcFactory, ShouldPanic, TestFunction,
+        TestGeneratorFunction, TestProperties, TestReturnValue, TestType, WorkerReconstructor,
     };
     pub use test_r_core::*;
 
@@ -88,6 +92,31 @@ pub mod core {
         cons: DependencyConstructor,
         dependencies: Vec<String>,
     ) {
+        register_dependency_constructor_with_scope(
+            name,
+            module_path,
+            cons,
+            dependencies,
+            DepScope::Shared,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_dependency_constructor_with_scope(
+        name: &str,
+        module_path: &str,
+        cons: DependencyConstructor,
+        dependencies: Vec<String>,
+        scope: DepScope,
+        worker_fn: Option<WorkerReconstructor>,
+        cloneable_codec: Option<CloneableCodec>,
+        hosted_codec: Option<CloneableCodec>,
+        rpc_factory: Option<RpcFactory>,
+    ) {
         let (crate_name, module_path) = split_module_path(module_path);
 
         internal::REGISTERED_DEPENDENCY_CONSTRUCTORS
@@ -99,6 +128,11 @@ pub mod core {
                 module_path,
                 constructor: cons,
                 dependencies,
+                scope,
+                worker_fn,
+                cloneable_codec,
+                hosted_codec,
+                rpc_factory,
             });
     }
 

@@ -7,9 +7,98 @@ use quote::{ToTokens, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    Attribute, FnArg, GenericArgument, ItemFn, LitStr, Pat, PatType, PathArguments, PathSegment,
-    ReturnType, Token, Type, TypeParamBound, TypePath, parse_macro_input,
+    Attribute, FnArg, GenericArgument, ItemFn, LitStr, Pat, PatType, Path, PathArguments,
+    PathSegment, ReturnType, Token, Type, TypeParamBound, TypePath, parse_macro_input,
 };
+
+/// Sharing strategy declared via `#[test_dep(scope = ...)]`. Parsed from
+/// `darling` metadata; mirrors `test_r_core::internal::DepScope` but lives in
+/// the proc-macro crate to avoid a runtime dependency.
+///
+/// We accept both bare identifiers (`scope = PerWorker`) and string literals
+/// (`scope = "PerWorker"`), via a custom `FromMeta` implementation. The bare
+/// identifier form is the documented surface; the string form remains for
+/// users who prefer it or whose tooling otherwise rewrites attribute values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Scope {
+    #[default]
+    Shared,
+    PerWorker,
+    Cloneable,
+    Hosted,
+    /// Phase 1C: owner held in parent, workers call back over IPC via a
+    /// generated stub (manually-written for MVP). Requires the dep return
+    /// type to implement `HostedRpcDep` and a `stub = StubType` attribute
+    /// on the macro that names the worker-visible handle type tests
+    /// parameterise on.
+    HostedRpc,
+}
+
+impl Scope {
+    fn as_tokens(self) -> proc_macro2::TokenStream {
+        match self {
+            Scope::Shared => quote!(test_r::core::DepScope::Shared),
+            Scope::PerWorker => quote!(test_r::core::DepScope::PerWorker),
+            Scope::Cloneable => quote!(test_r::core::DepScope::Cloneable),
+            Scope::Hosted => quote!(test_r::core::DepScope::Hosted),
+            Scope::HostedRpc => quote!(test_r::core::DepScope::HostedRpc),
+        }
+    }
+
+    fn from_ident_name(name: &str) -> Option<Self> {
+        match name {
+            "Shared" => Some(Scope::Shared),
+            "PerWorker" => Some(Scope::PerWorker),
+            "Cloneable" => Some(Scope::Cloneable),
+            "Hosted" => Some(Scope::Hosted),
+            "HostedRpc" => Some(Scope::HostedRpc),
+            _ => None,
+        }
+    }
+}
+
+impl darling::FromMeta for Scope {
+    fn from_meta(item: &syn::Meta) -> darling::Result<Self> {
+        match item {
+            // `scope = "PerWorker"` form.
+            syn::Meta::NameValue(nv) => {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) = &nv.value
+                {
+                    let name = s.value();
+                    Scope::from_ident_name(&name)
+                        .ok_or_else(|| darling::Error::unknown_value(&name).with_span(s))
+                } else if let syn::Expr::Path(p) = &nv.value {
+                    // `scope = PerWorker` form (unquoted ident).
+                    let ident = p.path.get_ident().ok_or_else(|| {
+                        darling::Error::unsupported_format(
+                            "scope must be one of Shared, PerWorker, Cloneable, Hosted, HostedRpc",
+                        )
+                        .with_span(p)
+                    })?;
+                    let name = ident.to_string();
+                    Scope::from_ident_name(&name)
+                        .ok_or_else(|| darling::Error::unknown_value(&name).with_span(ident))
+                } else {
+                    Err(darling::Error::unsupported_format(
+                        "scope must be one of Shared, PerWorker, Cloneable, Hosted, HostedRpc",
+                    )
+                    .with_span(&nv.value))
+                }
+            }
+            _ => Err(darling::Error::unsupported_format(
+                "scope expects `scope = Value` or `scope = \"Value\"`",
+            )
+            .with_span(item)),
+        }
+    }
+
+    fn from_string(value: &str) -> darling::Result<Self> {
+        Scope::from_ident_name(value).ok_or_else(|| darling::Error::unknown_value(value))
+    }
+}
 
 pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr_args = match NestedMeta::parse_meta_list(attr.into()) {
@@ -40,7 +129,35 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         },
     };
-    let dep_name_str = type_path_to_string(&dep_type, args.tagged_as.into());
+
+    let scope = args.scope.unwrap_or_default();
+
+    // For HostedRpc: tests parameterise on the *stub* type, not the owner
+    // type. The constructor returns the owner; we register the dependency
+    // under the stub type so that `#[test]` parameters of type `&Stub`
+    // resolve correctly.
+    let stub_type_path: Option<TypePath> = match (scope, args.stub.as_ref()) {
+        (Scope::HostedRpc, Some(stub_path)) => Some(TypePath {
+            qself: None,
+            path: stub_path.clone(),
+        }),
+        (Scope::HostedRpc, None) => {
+            panic!(
+                "`scope = HostedRpc` requires `stub = StubType` so the runtime \
+                 knows which type to inject into tests. The constructor returns \
+                 the owner; tests parameterise on the stub."
+            );
+        }
+        (_, Some(_)) => {
+            panic!("`stub = ...` is only valid together with `scope = HostedRpc`.");
+        }
+        (_, None) => None,
+    };
+
+    let dep_name_str = match &stub_type_path {
+        Some(stub_path) => type_path_to_string(stub_path, args.tagged_as.into()),
+        None => type_path_to_string(&dep_type, args.tagged_as.into()),
+    };
     let register_ident = Ident::new(
         &format!("test_r_register_dep_{dep_name_str}"),
         Span::call_site(),
@@ -54,36 +171,252 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
     filter_custom_parameter_attributes(&mut ast);
 
+    // `worker = ...` is not currently a user-tunable knob: for `Cloneable`
+    // the wire payload IS the dep value (so the runtime auto-generates the
+    // worker reconstructor), and for `Hosted` the worker reconstructor is
+    // derived from `HostedDep::from_descriptor`. Any user-supplied override
+    // would silently be ignored, so reject it explicitly.
+    if args.worker.is_some() {
+        panic!(
+            "`worker = ...` is not currently a configurable knob. \
+             `scope = Cloneable` deps must implement `CloneableDep` and \
+             `scope = Hosted` deps must implement `HostedDep`; the runtime \
+             reconstructs the per-worker dep value from the wire / descriptor \
+             bytes automatically."
+        );
+    }
+    // Hosted owner constructors run exactly once in the top-level parent
+    // process with an empty dep view. Owner-side dep wiring is reserved for
+    // a future phase.
+    if matches!(scope, Scope::Hosted) && !dep_names.is_empty() {
+        panic!(
+            "`scope = Hosted` deps may not depend on other test deps \
+             (saw {dep_names:?}). The owner constructor runs once in the \
+             top-level parent process with an empty dep view; owner-side \
+             dependency wiring is reserved for a future phase."
+        );
+    }
+
+    // Phase 1A restriction: Cloneable owner constructors must not consume any
+    // other test deps. The owner runs once on the parent with an empty dep
+    // view (see `TestSuiteExecution::collect_cloneable_wire_bytes_*`) and the
+    // worker reconstructor is auto-derived from `CloneableDep`, so there is
+    // no facility yet for owner-side or worker-side dependency wiring. Catch
+    // this at compile time instead of letting it panic at runtime.
+    if matches!(scope, Scope::Cloneable) && !dep_names.is_empty() {
+        panic!(
+            "Phase 1A `scope = Cloneable` deps may not depend on other test deps \
+             (saw {dep_names:?}). The owner constructor runs once on the parent with an empty \
+             dep view; owner-side and worker-side dependency wiring is reserved for Phase 1B."
+        );
+    }
+
+    // Phase 1C restriction: HostedRpc owner constructors also run once on
+    // the parent with an empty dep view. Mirrors Hosted's restriction.
+    if matches!(scope, Scope::HostedRpc) && !dep_names.is_empty() {
+        panic!(
+            "`scope = HostedRpc` deps may not depend on other test deps \
+             (saw {dep_names:?}). The owner constructor runs once in the \
+             top-level parent process with an empty dep view."
+        );
+    }
+
+    // Phase 1C MVP: async constructors for HostedRpc aren't wired through
+    // the parent owner-cell collection path yet. Reject at macro time with
+    // a clear message instead of letting it fail at runtime.
+    if matches!(scope, Scope::HostedRpc) && is_async {
+        panic!(
+            "`scope = HostedRpc` constructors must currently be synchronous \
+             (sync runner is the MVP target). Use a sync constructor that \
+             returns the owner directly."
+        );
+    }
+
+    let scope_tokens = scope.as_tokens();
+    let dep_ty = &dep_type;
+
+    // Cloneable codec + worker reconstructor, only emitted for scope=Cloneable.
+    let (cloneable_codec_expr, cloneable_worker_fn_expr) = if matches!(scope, Scope::Cloneable) {
+        let codec = quote! {
+            Some(test_r::core::CloneableCodec {
+                to_wire: std::sync::Arc::new(|__any: std::sync::Arc<dyn std::any::Any + Send + Sync>| {
+                    let __value: std::sync::Arc<#dep_ty> = __any
+                        .downcast::<#dep_ty>()
+                        .expect("Cloneable dependency type mismatch in to_wire");
+                    <#dep_ty as test_r::core::CloneableDep>::to_wire(&*__value)
+                }),
+                from_wire_bytes: std::sync::Arc::new(|__bytes: &[u8]| {
+                    let __wire_value: #dep_ty = <#dep_ty as test_r::core::CloneableDep>::from_wire(__bytes);
+                    let __boxed: std::sync::Arc<dyn std::any::Any + Send + Sync> =
+                        std::sync::Arc::new(__wire_value);
+                    __boxed
+                }),
+            })
+        };
+        let worker_fn = quote! {
+            Some(test_r::core::WorkerReconstructor::Sync(std::sync::Arc::new(
+                |__wire_payload: std::sync::Arc<dyn std::any::Any + Send + Sync>, _deps| {
+                    // The wire payload is already the reconstructed dep value.
+                    __wire_payload
+                },
+            )))
+        };
+        (codec, worker_fn)
+    } else {
+        (quote! { None }, quote! { None })
+    };
+
+    // Hosted descriptor codec + worker reconstructor, only emitted for scope=Hosted.
+    // `to_wire` runs in the top-level parent process: it downcasts the owner
+    // value, calls `HostedDep::descriptor`, and ships the bytes. `from_wire_bytes`
+    // runs in each worker: it boxes the raw descriptor bytes, and the worker_fn
+    // calls `HostedDep::from_descriptor` to produce the worker-side handle.
+    let (hosted_codec_expr, hosted_worker_fn_expr) = if matches!(scope, Scope::Hosted) {
+        let codec = quote! {
+            Some(test_r::core::CloneableCodec {
+                to_wire: std::sync::Arc::new(|__any: std::sync::Arc<dyn std::any::Any + Send + Sync>| {
+                    let __value: std::sync::Arc<#dep_ty> = __any
+                        .downcast::<#dep_ty>()
+                        .expect("Hosted dependency type mismatch in descriptor()");
+                    <#dep_ty as test_r::core::HostedDep>::descriptor(&*__value)
+                }),
+                from_wire_bytes: std::sync::Arc::new(|__bytes: &[u8]| {
+                    // The "wire payload" for a Hosted dep is the raw
+                    // descriptor bytes; the worker reconstructor will run
+                    // HostedDep::from_descriptor against them.
+                    let __boxed_bytes: Vec<u8> = __bytes.to_vec();
+                    let __boxed: std::sync::Arc<dyn std::any::Any + Send + Sync> =
+                        std::sync::Arc::new(__boxed_bytes);
+                    __boxed
+                }),
+            })
+        };
+        let worker_fn = quote! {
+            Some(test_r::core::WorkerReconstructor::Sync(std::sync::Arc::new(
+                |__wire_payload: std::sync::Arc<dyn std::any::Any + Send + Sync>, _deps| {
+                    let __bytes: std::sync::Arc<Vec<u8>> = __wire_payload
+                        .downcast::<Vec<u8>>()
+                        .expect("Hosted worker reconstructor expected Vec<u8> descriptor payload");
+                    let __value: #dep_ty = <#dep_ty as test_r::core::HostedDep>::from_descriptor(&__bytes);
+                    let __boxed: std::sync::Arc<dyn std::any::Any + Send + Sync> =
+                        std::sync::Arc::new(__value);
+                    __boxed
+                },
+            )))
+        };
+        (codec, worker_fn)
+    } else {
+        (quote! { None }, quote! { None })
+    };
+
+    // Phase 1C: RpcFactory + owner-cell-wrapping constructor for scope = HostedRpc.
+    // The constructor returns the owner, wraps it in a HostedRpcOwnerCell,
+    // and the factory tells the runtime how to (a) downcast the owner Arc
+    // back to a cell and (b) build a worker-side stub from a channel.
+    let rpc_factory_expr = if matches!(scope, Scope::HostedRpc) {
+        let stub_ty = stub_type_path.as_ref().expect("stub type checked above");
+        quote! {
+            Some(test_r::core::RpcFactory {
+                owner_into_cell: std::sync::Arc::new(
+                    |__any: std::sync::Arc<dyn std::any::Any + Send + Sync>| {
+                        __any
+                            .downcast::<test_r::core::HostedRpcOwnerCell>()
+                            .expect("HostedRpc owner downcast to HostedRpcOwnerCell failed")
+                    },
+                ),
+                build_stub: std::sync::Arc::new(
+                    |__channel: test_r::core::HostedRpcChannel| {
+                        let __stub: #stub_ty =
+                            <#dep_ty as test_r::core::HostedRpcDep>::build_stub(__channel);
+                        let __boxed: std::sync::Arc<dyn std::any::Any + Send + Sync> =
+                            std::sync::Arc::new(__stub);
+                        __boxed
+                    },
+                ),
+            })
+        }
+    } else {
+        quote! { None }
+    };
+
+    // Pick the right codec/reconstructor pair based on scope. Only one of
+    // them is populated at any time; we encode that invariant by choosing
+    // the appropriate token expression here so the runtime never has to deal
+    // with both being `Some` simultaneously.
+    let (worker_fn_expr, codec_expr, hosted_codec_field_expr) = match scope {
+        Scope::Cloneable => (
+            cloneable_worker_fn_expr,
+            cloneable_codec_expr,
+            quote! { None },
+        ),
+        Scope::Hosted => (hosted_worker_fn_expr, quote! { None }, hosted_codec_expr),
+        _ => (quote! { None }, quote! { None }, quote! { None }),
+    };
+
+    // For HostedRpc the constructor returns the owner type, but the runtime
+    // stores a HostedRpcOwnerCell. Emit the wrapping in the constructor
+    // closure itself so the downcast in `owner_into_cell` always succeeds.
+    let ctor_call_sync = if matches!(scope, Scope::HostedRpc) {
+        quote! {
+            {
+                let __owner = #ctor_name(#(#dep_getters),*);
+                let __cell = test_r::core::HostedRpcOwnerCell::from_owner(__owner);
+                let __arc: std::sync::Arc<dyn std::any::Any + Send + Sync> =
+                    std::sync::Arc::new(__cell);
+                __arc
+            }
+        }
+    } else {
+        quote! { std::sync::Arc::new(#ctor_name(#(#dep_getters),*)) }
+    };
+
     let register_call = if is_async {
         quote! {
-              test_r::core::register_dependency_constructor(
+              test_r::core::register_dependency_constructor_with_scope(
                   #dep_name_str,
                   module_path!(),
                   test_r::core::DependencyConstructor::Async(std::sync::Arc::new(|__test_r_deps_arg| Box::pin(async move {
                     let result: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(#ctor_name(#(#dep_getters),*).await);
                     result
                   }))),
-                 vec![#(#dep_names),*]
+                 vec![#(#dep_names),*],
+                 #scope_tokens,
+                 #worker_fn_expr,
+                 #codec_expr,
+                 #hosted_codec_field_expr,
+                 #rpc_factory_expr,
               );
         }
     } else {
         quote! {
-            test_r::core::register_dependency_constructor(
+            test_r::core::register_dependency_constructor_with_scope(
                 #dep_name_str,
                 module_path!(),
-                test_r::core::DependencyConstructor::Sync(std::sync::Arc::new(|__test_r_deps_arg| std::sync::Arc::new(#ctor_name(#(#dep_getters),*)))),
-                vec![#(#dep_names),*]
+                test_r::core::DependencyConstructor::Sync(std::sync::Arc::new(|__test_r_deps_arg| #ctor_call_sync)),
+                vec![#(#dep_names),*],
+                #scope_tokens,
+                #worker_fn_expr,
+                #codec_expr,
+                #hosted_codec_field_expr,
+                #rpc_factory_expr,
             );
         }
     };
 
     let getter_ident = Ident::new(&format!("test_r_get_dep_{dep_name_str}"), Span::call_site());
 
+    // The getter must downcast to the *injected* type, which is the stub
+    // for HostedRpc and the constructor return type for every other scope.
+    let injected_ty: proc_macro2::TokenStream = match &stub_type_path {
+        Some(stub_path) => quote! { #stub_path },
+        None => quote! { #dep_type },
+    };
+
     let getter_body = quote! {
         dependency_view
             .get(#dep_name_str)
             .expect("Dependency not found")
-            .downcast::<#dep_type>()
+            .downcast::<#injected_ty>()
             .expect("Dependency type mismatch")
     };
 
@@ -95,7 +428,7 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         #[cfg(test)]
-        fn #getter_ident<'a>(dependency_view: &'a impl test_r::core::DependencyView) -> std::sync::Arc<#dep_type> {
+        fn #getter_ident<'a>(dependency_view: &'a impl test_r::core::DependencyView) -> std::sync::Arc<#injected_ty> {
             #getter_body
         }
 
@@ -341,6 +674,20 @@ impl From<Option<String>> for DependencyTag {
 struct TestDepArgs {
     #[darling(default)]
     tagged_as: Option<String>,
+    #[darling(default)]
+    scope: Option<Scope>,
+    /// Reserved for a future API. NOT currently configurable: for
+    /// `Cloneable` the runtime auto-derives the worker reconstructor from
+    /// `CloneableDep` and for `Hosted` it auto-derives it from
+    /// `HostedDep::from_descriptor`. Supplying `worker = …` today is
+    /// rejected at macro expansion to avoid a silent no-op.
+    #[darling(default)]
+    worker: Option<Path>,
+    /// Phase 1C: required for `scope = HostedRpc`. Names the worker-visible
+    /// stub type — i.e. `<Owner as HostedRpcDep>::Stub`. Tests parameterise
+    /// on this type, not on the owner type. Rejected for any other scope.
+    #[darling(default)]
+    stub: Option<Path>,
 }
 
 struct DefineMatrixDimension {

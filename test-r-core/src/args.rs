@@ -295,7 +295,9 @@ impl Arguments {
 
     pub(crate) fn test_threads(&self) -> NonZero<usize> {
         if self.ipc.is_some() {
-            // When running as an IPC-controlled worker, always use a single thread
+            // When running as an IPC-controlled worker, always use a single
+            // thread (the worker processes tests one at a time on behalf of
+            // the parent).
             NonZero::new(1).unwrap()
         } else {
             self.test_threads
@@ -303,6 +305,17 @@ impl Arguments {
                 .or_else(|| std::thread::available_parallelism().ok())
                 .unwrap_or(NonZero::new(1).unwrap())
         }
+    }
+
+    /// Returns `true` when this process is the top-level test-suite parent.
+    ///
+    /// The top-level parent is the only place that may materialise
+    /// `Cloneable` and `Hosted` test-dependency owners. IPC worker
+    /// subprocesses (where `--ipc <name>` is set) MUST NOT run those
+    /// constructors — they receive the parent's materialised values /
+    /// descriptors via IPC instead.
+    pub(crate) fn is_top_level_parent(&self) -> bool {
+        self.ipc.is_none()
     }
 
     /// Make necessary adjustments to the configuration if needed based on the final execution plan
@@ -321,10 +334,15 @@ impl Arguments {
             self.spawn_workers = true;
 
             if self.test_threads().get() > 1 {
-                // If tests are executed in parallel, and output needs to be captured, there cannot be any dependencies
-                // because it can only be done through spawned workers
-
-                if execution.has_dependencies() {
+                // Parallel + capture requires worker processes. Only `Shared`
+                // dependencies force a single-threaded fallback, because
+                // their materialised value cannot cross the parent/worker
+                // boundary. `PerWorker` deps are materialised independently
+                // in each worker, `Cloneable` deps ship their wire bytes via
+                // IPC, `Hosted` deps materialise their owner once in the
+                // parent and ship a descriptor to each worker — all three
+                // are safe to run in parallel.
+                if execution.has_shared_dependencies() {
                     if execution.remaining() > 1 {
                         // If there is only one test, the warning does not make sense
                         output.warning("Cannot run tests in parallel when tests have shared dependencies and output capturing is on. Using a single thread.");
@@ -452,5 +470,42 @@ mod tests {
     fn verify_cli() {
         use clap::CommandFactory;
         Arguments::command().debug_assert();
+    }
+
+    /// Regression coverage for the parent-only Hosted-owner materialisation
+    /// gating in `sync.rs` / `tokio.rs`. If this assertion ever flips,
+    /// IPC worker subprocesses could start running Hosted owner
+    /// constructors again — duplicating singleton resources (TCP listeners,
+    /// containers, env-based test environments) across every worker.
+    #[test]
+    fn is_top_level_parent_when_ipc_unset() {
+        // Use a single placeholder binary name so clap definitely sees a
+        // well-formed argv with no `--ipc` flag.
+        let mut args: Arguments = Parser::parse_from(["test-bin"]);
+        // Sanity: a freshly parsed Arguments with no overrides has no IPC.
+        assert!(args.ipc.is_none());
+        assert!(
+            args.is_top_level_parent(),
+            "process without --ipc must be treated as top-level parent"
+        );
+        // Even when the parent decides to spawn workers, it is still the
+        // top-level parent itself.
+        args.spawn_workers = true;
+        assert!(args.is_top_level_parent());
+    }
+
+    #[test]
+    fn ipc_worker_is_not_top_level_parent() {
+        let mut args: Arguments = Parser::parse_from(["test-bin"]);
+        args.ipc = Some("test-ipc-socket".to_string());
+        assert!(
+            !args.is_top_level_parent(),
+            "IPC worker subprocesses must NOT be treated as top-level parent — \
+             otherwise they would duplicate Hosted owner construction"
+        );
+        // And `test_threads()` must already collapse to 1 for IPC workers,
+        // independent of the user's `--test-threads` value.
+        args.test_threads = Some(4);
+        assert_eq!(args.test_threads().get(), 1);
     }
 }

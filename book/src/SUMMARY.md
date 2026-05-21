@@ -7,6 +7,7 @@
   - [Test output](./core_features/test_output.md)
 - [Advanced features](./advanced_features.md)
   - [Dependency injection](./advanced_features/dependency_injection.md)
+  - [Dependency sharing strategies](./advanced_features/dependency_sharing.md)
   - [Tags](./advanced_features/tags.md)
   - [Benches](./advanced_features/benches.md)
   - [Per-test configuration](./advanced_features/per_test_configuration.md)
