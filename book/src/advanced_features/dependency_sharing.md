@@ -14,13 +14,22 @@ test-r supports per-dependency **sharing strategies** that let individual deps o
 
 The default remains `Shared`, so any existing `#[test_dep]` keeps working unchanged.
 
+`Hosted` ships with a **worker-view picker** that selects what shape the
+worker side sees: `worker = descriptor` (the default — a reconstructed
+handle), `worker = rpc(Trait)` (a method-routing stub), or
+`worker = both(Trait)` (both views on a single owner). The latter two are
+the HR3.2.0 sugar for what would otherwise be a separate `HostedRpc`
+registration or a manually-coordinated pair of registrations; see the
+[Hosted](#hosted) and [HostedRpc](#hostedrpc) sections for details.
+
 ## Choosing a strategy
 
 - Use **`Shared`** when the dep owns process-local state that genuinely cannot be duplicated (single global resource) AND a small descriptor cannot represent it for workers.
 - Use **`PerWorker`** when re-running the constructor on each worker is cheap and tests are happy with their own private instance (temp dirs, caches, in-memory stores).
 - Use **`Cloneable`** when the constructor is expensive (compilation, parsing a large schema, fetching once over the network) but the resulting value can be cheaply round-tripped through a byte buffer. The parent runs the constructor exactly once and ships the wire form to every worker, where each worker reconstructs a local copy.
 - Use **`Hosted`** when the dep owns a long-lived singleton service (TCP listener, Docker container, env-based test environment, gRPC server) that must NOT be duplicated across worker processes, but workers need a small handle (an address, a port, a credentials bundle) to reach it.
-- Use **`HostedRpc`** when the dep is a singleton that exposes a small, in-process Rust API (e.g. "give me the next unique id"), and you do not want to set up a real network protocol just to share it with worker subprocesses. The runtime provides the IPC channel; you provide the owner type, a stub, and a method dispatcher.
+- Use **`HostedRpc`** (or equivalently, **`Hosted` with `worker = rpc(Trait)`**) when the dep is a singleton that exposes a small, in-process Rust API (e.g. "give me the next unique id"), and you do not want to set up a real network protocol just to share it with worker subprocesses. The runtime provides the IPC channel; you provide the owner type, a trait (or hand-written stub), and a method dispatcher.
+- Use **`Hosted` with `worker = both(Trait)`** when the same owner needs to serve **both** a bulk-data descriptor handle (typically a connection address used by a gRPC client) and a small RPC control surface (kill / flush / snapshot). One owner, two worker-side views, no duplication.
 
 ## `PerWorker`
 
@@ -45,6 +54,29 @@ fn writes_a_file(scratch: &WorkerScratchDir) {
 ```
 
 When the runner spawns worker children for output capturing, each worker materialises `WorkerScratchDir` independently. Tests scheduled on the same worker share the same instance; tests scheduled on different workers see independent instances.
+
+### Observing the worker index
+
+`PerWorker` constructors (and the tests they feed) can read the zero-based index the parent assigned to the current worker via `test_r::worker_index()`. Use it to partition a global namespace so that workers cannot collide without coordination.
+
+```rust
+use std::sync::atomic::AtomicU16;
+use test_r::test_dep;
+
+pub struct LastUniqueId {
+    pub id: AtomicU16,
+}
+
+#[test_dep(scope = PerWorker)]
+fn last_unique_id() -> LastUniqueId {
+    // Reserve the high 8 bits for the worker index, leaving 8 bits per
+    // worker for the local sequence.
+    let seed = (test_r::worker_index() as u16 & 0xFF) << 8;
+    LastUniqueId { id: AtomicU16::new(seed) }
+}
+```
+
+When the runner does not spawn workers — e.g. under `--nocapture`, when no test in the schedule requires capture, or when a `Shared` dep forces the single-thread fallback — `worker_index()` returns `0`. This is the same value the top-level parent observes for itself.
 
 ## `Cloneable`
 
@@ -92,7 +124,16 @@ To keep the runtime change small in this phase, `Cloneable` deps are subject to 
 
 ## `Hosted`
 
-Implement the `HostedDep` trait for the dependency type, then annotate the constructor with `scope = Hosted`:
+`scope = Hosted` keeps the owner alive in the parent for the whole
+suite and lets each worker subprocess obtain its own view of that
+single owner. The view shape is chosen at the registration site by the
+optional `worker = …` argument; see the
+[Worker view subsection](#worker-view-descriptor-rpctrait-bothtrait)
+for the full picker. The default — and the only one this top-of-section
+example uses — is `worker = descriptor`: implement the
+[`HostedDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedDep.html)
+trait for the dependency type, then annotate the constructor with
+`scope = Hosted`:
 
 ```rust
 use std::net::{SocketAddr, TcpListener};
@@ -156,7 +197,113 @@ The wire encoding is entirely up to the implementor, exactly like `Cloneable`. D
 ### Hosted restrictions
 
 - The constructor must not take other `#[test_dep]` parameters. Owner-side dependency wiring is reserved for a future phase.
-- The owner type and the worker handle type share the same Rust type (`Self`). The implementor is responsible for keeping owner-only fields (sockets, accept loops, container handles) in `Option`s or `Arc`s that workers don't populate.
+- With `worker = descriptor` (the default), the owner type and the
+  worker handle type share the same Rust type (`Self`). The
+  implementor is responsible for keeping owner-only fields (sockets,
+  accept loops, container handles) in `Option`s or `Arc`s that workers
+  don't populate. The `worker = rpc(Trait)` and `worker = both(Trait)`
+  views generate a separate `<Trait>Stub` for the RPC side, so this
+  invariant only applies to the descriptor view.
+
+### Worker view: `descriptor`, `rpc(Trait)`, `both(Trait)`
+
+`scope = Hosted` accepts an optional `worker = …` argument on
+`#[test_dep]` that chooses **what shape the worker subprocess sees**
+for the same parent-held owner:
+
+| `worker = …`         | Worker-visible value                                                                                              | Owner trait(s) required                                                  |
+|----------------------|-------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------|
+| `descriptor` (default) | `HostedDep::from_descriptor(parent_descriptor_bytes)` — a reconstructed handle (typically holding an address). | [`HostedDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedDep.html) (or [`AsyncHostedDep`](https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedDep.html)). |
+| `rpc(Trait)`         | An auto-generated `<Trait>Stub` whose methods route each call back to the parent over the runtime's IPC channel. | [`HostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedRpcDep.html) implemented for the owner; trait declared with [`#[hosted_rpc]`](#hostedrpc-attribute-macro-eliminating-the-boilerplate). |
+| `both(Trait)`        | **Both** a descriptor-shaped handle and a `<Trait>Stub`, backed by the same single owner instance.                | Descriptor side: [`HostedDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedDep.html) **or** [`AsyncHostedDep`](https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedDep.html). RPC side: [`HostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedRpcDep.html). Both impls are on the same owner type. |
+
+In all three cases the parent constructs the owner exactly once and
+keeps it alive for the whole suite. Workers obtain their view through
+the existing IPC channel; nothing changes about parallelism or output
+capturing relative to the default Hosted strategy.
+
+- `worker = descriptor` is the implicit default. The historical
+  `#[test_dep(scope = Hosted)]` syntax stays equivalent to
+  `#[test_dep(scope = Hosted, worker = descriptor)]`.
+- `worker = rpc(Trait)` is the HR3.2.0 sugar for what used to be a
+  separate `#[test_dep(scope = HostedRpc, stub = <StubType>)]`
+  registration. See the
+  [`#[hosted_rpc]` attribute macro section](#hostedrpc-attribute-macro-eliminating-the-boilerplate)
+  for the trait-side machinery; the only difference at the registration
+  site is which scope you use.
+- `worker = both(Trait)` is the HR3.2.0 way to share a singleton that
+  needs to expose **both** a bulk-data descriptor handle (typically a
+  connection address used by a gRPC client) **and** a small RPC control
+  surface (kill / flush / snapshot) from a single owner. Tests can
+  parameterise on either the descriptor type, the auto-generated
+  `<Trait>Stub`, or both; no duplicate owner is constructed.
+
+`async_worker` is no longer needed on any of these forms — the runtime
+picks the sync vs async worker-side reconstructor automatically based
+on the active runtime (sync vs `tokio`) and the dep's
+`HostedDep` / `AsyncHostedDep` implementation. The flag still parses
+for source compatibility but emits a `#[deprecated]` warning at the
+registration site.
+
+### Async worker-side reconstruction (`AsyncHostedDep`)
+
+The default `HostedDep::from_descriptor` is synchronous. When worker-side
+reconstruction needs to `.await` — opening async network clients,
+calling async constructors of downstream services such as
+`ProvidedWorkerService::new(...).await` — implement
+[`AsyncHostedDep`](https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedDep.html)
+instead. Under the `tokio` runtime feature the runtime automatically
+drives every Hosted reconstruction through the async path, so no
+extra `#[test_dep]` flag is required:
+
+```rust
+use test_r::core::AsyncHostedDep;
+use test_r::{test, test_dep};
+
+impl AsyncHostedDep for LiveAsyncService {
+    fn descriptor(&self) -> Vec<u8> {
+        self.addr.to_string().into_bytes()
+    }
+
+    async fn from_descriptor(bytes: &[u8]) -> Self {
+        let s = std::str::from_utf8(bytes).expect("utf-8");
+        let addr: SocketAddr = s.parse().expect("addr");
+        // Async work only legal because `from_descriptor` is async on
+        // `AsyncHostedDep`. The sync `HostedDep` flavour could not do this.
+        let stream = TcpStream::connect(addr).await.expect("connect");
+        Self { addr, prewarmed_client: Some(stream) }
+    }
+}
+
+#[test_dep(scope = Hosted)]
+async fn live_async_service() -> LiveAsyncService {
+    LiveAsyncService::new().await
+}
+```
+
+Semantics are otherwise identical to plain `HostedDep`:
+
+- The parent still constructs the owner exactly once and ships
+  `descriptor()` bytes to every worker.
+- Each worker runs the async `from_descriptor` inside a
+  `WorkerReconstructor::Async` closure on its tokio runtime.
+- The blanket `impl<T: HostedDep> AsyncHostedDep for T` makes a sync
+  `HostedDep` implementation usable through the async path too, so
+  switching the consumer crate to the `tokio` feature does not require
+  rewriting existing sync implementations.
+
+> **Note — `async_worker` is deprecated.** The
+> `#[test_dep(scope = Hosted, async_worker)]` attribute flag from
+> earlier releases is no longer needed: the macro now selects the
+> worker-side reconstruction path purely from the active runtime
+> (sync vs `tokio`) and the dep's `HostedDep` / `AsyncHostedDep`
+> implementation. The flag still parses for source compatibility but
+> emits a compile-time `#[deprecated]` warning at the registration site.
+
+The
+[`hosted_async_worker` example](https://github.com/vigoo/test-r/blob/main/example-tokio/src/sharing/hosted_async_worker.rs)
+demonstrates the full pattern, including a regression test that confirms
+the worker-side reconstructor actually runs only in worker subprocesses.
 
 ### Mode-consistent semantics across `--nocapture` and worker mode
 
@@ -185,6 +332,26 @@ and workers see a **stub** — a tiny Rust struct that serialises each
 method call, ships it over the runtime's IPC channel to the parent, and
 unwraps the reply.
 
+> **Preferred registration syntax — `scope = Hosted` with
+> `worker = rpc(Trait)`.** Since the HR3.2.0 worker-view picker was
+> added, the recommended way to register an RPC-shaped Hosted dep
+> backed by a trait is
+> `#[test_dep(scope = Hosted, worker = rpc(<Trait>))]`. That syntax
+> uses the same runtime mechanism documented in this section but
+> drops the explicit `stub = <StubType>` argument: the macro derives
+> the worker-visible stub type from the trait name and writes the
+> registration entry for you. Use it together with the
+> [`#[hosted_rpc]`](#hostedrpc-attribute-macro-eliminating-the-boilerplate)
+> attribute macro on a normal Rust trait.
+>
+> The legacy `#[test_dep(scope = HostedRpc, stub = <StubType>)]`
+> form remains supported and continues to be the right choice when
+> there is no Rust trait surface — for example when you ship a
+> hand-written stub with custom method indices, custom argument
+> framing, or no trait declaration at all. The two
+> [`hosted_rpc_basic`](https://github.com/vigoo/test-r/blob/main/example/src/sharing/hosted_rpc_basic.rs)
+> examples are intentionally kept on the legacy form for that reason.
+
 Use this when:
 
 - the dep is a singleton (an id allocator, a leadership coordinator, a
@@ -193,17 +360,27 @@ Use this when:
 - a few hundred call-per-test of overhead per RPC are acceptable
   (every call is one synchronous round-trip on the existing IPC socket).
 
-### Phase 1C MVP scope
+### MVP scope
 
-- Sync runner only. The tokio runner explicitly rejects `HostedRpc`
-  deps with a clear panic message; full async support is deferred to a
-  later phase.
+- Both runners are supported. The sync runner shipped in Phase 1C and
+  the tokio runner shipped in Phase HR1.2; tests in both runners see
+  the same `Stub` value and call into the same parent-held owner via
+  the IPC transport (or `InProcessHostedRpcTransport` in the
+  `--nocapture` / no-spawn-workers path).
 - The user implements the owner type, the worker-visible stub type, and
-  one method-dispatch function on the owner. The macro wires those into
-  the runtime; there is no `#[hosted_rpc]` codegen yet.
+  one method-dispatch function on the owner. The runtime wires those
+  together over IPC. For trait-shaped owners, the
+  [`#[hosted_rpc]` attribute macro](#hostedrpc-attribute-macro-eliminating-the-boilerplate)
+  generates the stub struct, the per-method `desert_rust` encode/decode
+  shims and the dispatch arms for you.
 - One in-flight call at a time per worker subprocess. Each `stub.foo()`
   takes the IPC connection lock, writes the request frame, reads exactly
   one reply frame, and returns. No multiplexer or out-of-order replies.
+- The stub methods are **synchronous** even under the tokio runner: the
+  tokio transport bridges the sync trait method to the async IPC
+  primitives via `tokio::task::block_in_place` +
+  `Handle::current().block_on(...)`. Native async stub methods are
+  deferred.
 
 ### `HostedRpcDep` (the trait)
 
@@ -269,6 +446,137 @@ The `stub = StubType` attribute is required. The constructor returns the
 registers the dep under the stub's type name so test parameter resolution
 finds it.
 
+### `#[hosted_rpc]` attribute macro: eliminating the boilerplate
+
+Writing the `LastUniqueIdStub` struct, the per-method argument
+serialisation and the `match method_idx { ... }` arm in
+`HostedRpcDep::dispatch` is mechanical work. The `#[hosted_rpc]`
+attribute macro generates all of it from a user trait declaration.
+
+```rust
+use test_r::core::{HostedRpcChannel, HostedRpcDep};
+use test_r::{hosted_rpc, test, test_dep};
+
+#[hosted_rpc]
+pub trait Counter {
+    fn next(&self) -> u64;
+    fn reserve(&self, count: u32) -> u64;
+    fn echo(&self, msg: String) -> String;
+}
+
+pub struct CounterOwner { counter: std::sync::Mutex<u64> }
+
+impl Counter for CounterOwner {
+    fn next(&self) -> u64 {
+        let mut g = self.counter.lock().unwrap();
+        *g += 1; *g
+    }
+    fn reserve(&self, count: u32) -> u64 {
+        let mut g = self.counter.lock().unwrap();
+        let first = *g + 1; *g += count as u64; first
+    }
+    fn echo(&self, msg: String) -> String { msg }
+}
+
+impl HostedRpcDep for CounterOwner {
+    type Stub = CounterStub;
+    fn dispatch(&mut self, method_idx: u32, args: &[u8]) -> Result<Vec<u8>, String> {
+        // Generated by `#[hosted_rpc]`. Routes the wire `method_idx` to
+        // the matching method on `self`, decoding args / encoding the
+        // reply with `desert_rust`.
+        CounterDispatch::dispatch_counter(self, method_idx, args)
+    }
+    fn build_stub(channel: HostedRpcChannel) -> Self::Stub {
+        // Generated by `#[hosted_rpc]`. Wraps the `HostedRpcChannel` in
+        // the worker-side stub that implements `Counter`.
+        CounterStub::new(channel)
+    }
+}
+
+#[test_dep(scope = Hosted, worker = rpc(Counter))]
+fn counter_owner() -> CounterOwner {
+    CounterOwner { counter: std::sync::Mutex::new(0) }
+}
+
+#[test]
+fn ids_are_monotonic(c: &CounterStub) {
+    let a = c.next();
+    let b = c.next();
+    assert!(a < b);
+}
+```
+
+`scope = Hosted, worker = rpc(Counter)` is the preferred HR3.2.0
+registration form for trait-shaped owners. The macro derives the
+worker-visible stub type from the trait name (`Counter` → `CounterStub`)
+so you do not need to pass it explicitly. The equivalent legacy form
+`#[test_dep(scope = HostedRpc, stub = CounterStub)]` still works and
+remains the right choice for hand-written stubs that are not backed by
+a trait at all (see the [`HostedRpcDep`](#hostedrpcdep-the-trait)
+example above).
+
+What the macro emits next to the trait declaration:
+
+- A struct `<Trait>Stub { channel: HostedRpcChannel }` with a
+  `pub fn new(channel) -> Self` constructor and an `impl <Trait> for
+  <Trait>Stub` that implements every trait method by encoding the args
+  as a tuple of the parameter types (1-arg methods send the bare value;
+  0-arg methods send `()`; 2+-arg methods send a regular tuple), shipping
+  them through `HostedRpcChannel::call(method_idx, ...)` and decoding the
+  return value. Encoding uses `desert_rust`.
+- A trait `<Trait>Dispatch` with a single method
+  `dispatch_<snake_case_trait_name>(&mut self, method_idx: u32, args: &[u8])
+  -> Result<Vec<u8>, String>`, **blanket-implemented for every
+  `T: <Trait>`**, that contains the per-method match arms wiring incoming
+  RPCs back to the owner's `<Trait>` impl. The owner's
+  `HostedRpcDep::dispatch` becomes a one-line delegation.
+
+Wire-format details:
+
+- Method indices are assigned by source order in the trait, starting at
+  `0`, and shipped on the wire as `u32`. Reordering the methods is a
+  breaking change.
+- Args are encoded with `desert_rust::serialize_to_byte_vec` as a tuple
+  of the parameter types after stripping `self`. The zero-arg case uses
+  `()`; the single-arg case uses the bare `T` (NOT a 1-tuple) so the
+  framing stays symmetric on the dispatch side.
+- The return value is encoded directly. The unit return type uses `()`.
+
+MVP restrictions enforced at macro time (the macro emits a
+`compile_error!` if violated):
+
+- `#[hosted_rpc]` does not take any attribute arguments
+  (`#[hosted_rpc(...)]`).
+- The trait must be non-generic, must not be `unsafe trait`, must not
+  have supertraits, and must only declare methods (no associated
+  `type` / `const` items).
+- Methods must be non-generic, synchronous (no `async fn`), must not
+  be `unsafe fn`, must use the default Rust ABI (no `extern "..."`),
+  must not be variadic, must not have a default body, and the first
+  argument must be **`&self`** (no by-value `self`, no explicit
+  `self: T` type, and **no `&mut self`** either — test-r injects test
+  deps as `&Stub` immutable references, so `&mut self` stub methods
+  would compile but be uncallable from a normal
+  `#[test] fn (s: &MyStub)` parameter).
+- Argument types must use plain identifier patterns (no `_`, no
+  destructuring like `(a, b): (u32, u32)`).
+- `impl Trait` is not allowed in argument or return position.
+- `#[cfg(...)]` / `#[cfg_attr(...)]` are not allowed on the trait or
+  its methods (the generated sibling items and dispatch arms are not
+  cfg-propagated in the MVP).
+
+All arg and return types must implement `desert_rust::BinarySerializer`
+and `desert_rust::BinaryDeserializer`. Common standard-library types
+(`u8`/`u16`/`u32`/`u64`/`i*`, `bool`, `String`, `Vec<T>`, `Option<T>`,
+`HashMap<K, V>` and N-ary tuples for `N >= 2`) already do.
+
+Transport, codec and dispatch failures (IPC errors, owner panics,
+encode/decode errors) **panic in the generated stub** with an
+`expect(...)` message of the form `hosted_rpc(<Trait>::<method>): ...`.
+User-level errors are still encoded normally: if a trait method
+returns `Result<T, E>`, the `Result` itself is shipped over the wire
+and only infrastructure failures panic.
+
 ### How HostedRpc works
 
 1. The parent test runner calls the owner constructor **once** when it
@@ -295,14 +603,21 @@ finds it.
 
 ### HostedRpc restrictions
 
-- The constructor must be **synchronous** in the Phase 1C MVP.
+- The owner constructor must be **synchronous** in the MVP, on both the
+  sync and tokio runners (no `async fn` constructors).
+- The stub trait methods are synchronous on both runners. Async stub
+  methods are deferred.
 - The constructor must not take other `#[test_dep]` parameters (mirrors
   `Hosted`).
 - The constructor must return the **owner type**; tests must parameterise
   on the **stub type** named via `stub = StubType`.
 - One in-flight RPC at a time per worker subprocess. Pipelined or
   concurrent calls are not supported in the MVP.
-- The tokio runner does not currently support `HostedRpc` deps.
+- The tokio HostedRpc transport relies on the runner being driven by a
+  multi-thread tokio runtime so `tokio::task::block_in_place` /
+  `Handle::current().block_on(...)` can re-enter the IPC I/O from the
+  sync stub trait method. The built-in test-r tokio runner satisfies
+  this; a custom runner on a `current_thread` runtime is not supported.
 
 ### MVP temporal invariant — when stub calls are safe
 

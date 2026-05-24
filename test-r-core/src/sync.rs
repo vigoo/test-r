@@ -28,6 +28,12 @@ use uuid::Uuid;
 pub fn test_runner() -> ExitCode {
     crate::panic_hook::install_panic_hook();
     let mut args = Arguments::from_args();
+    // Phase 3.3: when the parent spawned this process as a worker it passed
+    // `--worker-index <N>`. Stash it so `crate::worker::worker_index()`
+    // returns the correct value for PerWorker dep constructors.
+    if let Some(idx) = args.worker_index {
+        crate::worker::set_worker_index(idx);
+    }
     let output = test_runner_output(&args);
 
     let registered_tests = internal::REGISTERED_TESTS.lock().unwrap();
@@ -166,10 +172,18 @@ pub fn test_runner() -> ExitCode {
             let hosted_rpc_owner_cells = Arc::new(hosted_rpc_owner_cells);
             let threads = args.test_threads().get();
             let mut handles = Vec::with_capacity(threads);
-            for _ in 0..threads {
+            for worker_idx in 0..threads {
                 let execution_clone = execution.clone();
                 let output_clone = output.clone();
-                let args_clone = args.clone();
+                // Phase 3.3: stamp each test-thread's args with the worker
+                // index it will hand to its spawned child via
+                // `--worker-index <N>` in `spawn_worker_if_needed`. The
+                // parent process itself never observes this field (only
+                // children read it back through `worker::set_worker_index`).
+                let mut args_clone = args.clone();
+                if args_clone.spawn_workers {
+                    args_clone.worker_index = Some(worker_idx);
+                }
                 let wire_bytes_clone = cloneable_wire_bytes.clone();
                 let hosted_bytes_clone = hosted_descriptor_bytes.clone();
                 let codecs_clone = wire_codecs.clone();

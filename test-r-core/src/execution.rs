@@ -341,7 +341,9 @@ impl TestSuiteExecution {
                     DependencyConstructor::Sync(cons) => cons(Arc::new(empty)),
                     DependencyConstructor::Async(_) => {
                         panic!(
-                            "HostedRpc dep '{}' has async constructor; not supported in sync runner (Phase 1C MVP)",
+                            "HostedRpc dep '{}' has async constructor; not supported in the MVP \
+                             on either the sync or tokio runner. Use a sync constructor that \
+                             returns the owner directly.",
                             dep.name
                         );
                     }
@@ -951,6 +953,23 @@ impl TestSuiteExecution {
                         needed_from_parent.insert(transitive.clone());
                     }
                 }
+                // Companions are planner-only sibling links — no
+                // constructor argument is derived from them, but they
+                // must be retained together with the dep they are
+                // declared on. Used by the
+                // `#[test_dep(scope = Hosted, worker = both(T))]`
+                // lowering to keep the Hosted owner half and the
+                // HostedRpc stub half as a pair even when the
+                // selected tests only parameterise on one of them.
+                for companion in &dep.companions {
+                    if local_names.contains(companion) {
+                        if keep_local.insert(companion.clone()) {
+                            queue.push_back(companion.clone());
+                        }
+                    } else {
+                        needed_from_parent.insert(companion.clone());
+                    }
+                }
             }
         }
 
@@ -1175,6 +1194,7 @@ mod cloneable_tests {
             cloneable_codec: Some(codec),
             hosted_codec: None,
             rpc_factory: None,
+            companions: Vec::new(),
         }
     }
 
@@ -1203,6 +1223,108 @@ mod cloneable_tests {
             counter.load(Ordering::SeqCst),
             1,
             "constructor must have run exactly once when collecting"
+        );
+    }
+
+    #[test]
+    fn prune_unused_deps_retains_companion_when_only_one_half_is_referenced() {
+        // Regression for `#[test_dep(scope = Hosted, worker = both(T))]`
+        // pruning. That lowering registers two dep entries (Hosted owner
+        // view + HostedRpc stub view) for a single logical dep, backed by
+        // a shared `Arc<HostedBothShared>` cache; the macro now declares
+        // the two halves as `companions` of each other so that the pruner
+        // retains the Hosted half even when selected tests only reference
+        // the stub half. Without that, the async-ctor flavour would panic
+        // (`Poll::Pending`) at runtime because the shared cache stays
+        // empty.
+        //
+        // This test reproduces the pruner-level invariant cheaply via two
+        // Cloneable deps. The `keep_local` traversal in
+        // `prune_unused_deps` should expand the keep-set across
+        // companions in either direction.
+
+        // Case A: reference only `dep_a`; `dep_b` is declared as a
+        // companion of `dep_a` and must survive pruning.
+        let counter_a = Arc::new(AtomicUsize::new(0));
+        let counter_b = Arc::new(AtomicUsize::new(0));
+        let mut dep_a = registered_cloneable_dep("clone_a", counter_a.clone());
+        let mut dep_b = registered_cloneable_dep("clone_b", counter_b.clone());
+        dep_a.companions = vec!["clone_b".to_string()];
+        dep_b.companions = vec!["clone_a".to_string()];
+
+        let test_a = registered_test("t_uses_a", vec!["clone_a".to_string()]);
+
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep_a, dep_b], &[test_a], &[]);
+
+        let kept: Vec<String> = execution
+            .collect_cloneable_dependencies()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(
+            kept.contains(&"clone_a".to_string()),
+            "directly referenced dep must be retained, kept = {kept:?}"
+        );
+        assert!(
+            kept.contains(&"clone_b".to_string()),
+            "companion of a retained dep must also be retained (the planner-only \
+             sibling link used by `worker = both(...)`), kept = {kept:?}"
+        );
+
+        // Case B (reverse direction): reference only `dep_b`, with the
+        // same companion link. `dep_a` must survive pruning.
+        let counter_a = Arc::new(AtomicUsize::new(0));
+        let counter_b = Arc::new(AtomicUsize::new(0));
+        let mut dep_a = registered_cloneable_dep("clone_a", counter_a.clone());
+        let mut dep_b = registered_cloneable_dep("clone_b", counter_b.clone());
+        dep_a.companions = vec!["clone_b".to_string()];
+        dep_b.companions = vec!["clone_a".to_string()];
+
+        let test_b = registered_test("t_uses_b", vec!["clone_b".to_string()]);
+
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep_a, dep_b], &[test_b], &[]);
+
+        let kept: Vec<String> = execution
+            .collect_cloneable_dependencies()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(
+            kept.contains(&"clone_a".to_string()),
+            "companion of a stub-referenced dep must be retained, kept = {kept:?}"
+        );
+        assert!(
+            kept.contains(&"clone_b".to_string()),
+            "directly referenced dep must be retained, kept = {kept:?}"
+        );
+
+        // Sanity: a dep with no companion link and not referenced
+        // anywhere is still pruned. (Prevents the test above from
+        // accidentally turning into "the pruner never drops anything".)
+        let counter_a = Arc::new(AtomicUsize::new(0));
+        let counter_b = Arc::new(AtomicUsize::new(0));
+        let dep_a = registered_cloneable_dep("clone_a", counter_a.clone());
+        let dep_b = registered_cloneable_dep("clone_b", counter_b.clone());
+        let test_a = registered_test("t_uses_a", vec!["clone_a".to_string()]);
+
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep_a, dep_b], &[test_a], &[]);
+
+        let kept: Vec<String> = execution
+            .collect_cloneable_dependencies()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(
+            kept.contains(&"clone_a".to_string()),
+            "directly referenced dep must be retained, kept = {kept:?}"
+        );
+        assert!(
+            !kept.contains(&"clone_b".to_string()),
+            "without a companion link, an unreferenced dep must be pruned; \
+             kept = {kept:?}"
         );
     }
 
@@ -1285,6 +1407,7 @@ mod cloneable_tests {
             cloneable_codec: Some(codec),
             hosted_codec: None,
             rpc_factory: None,
+            companions: Vec::new(),
         };
         let test = registered_test("t1", vec!["clone_dep".to_string()]);
 
@@ -1473,6 +1596,7 @@ mod cloneable_tests {
             cloneable_codec: None,
             hosted_codec: Some(codec),
             rpc_factory: None,
+            companions: Vec::new(),
         }
     }
 
@@ -1732,6 +1856,7 @@ mod cloneable_tests {
             cloneable_codec: None,
             hosted_codec: Some(codec.clone()),
             rpc_factory: None,
+            companions: Vec::new(),
         };
         let test = registered_test("t1", vec!["hosted_dep".to_string()]);
 
@@ -1837,6 +1962,7 @@ mod cloneable_tests {
             cloneable_codec: None,
             hosted_codec: Some(codec),
             rpc_factory: None,
+            companions: Vec::new(),
         };
         let test = registered_test("t1", vec!["hosted_async".to_string()]);
 
@@ -1878,11 +2004,26 @@ mod cloneable_tests {
 
     impl HostedRpcDep for RpcCounter {
         type Stub = RpcCounterStub;
-        fn dispatch(&mut self, method_idx: u32, _args: &[u8]) -> Result<Vec<u8>, String> {
+        fn dispatch(&mut self, method_idx: u32, args: &[u8]) -> Result<Vec<u8>, String> {
             match method_idx {
                 1 => {
                     self.n += 1;
                     Ok(self.n.to_be_bytes().to_vec())
+                }
+                // HR1.0: large-payload echo. Args are a 4-byte big-endian
+                // u32 size; the owner returns `size` bytes filled with a
+                // deterministic `i % 251` pattern so framing corruption
+                // is caught explicitly, not just length mismatch.
+                2 => {
+                    let arr: [u8; 4] = args
+                        .try_into()
+                        .map_err(|_| "method_idx=2 requires exactly 4 bytes (size)".to_string())?;
+                    let size = u32::from_be_bytes(arr) as usize;
+                    let mut out = vec![0u8; size];
+                    for (i, b) in out.iter_mut().enumerate() {
+                        *b = (i % 251) as u8;
+                    }
+                    Ok(out)
                 }
                 other => Err(format!("RpcCounter: unknown method_idx {other}")),
             }
@@ -1902,6 +2043,13 @@ mod cloneable_tests {
             let bytes = self.channel.call(1, Vec::new()).expect("rpc call");
             let arr: [u8; 8] = bytes.as_slice().try_into().unwrap();
             u64::from_be_bytes(arr)
+        }
+
+        /// HR1.0: request `size` bytes back from the owner.
+        fn echo(&self, size: u32) -> Vec<u8> {
+            self.channel
+                .call(2, size.to_be_bytes().to_vec())
+                .expect("echo rpc call")
         }
     }
 
@@ -1941,6 +2089,7 @@ mod cloneable_tests {
             cloneable_codec: None,
             hosted_codec: None,
             rpc_factory: Some(factory),
+            companions: Vec::new(),
         }
     }
 
@@ -2107,6 +2256,107 @@ mod cloneable_tests {
         assert_eq!(
             err2, "hosted rpc owner poisoned",
             "expected poisoned-cell error on the second call, got '{err2}'"
+        );
+    }
+
+    // -------------------------------------------------------------
+    // HR1.0 coverage: large-payload IPC framing (>64 KiB) and
+    // concurrent in-flight RPC requests routed through the in-process
+    // transport without deadlock or framing corruption.
+    // -------------------------------------------------------------
+
+    #[test]
+    fn hosted_rpc_in_process_transport_round_trips_large_payload_exceeding_64_kib() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let dep = registered_hosted_rpc_dep("rpc_dep", "", counter);
+        let test = registered_test("t1", vec!["rpc_dep".to_string()]);
+
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+        let cells: HashMap<String, Arc<HostedRpcOwnerCell>> = execution
+            .collect_hosted_rpc_owner_cells_sync()
+            .into_iter()
+            .collect();
+        let transport: Arc<dyn HostedRpcTransport> =
+            Arc::new(InProcessHostedRpcTransport::new(cells));
+        let channel = HostedRpcChannel::new("tcrate::rpc_dep".to_string(), transport);
+        let stub = <RpcCounter as HostedRpcDep>::build_stub(channel);
+
+        const SIZE: u32 = 256 * 1024; // 256 KiB
+        let bytes = stub.echo(SIZE);
+        assert_eq!(
+            bytes.len(),
+            SIZE as usize,
+            "framing dropped/truncated bytes"
+        );
+        for (i, b) in bytes.iter().enumerate() {
+            assert_eq!(
+                *b,
+                (i % 251) as u8,
+                "framing corrupted byte at index {i}: expected {}, got {b}",
+                (i % 251) as u8
+            );
+        }
+    }
+
+    #[test]
+    fn hosted_rpc_in_process_transport_multiplexes_concurrent_calls_from_threads() {
+        use std::thread;
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let dep = registered_hosted_rpc_dep("rpc_dep", "", counter);
+        let test = registered_test("t1", vec!["rpc_dep".to_string()]);
+
+        let (execution, _filtered) =
+            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
+        let cells: HashMap<String, Arc<HostedRpcOwnerCell>> = execution
+            .collect_hosted_rpc_owner_cells_sync()
+            .into_iter()
+            .collect();
+        let transport: Arc<dyn HostedRpcTransport> =
+            Arc::new(InProcessHostedRpcTransport::new(cells));
+
+        // Spawn N threads, each making M calls. Every call must return a
+        // unique positive id (the owner is a single global counter
+        // serialised by its own mutex). If the in-process transport ever
+        // deadlocks or routes a reply to the wrong caller, the assertions
+        // below would fire (duplicate ids, or the spawned thread would
+        // panic and the join() would surface the failure).
+        const N: usize = 4;
+        const M: usize = 32;
+        let mut handles = Vec::new();
+        for _ in 0..N {
+            let dep_id = "tcrate::rpc_dep".to_string();
+            let transport = transport.clone();
+            handles.push(thread::spawn(move || {
+                let channel = HostedRpcChannel::new(dep_id, transport);
+                let stub = <RpcCounter as HostedRpcDep>::build_stub(channel);
+                let mut ids = Vec::with_capacity(M);
+                for _ in 0..M {
+                    ids.push(stub.next());
+                }
+                ids
+            }));
+        }
+        let mut all = Vec::with_capacity(N * M);
+        for h in handles {
+            all.extend(h.join().expect("thread panicked"));
+        }
+        all.sort();
+        let mut prev: u64 = 0;
+        for id in &all {
+            assert!(
+                *id > prev,
+                "duplicate or non-monotonic id {id} after {prev}"
+            );
+            prev = *id;
+        }
+        assert_eq!(
+            all.len(),
+            N * M,
+            "expected exactly {} ids in total, got {}",
+            N * M,
+            all.len()
         );
     }
 }

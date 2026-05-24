@@ -1,6 +1,7 @@
 mod deps;
 mod dynamic;
 mod helpers;
+mod hosted_rpc;
 mod suite;
 mod test;
 
@@ -126,4 +127,20 @@ pub fn sequential(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn sequential_suite(input: TokenStream) -> TokenStream {
     suite::sequential_suite(input)
+}
+
+/// HR1.1: trait-driven boilerplate eliminator for `HostedRpcDep`.
+///
+/// Apply to a user trait declaration to emit a `<Trait>Stub` worker-side
+/// struct that implements the trait by routing each call through a
+/// [`test_r::core::HostedRpcChannel`], plus a `<Trait>Dispatch` helper
+/// trait blanket-implemented for every `T: Trait` so the owner-side
+/// `HostedRpcDep::dispatch` impl can delegate to a generated
+/// method-table dispatcher instead of writing the per-method match arms
+/// by hand. See the rustdoc on the macro module for the precise wire
+/// format and the restrictions (no generics, no associated types, no
+/// async fns in the MVP).
+#[proc_macro_attribute]
+pub fn hosted_rpc(attr: TokenStream, item: TokenStream) -> TokenStream {
+    hosted_rpc::hosted_rpc(attr, item)
 }

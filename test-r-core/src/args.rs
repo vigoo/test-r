@@ -133,6 +133,13 @@ pub struct Arguments {
     /// If true, spawn worker processes in IPC mode and run the tests on those
     #[arg(long = "spawn-workers", hide = true)]
     pub spawn_workers: bool,
+
+    /// Zero-based worker index assigned by the parent runner when it spawns
+    /// a child worker process. Available to `PerWorker` constructors via
+    /// [`crate::worker_index`]. Set only on spawned worker subprocesses;
+    /// the top-level parent leaves it unset and observes index `0`.
+    #[arg(long = "worker-index", hide = true)]
+    pub worker_index: Option<usize>,
 }
 
 impl Arguments {
@@ -270,6 +277,11 @@ impl Arguments {
 
         if self.spawn_workers {
             result.push(OsString::from("--spawn-workers"));
+        }
+
+        if let Some(worker_index) = self.worker_index {
+            result.push(OsString::from("--worker-index"));
+            result.push(OsString::from(worker_index.to_string()));
         }
 
         for filter in &self.filter {
@@ -507,5 +519,48 @@ mod tests {
         // independent of the user's `--test-threads` value.
         args.test_threads = Some(4);
         assert_eq!(args.test_threads().get(), 1);
+    }
+
+    /// Phase 3.3: regression coverage for the `--worker-index` round trip.
+    /// If `to_args` ever drops the field or `Parser::parse_from` ever fails
+    /// to populate it, spawned workers would silently fall back to index 0
+    /// and lose the per-worker namespace partitioning that PerWorker deps
+    /// like `LastUniqueId` depend on.
+    #[test]
+    fn worker_index_round_trips_through_to_args_and_parse() {
+        let mut args: Arguments = Parser::parse_from(["test-bin"]);
+        args.worker_index = Some(3);
+        let argv = args.to_args();
+        let argv_strings: Vec<String> = argv
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            argv_strings.iter().any(|s| s == "--worker-index"),
+            "to_args() must emit --worker-index when worker_index is Some; \
+             got {argv_strings:?}"
+        );
+
+        // Round-trip back through clap with the binary name prepended.
+        let mut roundtripped_argv: Vec<String> = vec!["test-bin".to_string()];
+        roundtripped_argv.extend(argv_strings);
+        let parsed: Arguments = Parser::parse_from(roundtripped_argv);
+        assert_eq!(parsed.worker_index, Some(3));
+    }
+
+    #[test]
+    fn worker_index_absent_round_trip_stays_none() {
+        let args: Arguments = Parser::parse_from(["test-bin"]);
+        assert!(args.worker_index.is_none());
+        let argv = args.to_args();
+        let argv_strings: Vec<String> = argv
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !argv_strings.iter().any(|s| s == "--worker-index"),
+            "to_args() must NOT emit --worker-index when worker_index is None; \
+             got {argv_strings:?}"
+        );
     }
 }

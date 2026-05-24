@@ -426,6 +426,205 @@ pub trait HostedDep: Sized + Send + Sync + 'static {
     fn from_descriptor(bytes: &[u8]) -> Self;
 }
 
+/// Async counterpart of [`HostedDep`]. Implement this when worker-side
+/// reconstruction needs to `.await` (e.g. opening async network
+/// clients, doing async filesystem work, calling
+/// `Provided*::new(...).await` constructors).
+///
+/// Since HR3.2.0 Step 3, no opt-in flag is required: the helper
+/// functions emitted by `#[test_dep(scope = Hosted)]` auto-select the
+/// async path under the `tokio` runtime, so simply implementing
+/// `AsyncHostedDep` is enough.
+///
+/// ```ignore
+/// #[test_dep(scope = Hosted)]
+/// async fn dependencies() -> EnvBasedTestDependencies { /* … */ }
+///
+/// impl test_r::core::AsyncHostedDep for EnvBasedTestDependencies {
+///     fn descriptor(&self) -> Vec<u8> { /* … */ }
+///
+///     async fn from_descriptor(bytes: &[u8]) -> Self { /* … */ }
+/// }
+/// ```
+///
+/// `AsyncHostedDep` is the tokio-only async counterpart of
+/// [`HostedDep`]. Under the `tokio` test runtime the Hosted helper
+/// functions emitted by `#[test_dep(scope = Hosted)]` always go
+/// through `AsyncHostedDep`, regardless of whether the user wrote
+/// `impl HostedDep` (covered by the blanket bridge below) or
+/// `impl AsyncHostedDep` directly. Under the sync runtime, the same
+/// helpers stay on `HostedDep`: a `scope = Hosted` registration that
+/// uses an async-only `AsyncHostedDep` type therefore fails to
+/// compile in sync builds rather than panicking at register time as
+/// it did before HR3.2.0 Step 3. (Writing the impl on its own still
+/// compiles fine; only the `#[test_dep(scope = Hosted)]` registration
+/// fails.)
+///
+/// `descriptor()` stays synchronous and is called on the parent owner
+/// value, exactly as in [`HostedDep`]; the only difference is that
+/// `from_descriptor` returns a `Future` so worker-side reconstruction
+/// can await.
+///
+/// The legacy `async_worker` attribute is **deprecated** and ignored
+/// (it now only triggers a compile-time deprecation warning at the
+/// dep's registration site); remove it from any new code.
+pub trait AsyncHostedDep: Sized + Send + Sync + 'static {
+    /// Owner-side: produce the descriptor bytes that workers will use to
+    /// reconstruct a connected handle. Called from the parent runner
+    /// process exactly once per Hosted dep, just like
+    /// [`HostedDep::descriptor`].
+    fn descriptor(&self) -> Vec<u8>;
+
+    /// Worker-side: asynchronously reconstruct a handle from descriptor
+    /// bytes received from the parent.
+    fn from_descriptor(bytes: &[u8]) -> impl std::future::Future<Output = Self> + Send;
+}
+
+/// HR3.2.0 — blanket bridge: every [`HostedDep`] is automatically also an
+/// [`AsyncHostedDep`]. The bridged `from_descriptor` returns
+/// [`std::future::ready`], so the bridge itself adds only an
+/// immediately-ready future and the runtime can await all Hosted
+/// reconstruction uniformly.
+///
+/// This lets the test-r runtime drive **every** Hosted descriptor
+/// reconstruction through one async path under the `tokio` runtime,
+/// regardless of whether the dep's own implementation is sync (today's
+/// `impl HostedDep for ...`) or async (today's `impl AsyncHostedDep for
+/// ...`). The `async_worker` macro flag becomes unnecessary — the
+/// implementor picks sync vs async purely at the trait-impl call site.
+///
+/// **Cost:** the bridge itself is negligible (`ready(x).await` is an
+/// immediately-ready future); when the runtime later routes every
+/// Hosted reconstruction through the async path there is still a
+/// small async-wrapper overhead per worker-startup-per-dep (polling
+/// the outer future, and possibly one boxed-future allocation from
+/// `WorkerReconstructor::Async`), but no extra user-level async work.
+///
+/// **Coherence note:** on stable Rust, with this blanket impl in place
+/// a concrete type cannot manually implement both `HostedDep` and
+/// `AsyncHostedDep` — rustc rejects that as conflicting
+/// implementations. That compile-time error is the intended signal
+/// that one of the two manual impls is redundant and should be
+/// removed.
+///
+/// **Source-compat note:** if downstream code imports both
+/// `HostedDep` and `AsyncHostedDep` into the same scope and calls
+/// trait methods by method syntax (e.g.
+/// `MyType::from_descriptor(bytes)` or `dep.descriptor()`), the call
+/// can become ambiguous now that one type satisfies both traits.
+/// Resolve with UFCS — `<MyType as HostedDep>::from_descriptor(bytes)`.
+impl<T: HostedDep> AsyncHostedDep for T {
+    fn descriptor(&self) -> Vec<u8> {
+        <T as HostedDep>::descriptor(self)
+    }
+
+    fn from_descriptor(bytes: &[u8]) -> impl std::future::Future<Output = Self> + Send {
+        std::future::ready(<T as HostedDep>::from_descriptor(bytes))
+    }
+}
+
+#[cfg(test)]
+mod hosted_dep_blanket_bridge_tests {
+    use super::{AsyncHostedDep, HostedDep};
+    // Need `Future` in scope to call `.poll(...)` on the pinned future
+    // returned by the blanket-bridged `from_descriptor`.
+    use std::future::Future;
+
+    /// Test fixture: a Hosted dep that only implements the sync
+    /// `HostedDep` trait. The HR3.2.0 blanket bridge must also expose
+    /// it through the async API.
+    #[derive(Debug, PartialEq, Eq)]
+    struct SyncOnlyDep {
+        bytes: Vec<u8>,
+    }
+
+    impl HostedDep for SyncOnlyDep {
+        fn descriptor(&self) -> Vec<u8> {
+            self.bytes.clone()
+        }
+
+        fn from_descriptor(bytes: &[u8]) -> Self {
+            Self {
+                bytes: bytes.to_vec(),
+            }
+        }
+    }
+
+    /// Compile-time pin that the blanket `impl<T: HostedDep> AsyncHostedDep
+    /// for T` covers a sync-only `HostedDep`. If a future change ever
+    /// drops or narrows the blanket, this test fires because the function
+    /// signature won't compile: it requires `T: AsyncHostedDep` and we
+    /// pass a `SyncOnlyDep` (which only implements `HostedDep`).
+    fn requires_async_hosted_dep<T: AsyncHostedDep>(_t: &T) {}
+
+    #[test]
+    fn blanket_impl_exposes_sync_hosted_dep_via_async_api() {
+        let dep = SyncOnlyDep {
+            bytes: vec![1, 2, 3, 4],
+        };
+
+        // 1. Compile-time witness: the bound `T: AsyncHostedDep` resolves
+        //    for `SyncOnlyDep` because of the blanket bridge.
+        requires_async_hosted_dep(&dep);
+
+        // 2. Owner-side: `descriptor()` reachable through both traits and
+        //    returns the same bytes.
+        assert_eq!(
+            <SyncOnlyDep as HostedDep>::descriptor(&dep),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(
+            <SyncOnlyDep as AsyncHostedDep>::descriptor(&dep),
+            vec![1, 2, 3, 4]
+        );
+
+        // 3. Worker-side: `from_descriptor(...)` reachable through the
+        //    async API; the returned future resolves synchronously to the
+        //    same value the sync API would produce. Driven without an
+        //    executor by polling the future once (since it is
+        //    `std::future::Ready`, the first poll completes).
+        let fut = <SyncOnlyDep as AsyncHostedDep>::from_descriptor(&[7, 8, 9]);
+        let mut fut = Box::pin(fut);
+        let waker = futures_test_helpers::noop_waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+        match fut.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(value) => {
+                assert_eq!(
+                    value,
+                    SyncOnlyDep {
+                        bytes: vec![7, 8, 9]
+                    },
+                    "blanket-bridged from_descriptor must yield the same value the sync impl produces"
+                );
+            }
+            std::task::Poll::Pending => panic!(
+                "blanket-bridged from_descriptor must be immediately ready (std::future::ready)"
+            ),
+        }
+    }
+
+    /// Minimal no-op waker so the test doesn't pull in tokio just to
+    /// poll a `std::future::Ready`.
+    mod futures_test_helpers {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+
+        unsafe fn clone(p: *const ()) -> RawWaker {
+            RawWaker::new(p, &VTABLE)
+        }
+        unsafe fn wake(_: *const ()) {}
+        unsafe fn wake_by_ref(_: *const ()) {}
+        unsafe fn drop(_: *const ()) {}
+
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+
+        pub fn noop_waker() -> Waker {
+            // SAFETY: vtable functions are no-ops and never touch the
+            // null data pointer.
+            unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+        }
+    }
+}
+
 /// Phase 1C: User-facing trait that opts a dependency value into the
 /// `HostedRpc` sharing strategy. Like [`HostedDep`], the owner lives in the
 /// **parent test runner process** for the entire suite; unlike `Hosted`,
@@ -549,6 +748,54 @@ impl HostedRpcOwnerCell {
                 Err(format!("hosted rpc owner panicked: {msg}"))
             }
         }
+    }
+}
+
+/// HR3.2.0 Step 4 support type for `#[test_dep(scope = Hosted, worker = both(T))]`.
+///
+/// One macro-emitted `worker = both(T)` registration is lowered into
+/// **two** `RegisteredDependency` entries that both point at the same
+/// parent-side owner — one for the descriptor (Hosted) view, one for
+/// the RPC stub (HostedRpc) view. To keep the owner unique under
+/// either view, both registrations route through a single
+/// `HostedBothShared` cell created by the macro-emitted weak cache:
+///
+/// - the **descriptor view** asks for the cached descriptor bytes
+///   (`HostedDep::descriptor` / `AsyncHostedDep::descriptor` is only
+///   called once, on the first construction);
+/// - the **RPC view** asks for the inner [`HostedRpcOwnerCell`], so
+///   the parent-side dispatcher sees the same owner the descriptor
+///   was derived from.
+///
+/// This is intentionally *not* a public end-user type; only the
+/// macro-support helpers in [`crate::__test_r_make_hosted_both_shared`]
+/// and friends construct one.
+pub struct HostedBothShared {
+    descriptor_bytes: Vec<u8>,
+    rpc_cell: Arc<HostedRpcOwnerCell>,
+}
+
+impl HostedBothShared {
+    /// Wrap a pre-computed descriptor + RPC owner cell for the `both`
+    /// dep variant.
+    pub fn new(descriptor_bytes: Vec<u8>, rpc_cell: Arc<HostedRpcOwnerCell>) -> Self {
+        Self {
+            descriptor_bytes,
+            rpc_cell,
+        }
+    }
+
+    /// Borrow the cached descriptor bytes (computed once, on first
+    /// construction).
+    pub fn descriptor_bytes(&self) -> &[u8] {
+        &self.descriptor_bytes
+    }
+
+    /// Cheap clone of the inner RPC owner cell `Arc`. The
+    /// HostedRpc-view registration's `RpcFactory::owner_into_cell`
+    /// hands this back to the runtime.
+    pub fn rpc_cell(&self) -> Arc<HostedRpcOwnerCell> {
+        self.rpc_cell.clone()
     }
 }
 
@@ -825,6 +1072,25 @@ pub struct RegisteredDependency {
     /// [`RpcFactory::build_stub`] to construct its `Stub` from a fresh
     /// [`HostedRpcChannel`].
     pub rpc_factory: Option<RpcFactory>,
+    /// Planner-only sibling dep names that must be retained together
+    /// with this dep during pruning. Unlike `dependencies`, companions
+    /// are **not** real dependency edges — no constructor argument is
+    /// derived from a companion, and no topological ordering is
+    /// implied. The pruner simply treats companions as mutually
+    /// reachable: if any companion in a group is in the keep-set, the
+    /// whole group is retained.
+    ///
+    /// Currently set by the `#[test_dep(scope = Hosted, worker = both(T))]`
+    /// macro lowering, which registers two paired dep entries (the
+    /// Hosted owner view and the HostedRpc stub view) backed by the
+    /// same parent-side `Arc<HostedBothShared>` cache. The async
+    /// flavour of that lowering has a sync resolver on the stub side
+    /// that assumes the Hosted side has already populated the shared
+    /// cache; if pruning ever dropped the Hosted half because the
+    /// selected tests only parameterised on the stub view, that
+    /// resolver would panic. Pairing the two as companions guarantees
+    /// the Hosted half is retained whenever either half is needed.
+    pub companions: Vec<String>,
 }
 
 impl RegisteredDependency {
@@ -849,6 +1115,7 @@ impl RegisteredDependency {
             cloneable_codec: None,
             hosted_codec: None,
             rpc_factory: None,
+            companions: Vec::new(),
         }
     }
 }

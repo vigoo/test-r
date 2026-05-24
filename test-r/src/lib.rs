@@ -5,6 +5,7 @@ pub use test_r_macro::always_report_time;
 pub use test_r_macro::bench;
 pub use test_r_macro::define_matrix_dimension;
 pub use test_r_macro::flaky;
+pub use test_r_macro::hosted_rpc;
 pub use test_r_macro::ignore_detached_panics;
 pub use test_r_macro::inherit_test_dep;
 pub use test_r_macro::never_capture;
@@ -29,17 +30,19 @@ pub use test_r_core::bench::Bencher;
 pub use test_r_core::spawn::spawn;
 pub use test_r_core::spawn::spawn_thread;
 
-pub use test_r_core::internal::{CloneableDep, HostedDep, HostedRpcDep};
+pub use test_r_core::internal::{AsyncHostedDep, CloneableDep, HostedDep, HostedRpcDep};
+pub use test_r_core::worker_index;
 
 pub mod core {
     use std::time::Duration;
     pub use test_r_core::internal::{
-        CaptureControl, CloneableCodec, CloneableDep, DepScope, DependencyConstructor,
-        DependencyView, DetachedPanicPolicy, DynamicTestRegistration, FailureCause,
-        FlakinessControl, GeneratedTest, HostedDep, HostedRpcChannel, HostedRpcDep,
-        HostedRpcDispatcher, HostedRpcError, HostedRpcOwnerCell, HostedRpcTransport,
-        InProcessHostedRpcTransport, ReportTimeControl, RpcFactory, ShouldPanic, TestFunction,
-        TestGeneratorFunction, TestProperties, TestReturnValue, TestType, WorkerReconstructor,
+        AsyncHostedDep, CaptureControl, CloneableCodec, CloneableDep, DepScope,
+        DependencyConstructor, DependencyView, DetachedPanicPolicy, DynamicTestRegistration,
+        FailureCause, FlakinessControl, GeneratedTest, HostedBothShared, HostedDep,
+        HostedRpcChannel, HostedRpcDep, HostedRpcDispatcher, HostedRpcError, HostedRpcOwnerCell,
+        HostedRpcTransport, InProcessHostedRpcTransport, ReportTimeControl, RpcFactory,
+        ShouldPanic, TestFunction, TestGeneratorFunction, TestProperties, TestReturnValue,
+        TestType, WorkerReconstructor,
     };
     pub use test_r_core::*;
 
@@ -117,6 +120,38 @@ pub mod core {
         hosted_codec: Option<CloneableCodec>,
         rpc_factory: Option<RpcFactory>,
     ) {
+        register_dependency_constructor_with_scope_and_companions(
+            name,
+            module_path,
+            cons,
+            dependencies,
+            scope,
+            worker_fn,
+            cloneable_codec,
+            hosted_codec,
+            rpc_factory,
+            Vec::new(),
+        )
+    }
+
+    /// Registers a dependency constructor that must be retained
+    /// together with the listed `companions` during pruning. See
+    /// [`internal::RegisteredDependency::companions`] for the planner
+    /// semantics. All other parameters behave exactly as
+    /// [`register_dependency_constructor_with_scope`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_dependency_constructor_with_scope_and_companions(
+        name: &str,
+        module_path: &str,
+        cons: DependencyConstructor,
+        dependencies: Vec<String>,
+        scope: DepScope,
+        worker_fn: Option<WorkerReconstructor>,
+        cloneable_codec: Option<CloneableCodec>,
+        hosted_codec: Option<CloneableCodec>,
+        rpc_factory: Option<RpcFactory>,
+        companions: Vec<String>,
+    ) {
         let (crate_name, module_path) = split_module_path(module_path);
 
         internal::REGISTERED_DEPENDENCY_CONSTRUCTORS
@@ -133,6 +168,7 @@ pub mod core {
                 cloneable_codec,
                 hosted_codec,
                 rpc_factory,
+                companions,
             });
     }
 
