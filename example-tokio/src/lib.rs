@@ -1,5 +1,7 @@
 test_r::enable!();
 
+mod sharing;
+
 #[cfg(test)]
 mod tests {
     use std::error::Error;

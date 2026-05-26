@@ -4,6 +4,7 @@ use crate::stats::Summary;
 use std::any::{Any, TypeId};
 use std::backtrace::Backtrace;
 use std::cmp::{max, Ordering};
+use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 use std::hash::Hash;
@@ -376,6 +377,663 @@ pub enum DependencyConstructor {
     ),
 }
 
+/// User-facing trait that opts a dependency value into the `Cloneable`
+/// sharing strategy. The parent calls [`to_wire`](CloneableDep::to_wire) once
+/// and ships the bytes to each worker via IPC. Each worker calls
+/// [`from_wire`](CloneableDep::from_wire) to reconstruct a local value.
+///
+/// The on-the-wire encoding is entirely up to the implementor: `serde_json`,
+/// `bincode`, `postcard`, a hand-rolled binary format, an on-disk file path,
+/// etc. The bytes are treated as opaque by the runner.
+///
+/// The simple `Self`-returning `from_wire` covers Cloneable deps that need no
+/// other worker-local context. If reconstruction needs worker-local state (for
+/// example, a per-worker engine), model that state as a separate dependency and
+/// combine the two from the test or a higher-level helper.
+pub trait CloneableDep: Sized + Send + Sync + 'static {
+    /// Serialise this value into wire bytes for transmission to workers.
+    fn to_wire(&self) -> Vec<u8>;
+
+    /// Reconstruct a value from wire bytes received from the parent.
+    fn from_wire(bytes: &[u8]) -> Self;
+}
+
+/// User-facing trait that opts a dependency value into the `Hosted`
+/// sharing strategy. Like [`CloneableDep`], but the owner instance lives in
+/// the **parent test runner process** for the entire suite. The parent runs
+/// the constructor once per Hosted dep and keeps the value alive until every
+/// worker has finished — useful for singleton services like an in-process
+/// TCP listener, a Docker container, an env-based test environment, or any
+/// long-running runtime that must not be duplicated across worker processes.
+///
+/// The parent calls [`descriptor`](HostedDep::descriptor) on its owner once
+/// and forwards the resulting bytes to every worker over IPC. Each worker
+/// reconstructs a local handle via
+/// [`from_descriptor`](HostedDep::from_descriptor) — the handle typically
+/// connects to the live owner held by the parent (e.g. opens a TCP
+/// connection to the address carried in the descriptor).
+///
+/// For descriptor-based Hosted deps, the owner and worker handle share the same
+/// type `Self`. The implementation is responsible for stashing owner-only
+/// state (sockets, background threads, etc.) in fields that the worker side
+/// won't touch.
+pub trait HostedDep: Sized + Send + Sync + 'static {
+    /// Owner-side: produce the descriptor bytes that workers will use to
+    /// reconstruct a connected handle.
+    fn descriptor(&self) -> Vec<u8>;
+
+    /// Worker-side: reconstruct a handle from descriptor bytes received from
+    /// the parent.
+    fn from_descriptor(bytes: &[u8]) -> Self;
+}
+
+/// Async counterpart of [`HostedDep`]. Implement this when worker-side
+/// reconstruction needs to `.await` (e.g. opening async network
+/// clients, doing async filesystem work, calling
+/// `Provided*::new(...).await` constructors).
+///
+/// No opt-in flag is required: the helper functions emitted by
+/// `#[test_dep(scope = Hosted)]` auto-select the async path under the `tokio`
+/// runtime, so simply implementing `AsyncHostedDep` is enough.
+///
+/// ```ignore
+/// #[test_dep(scope = Hosted)]
+/// async fn dependencies() -> EnvBasedTestDependencies { /* … */ }
+///
+/// impl test_r::core::AsyncHostedDep for EnvBasedTestDependencies {
+///     fn descriptor(&self) -> Vec<u8> { /* … */ }
+///
+///     async fn from_descriptor(bytes: &[u8]) -> Self { /* … */ }
+/// }
+/// ```
+///
+/// `AsyncHostedDep` is the tokio-only async counterpart of
+/// [`HostedDep`]. Under the `tokio` test runtime the Hosted helper
+/// functions emitted by `#[test_dep(scope = Hosted)]` always go
+/// through `AsyncHostedDep`, regardless of whether the user wrote
+/// `impl HostedDep` (covered by the blanket bridge below) or
+/// `impl AsyncHostedDep` directly. Under the sync runtime, the same
+/// helpers stay on `HostedDep`: a `scope = Hosted` registration that
+/// uses an async-only `AsyncHostedDep` type therefore fails to
+/// compile in sync builds. (Writing the impl on its own still compiles fine;
+/// only the `#[test_dep(scope = Hosted)]` registration fails.)
+///
+/// `descriptor()` stays synchronous and is called on the parent owner
+/// value, exactly as in [`HostedDep`]; the only difference is that
+/// `from_descriptor` returns a `Future` so worker-side reconstruction
+/// can await.
+///
+/// The legacy `async_worker` attribute is **deprecated** and ignored
+/// (it now only triggers a compile-time deprecation warning at the
+/// dep's registration site); remove it from any new code.
+pub trait AsyncHostedDep: Sized + Send + Sync + 'static {
+    /// Owner-side: produce the descriptor bytes that workers will use to
+    /// reconstruct a connected handle. Called from the parent runner
+    /// process exactly once per Hosted dep, just like
+    /// [`HostedDep::descriptor`].
+    fn descriptor(&self) -> Vec<u8>;
+
+    /// Worker-side: asynchronously reconstruct a handle from descriptor
+    /// bytes received from the parent.
+    fn from_descriptor(bytes: &[u8]) -> impl std::future::Future<Output = Self> + Send;
+}
+
+/// Blanket bridge: every [`HostedDep`] is automatically also an
+/// [`AsyncHostedDep`]. The bridged `from_descriptor` returns
+/// [`std::future::ready`], so the bridge itself adds only an immediately-ready
+/// future and the runtime can await all Hosted reconstruction uniformly.
+///
+/// This lets the test-r runtime drive **every** Hosted descriptor
+/// reconstruction through one async path under the `tokio` runtime, regardless
+/// of whether the dep's own implementation is sync (`impl HostedDep for ...`)
+/// or async (`impl AsyncHostedDep for ...`). The `async_worker` macro flag is
+/// unnecessary — the implementor picks sync vs async purely at the trait-impl
+/// call site.
+///
+/// **Cost:** the bridge itself is negligible (`ready(x).await` is an
+/// immediately-ready future); when the runtime later routes every
+/// Hosted reconstruction through the async path there is still a
+/// small async-wrapper overhead per worker-startup-per-dep (polling
+/// the outer future, and possibly one boxed-future allocation from
+/// `WorkerReconstructor::Async`), but no extra user-level async work.
+///
+/// **Coherence note:** on stable Rust, with this blanket impl in place
+/// a concrete type cannot manually implement both `HostedDep` and
+/// `AsyncHostedDep` — rustc rejects that as conflicting
+/// implementations. That compile-time error is the intended signal
+/// that one of the two manual impls is redundant and should be
+/// removed.
+///
+/// **Source-compat note:** if downstream code imports both
+/// `HostedDep` and `AsyncHostedDep` into the same scope and calls
+/// trait methods by method syntax (e.g.
+/// `MyType::from_descriptor(bytes)` or `dep.descriptor()`), the call
+/// can become ambiguous now that one type satisfies both traits.
+/// Resolve with UFCS — `<MyType as HostedDep>::from_descriptor(bytes)`.
+impl<T: HostedDep> AsyncHostedDep for T {
+    fn descriptor(&self) -> Vec<u8> {
+        <T as HostedDep>::descriptor(self)
+    }
+
+    fn from_descriptor(bytes: &[u8]) -> impl std::future::Future<Output = Self> + Send {
+        std::future::ready(<T as HostedDep>::from_descriptor(bytes))
+    }
+}
+
+#[cfg(test)]
+mod hosted_dep_blanket_bridge_tests {
+    use super::{AsyncHostedDep, HostedDep};
+    // Need `Future` in scope to call `.poll(...)` on the pinned future
+    // returned by the blanket-bridged `from_descriptor`.
+    use std::future::Future;
+
+    /// Test fixture: a Hosted dep that only implements the sync `HostedDep`
+    /// trait. The blanket bridge must also expose it through the async API.
+    #[derive(Debug, PartialEq, Eq)]
+    struct SyncOnlyDep {
+        bytes: Vec<u8>,
+    }
+
+    impl HostedDep for SyncOnlyDep {
+        fn descriptor(&self) -> Vec<u8> {
+            self.bytes.clone()
+        }
+
+        fn from_descriptor(bytes: &[u8]) -> Self {
+            Self {
+                bytes: bytes.to_vec(),
+            }
+        }
+    }
+
+    /// Compile-time pin that the blanket `impl<T: HostedDep> AsyncHostedDep
+    /// for T` covers a sync-only `HostedDep`. If a future change ever
+    /// drops or narrows the blanket, this test fires because the function
+    /// signature won't compile: it requires `T: AsyncHostedDep` and we
+    /// pass a `SyncOnlyDep` (which only implements `HostedDep`).
+    fn requires_async_hosted_dep<T: AsyncHostedDep>(_t: &T) {}
+
+    #[test]
+    fn blanket_impl_exposes_sync_hosted_dep_via_async_api() {
+        let dep = SyncOnlyDep {
+            bytes: vec![1, 2, 3, 4],
+        };
+
+        // 1. Compile-time witness: the bound `T: AsyncHostedDep` resolves
+        //    for `SyncOnlyDep` because of the blanket bridge.
+        requires_async_hosted_dep(&dep);
+
+        // 2. Owner-side: `descriptor()` reachable through both traits and
+        //    returns the same bytes.
+        assert_eq!(
+            <SyncOnlyDep as HostedDep>::descriptor(&dep),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(
+            <SyncOnlyDep as AsyncHostedDep>::descriptor(&dep),
+            vec![1, 2, 3, 4]
+        );
+
+        // 3. Worker-side: `from_descriptor(...)` reachable through the
+        //    async API; the returned future resolves synchronously to the
+        //    same value the sync API would produce. Driven without an
+        //    executor by polling the future once (since it is
+        //    `std::future::Ready`, the first poll completes).
+        let fut = <SyncOnlyDep as AsyncHostedDep>::from_descriptor(&[7, 8, 9]);
+        let mut fut = Box::pin(fut);
+        let waker = futures_test_helpers::noop_waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+        match fut.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(value) => {
+                assert_eq!(
+                    value,
+                    SyncOnlyDep {
+                        bytes: vec![7, 8, 9]
+                    },
+                    "blanket-bridged from_descriptor must yield the same value the sync impl produces"
+                );
+            }
+            std::task::Poll::Pending => panic!(
+                "blanket-bridged from_descriptor must be immediately ready (std::future::ready)"
+            ),
+        }
+    }
+
+    /// Minimal no-op waker so the test doesn't pull in tokio just to
+    /// poll a `std::future::Ready`.
+    mod futures_test_helpers {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+
+        unsafe fn clone(p: *const ()) -> RawWaker {
+            RawWaker::new(p, &VTABLE)
+        }
+        unsafe fn wake(_: *const ()) {}
+        unsafe fn wake_by_ref(_: *const ()) {}
+        unsafe fn drop(_: *const ()) {}
+
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+
+        pub fn noop_waker() -> Waker {
+            // SAFETY: vtable functions are no-ops and never touch the
+            // null data pointer.
+            unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+        }
+    }
+}
+
+/// User-facing trait that opts a dependency value into the `HostedRpc` sharing
+/// strategy. Like [`HostedDep`], the owner lives in the
+/// **parent test runner process** for the entire suite; unlike `Hosted`,
+/// workers do NOT see the owner type — they see a separate `Stub` type
+/// that calls back into the parent over the existing IPC socket through a
+/// small generated method-dispatch table.
+///
+/// The implementor provides:
+/// - `type Stub`: the worker-side handle type tests actually parameterise on.
+/// - [`dispatch`](HostedRpcDep::dispatch): owner-side method dispatcher.
+///   Receives a stable `method_idx` plus serialized argument bytes and
+///   returns serialized result bytes (or a textual error).
+/// - [`build_stub`](HostedRpcDep::build_stub): worker-side constructor.
+///   Wraps the supplied [`HostedRpcChannel`] into a `Self::Stub` that
+///   serialises calls and forwards them to the parent's dispatcher.
+///
+/// Calls to a HostedRpc dep are **serialised** on the parent side (owner is held
+/// behind a single `Mutex`). Even logical `&self` methods do not run
+/// concurrently, matching how most singleton service handles already behave
+/// internally.
+pub trait HostedRpcDep: Send + Sync + 'static {
+    /// The worker-side handle type that tests parameterise on. Typically
+    /// a small struct that holds a [`HostedRpcChannel`] and implements
+    /// a user-defined trait by routing each method through the channel.
+    type Stub: Send + Sync + 'static;
+
+    /// Owner-side: handle one method call. `method_idx` is a stable per-method
+    /// index assigned by the implementor (usually generated by the
+    /// `#[hosted_rpc]` macro; for a manual stub, the implementor picks the
+    /// indices). `args` is the worker-supplied serialized payload. Return
+    /// `Ok(bytes)` on success or `Err(message)` on failure — the message is
+    /// surfaced to the calling worker as [`HostedRpcError::Dispatch`].
+    fn dispatch(&mut self, method_idx: u32, args: &[u8]) -> Result<Vec<u8>, String>;
+
+    /// Worker-side: build a `Self::Stub` over the channel that connects
+    /// back to the parent's owner. Called once per worker subprocess at
+    /// startup, before any test body runs.
+    ///
+    /// **Contract — `build_stub` must be cheap and side-effect free.**
+    /// The runtime constructs one stub per registered HostedRpc dep at
+    /// worker startup, *before* the worker has even received its first
+    /// [`crate::ipc::IpcCommand::RunTest`]. In particular this means:
+    ///
+    /// - **Do NOT call `channel.call(...)` from `build_stub`** — there is
+    ///   no test in flight yet, so the parent's command loop may legally
+    ///   send a `RunTest` while the stub is blocked waiting for a reply,
+    ///   and the IPC framing will desync.
+    /// - **Do NOT block, do I/O, or do expensive work** — the stub is
+    ///   built unconditionally for every registered HostedRpc dep, even
+    ///   if the test filter doesn't pull it into the suite.
+    /// - Stash the `channel` and any small caches on `Self::Stub`; defer
+    ///   all RPC to actual method calls inside test bodies.
+    fn build_stub(channel: HostedRpcChannel) -> Self::Stub;
+}
+
+/// Dyn-safe entry point used by the parent runtime to dispatch incoming
+/// [`crate::ipc::IpcResponse::HostedRpcCall`] frames to a type-erased owner
+/// value. Auto-implemented for every [`HostedRpcDep`].
+pub trait HostedRpcDispatcher: Send + Sync {
+    fn dispatch(&mut self, method_idx: u32, args: &[u8]) -> Result<Vec<u8>, String>;
+}
+
+impl<T: HostedRpcDep> HostedRpcDispatcher for T {
+    fn dispatch(&mut self, method_idx: u32, args: &[u8]) -> Result<Vec<u8>, String> {
+        <T as HostedRpcDep>::dispatch(self, method_idx, args)
+    }
+}
+
+/// Type-erased, parent-owned cell that holds the owner value behind a
+/// `Mutex` and exposes a `&self` dispatch entry point. Constructed by the
+/// macro-generated registration code on the parent (the `DependencyConstructor`
+/// for a `HostedRpc` dep returns one of these wrapped in `Arc<dyn Any>`)
+/// and kept alive in `_hosted_owners` for the suite's lifetime.
+pub struct HostedRpcOwnerCell {
+    inner: Mutex<Box<dyn HostedRpcDispatcher>>,
+}
+
+impl HostedRpcOwnerCell {
+    /// Wrap an owner value into a `HostedRpcOwnerCell`. The owner type must
+    /// implement [`HostedRpcDep`].
+    pub fn from_owner<T: HostedRpcDep>(owner: T) -> Self {
+        Self {
+            inner: Mutex::new(Box::new(owner) as Box<dyn HostedRpcDispatcher>),
+        }
+    }
+
+    /// Dispatch one method call. Catches owner panics and turns them into
+    /// `Err("hosted rpc owner panicked: …")` so the dispatcher loop never
+    /// dies. The lock is acquired *inside* the `catch_unwind` closure on
+    /// purpose: when the owner panics, the `MutexGuard` drops during the
+    /// unwind, which poisons the mutex. Every subsequent `dispatch` call
+    /// then short-circuits with the stable `"hosted rpc owner poisoned"`
+    /// error and does NOT retry the (possibly half-mutated) owner.
+    pub fn dispatch(&self, method_idx: u32, args: &[u8]) -> Result<Vec<u8>, String> {
+        // The lock acquire lives inside the catch_unwind closure on
+        // purpose. If we acquired the lock outside and the user dispatch
+        // panicked, the panic would be caught before the MutexGuard had a
+        // chance to drop during unwinding, leaving the mutex healthy — and
+        // we want it poisoned so that subsequent calls see a deterministic
+        // "owner is dead" error rather than re-entering a half-mutated
+        // owner value.
+        let dispatch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut guard = match self.inner.lock() {
+                Ok(g) => g,
+                Err(_) => return Err("hosted rpc owner poisoned".to_string()),
+            };
+            guard.dispatch(method_idx, args)
+        }));
+        match dispatch_result {
+            Ok(r) => r,
+            Err(payload) => {
+                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "<non-string panic payload>".to_string()
+                };
+                Err(format!("hosted rpc owner panicked: {msg}"))
+            }
+        }
+    }
+}
+
+/// Support type for `#[test_dep(scope = Hosted, worker = both(T))]`.
+///
+/// One macro-emitted `worker = both(T)` registration is lowered into
+/// **two** `RegisteredDependency` entries that both point at the same
+/// parent-side owner — one for the descriptor (Hosted) view, one for
+/// the RPC stub (HostedRpc) view. To keep the owner unique under
+/// either view, both registrations route through a single
+/// `HostedBothShared` cell created by the macro-emitted weak cache:
+///
+/// - the **descriptor view** asks for the cached descriptor bytes
+///   (`HostedDep::descriptor` / `AsyncHostedDep::descriptor` is only
+///   called once, on the first construction);
+/// - the **RPC view** asks for the inner [`HostedRpcOwnerCell`], so
+///   the parent-side dispatcher sees the same owner the descriptor
+///   was derived from.
+///
+/// This is intentionally *not* a public end-user type; only the
+/// macro-support helpers in [`crate::__test_r_make_hosted_both_shared`]
+/// and friends construct one.
+pub struct HostedBothShared {
+    descriptor_bytes: Vec<u8>,
+    rpc_cell: Arc<HostedRpcOwnerCell>,
+}
+
+impl HostedBothShared {
+    /// Wrap a pre-computed descriptor + RPC owner cell for the `both`
+    /// dep variant.
+    pub fn new(descriptor_bytes: Vec<u8>, rpc_cell: Arc<HostedRpcOwnerCell>) -> Self {
+        Self {
+            descriptor_bytes,
+            rpc_cell,
+        }
+    }
+
+    /// Borrow the cached descriptor bytes (computed once, on first
+    /// construction).
+    pub fn descriptor_bytes(&self) -> &[u8] {
+        &self.descriptor_bytes
+    }
+
+    /// Cheap clone of the inner RPC owner cell `Arc`. The
+    /// HostedRpc-view registration's `RpcFactory::owner_into_cell`
+    /// hands this back to the runtime.
+    pub fn rpc_cell(&self) -> Arc<HostedRpcOwnerCell> {
+        self.rpc_cell.clone()
+    }
+}
+
+/// Error returned by [`HostedRpcChannel::call`] when an RPC fails.
+#[derive(Debug, Clone)]
+pub enum HostedRpcError {
+    /// The owner-side dispatcher returned an error string (unknown method,
+    /// codec error, panic in the user method, …).
+    Dispatch(String),
+    /// The IPC transport itself failed (worker disconnected, framing error,
+    /// runtime not in spawn-workers mode, …).
+    Transport(String),
+}
+
+impl std::fmt::Display for HostedRpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HostedRpcError::Dispatch(s) => write!(f, "hosted rpc dispatch error: {s}"),
+            HostedRpcError::Transport(s) => write!(f, "hosted rpc transport error: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for HostedRpcError {}
+
+/// Trait implemented by the per-runner transport that workers use to send
+/// RPCs to the parent's owner. The runtime provides a concrete IPC
+/// implementation for the spawn-workers case and a direct in-process
+/// implementation for `--nocapture` / single-process mode.
+pub trait HostedRpcTransport: Send + Sync {
+    /// Send one call and block until the reply arrives. `dep_id` is the
+    /// dep's fully-qualified id (`{crate}::{module}::{name}`) used by the
+    /// parent to route the call to the right owner.
+    fn call(&self, dep_id: &str, method_idx: u32, args: Vec<u8>)
+        -> Result<Vec<u8>, HostedRpcError>;
+}
+
+/// Per-dep channel handed to [`HostedRpcDep::build_stub`] on the worker side.
+///
+/// The stub holds this channel and calls [`HostedRpcChannel::call`] from
+/// each of its method bodies; the channel takes care of dep-id routing,
+/// serialization framing, and waiting for the parent's reply.
+pub struct HostedRpcChannel {
+    dep_id: String,
+    transport: Arc<dyn HostedRpcTransport>,
+}
+
+impl HostedRpcChannel {
+    /// Construct a channel that targets the dep identified by
+    /// `dep_id` (a fully-qualified id) and uses the supplied transport.
+    pub fn new(dep_id: String, transport: Arc<dyn HostedRpcTransport>) -> Self {
+        Self { dep_id, transport }
+    }
+
+    /// The fully-qualified dep id this channel routes to. Stubs almost never
+    /// need this directly, but it's exposed for diagnostics and tests.
+    pub fn dep_id(&self) -> &str {
+        &self.dep_id
+    }
+
+    /// Send one method call and block until the parent replies. `args` are
+    /// already-serialized bytes; the stub method body owns the choice of
+    /// codec.
+    ///
+    /// **Temporal invariant — only call this while a test body is actually
+    /// running.** The transport assumes one
+    /// HostedRpc request/reply pair per worker subprocess is in flight
+    /// at a time *and* that the worker's main IPC command loop is idle
+    /// (it only reads `Provide*` / `RunTest` between tests). Specifically:
+    ///
+    /// - **Do NOT call from `HostedRpcDep::build_stub`** — see that
+    ///   method's docs for why.
+    /// - **Do NOT call from background threads or detached tasks that
+    ///   outlive the test body** — once the test returns the worker
+    ///   sends `TestFinished` and the parent's next message will be a
+    ///   `Provide*` / `RunTest`, which the transport's read side would
+    ///   then misinterpret as a reply.
+    /// - **Do NOT call from `Drop` / destructor-style cleanup or any
+    ///   teardown hook that may fire after the test body has returned** —
+    ///   that is just another form of "outside the test body" and has the
+    ///   same IPC-framing-desync risk as a detached background thread.
+    /// - Stub calls from inside the test body — directly or transitively
+    ///   from helpers the test body awaits/blocks on — are the supported
+    ///   shape.
+    pub fn call(&self, method_idx: u32, args: Vec<u8>) -> Result<Vec<u8>, HostedRpcError> {
+        self.transport.call(&self.dep_id, method_idx, args)
+    }
+}
+
+impl Clone for HostedRpcChannel {
+    fn clone(&self) -> Self {
+        Self {
+            dep_id: self.dep_id.clone(),
+            transport: self.transport.clone(),
+        }
+    }
+}
+
+/// In-process transport used in `--nocapture` / single-process mode: the
+/// stub calls the owner-side [`HostedRpcOwnerCell`] directly without
+/// touching any IPC stream.
+pub struct InProcessHostedRpcTransport {
+    cells: HashMap<String, Arc<HostedRpcOwnerCell>>,
+}
+
+impl InProcessHostedRpcTransport {
+    pub fn new(cells: HashMap<String, Arc<HostedRpcOwnerCell>>) -> Self {
+        Self { cells }
+    }
+}
+
+impl HostedRpcTransport for InProcessHostedRpcTransport {
+    fn call(
+        &self,
+        dep_id: &str,
+        method_idx: u32,
+        args: Vec<u8>,
+    ) -> Result<Vec<u8>, HostedRpcError> {
+        let cell = self.cells.get(dep_id).ok_or_else(|| {
+            HostedRpcError::Transport(format!("in-process HostedRpc: unknown dep id '{dep_id}'"))
+        })?;
+        cell.dispatch(method_idx, &args)
+            .map_err(HostedRpcError::Dispatch)
+    }
+}
+
+/// Factory pair stored on a `HostedRpc` [`RegisteredDependency`]. The macro
+/// emits a `RpcFactory` per registered HostedRpc dep so the runtime can
+/// (a) wrap the constructor's output into a parent dispatcher cell, and
+/// (b) build a worker-side stub from a channel.
+#[derive(Clone)]
+#[allow(clippy::type_complexity)]
+pub struct RpcFactory {
+    /// Downcast the constructor's `Arc<dyn Any>` to the concrete
+    /// `HostedRpcOwnerCell` for this dep.
+    pub owner_into_cell: Arc<
+        dyn (Fn(Arc<dyn Any + Send + Sync>) -> Arc<HostedRpcOwnerCell>) + Send + Sync + 'static,
+    >,
+    /// Build a worker-side stub (typed as the dep's `Stub` associated type)
+    /// from the supplied channel, boxed as `Arc<dyn Any>`.
+    pub build_stub:
+        Arc<dyn (Fn(HostedRpcChannel) -> Arc<dyn Any + Send + Sync>) + Send + Sync + 'static>,
+}
+
+/// Sharing strategy declared on a `#[test_dep]`. Controls how the dependency
+/// interacts with output capturing and parallel test execution.
+///
+/// See `book/src/design/sharing-strategy.md` for the full description.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Default)]
+pub enum DepScope {
+    /// Today's behaviour: a single materialized instance shared by every test.
+    /// Forces single-threaded execution when output capturing is on, because
+    /// the `Arc<dyn Any>` cannot cross the parent/worker process boundary.
+    #[default]
+    Shared,
+    /// Each worker child materializes its own instance independently. Tests
+    /// inside one worker share the instance.
+    PerWorker,
+    /// Parent runs the constructor once and produces wire bytes; each worker
+    /// reconstructs a local instance from those bytes via the registered
+    /// worker reconstructor (`worker_fn`).
+    Cloneable,
+    /// Owner runs once in the **parent** test runner process and stays alive
+    /// for the entire suite. The parent produces a descriptor (via
+    /// [`HostedDep::descriptor`]) and ships those descriptor bytes to every
+    /// worker. Each worker reconstructs a handle via
+    /// [`HostedDep::from_descriptor`]. The owner is held in the parent
+    /// process so singleton services (TCP listeners, Docker containers,
+    /// gRPC server clients, env-based runtimes) are not duplicated per
+    /// worker.
+    Hosted,
+    /// Like [`Self::Hosted`], but the owner stays in the parent AND workers
+    /// talk back to it via the runtime's built-in RPC layer instead of reaching
+    /// out via their own transport. The dep implementor provides a
+    /// [`HostedRpcDep`] impl on the owner type with a stub type, a method
+    /// dispatch function, and a stub builder.
+    HostedRpc,
+}
+
+impl DepScope {
+    /// Returns `true` for scopes that materialize in the parent process and
+    /// therefore force single-threaded fallback when capturing is on.
+    pub fn requires_single_thread_when_capturing(&self) -> bool {
+        matches!(self, DepScope::Shared)
+    }
+
+    /// Returns `true` for scopes the parent should still materialize even
+    /// when it is otherwise delegating dependency construction to workers
+    /// (i.e. `skip_creating_dependencies` is set). `Cloneable` deps need the
+    /// parent to compute the wire form; `Hosted` / `HostedRpc` deps need
+    /// the parent to hold the owner alive for the whole suite.
+    pub fn parent_must_materialize_under_spawn_workers(&self) -> bool {
+        matches!(
+            self,
+            DepScope::Cloneable | DepScope::Hosted | DepScope::HostedRpc
+        )
+    }
+}
+
+/// Function pointer-equivalent used by the worker side of a `Cloneable`
+/// dependency. Receives the deserialized wire payload (boxed as `Any` for
+/// type erasure) plus the current dependency view, and produces the
+/// reconstructed worker-side value.
+#[derive(Clone)]
+#[allow(clippy::type_complexity)]
+pub enum WorkerReconstructor {
+    Sync(
+        Arc<
+            dyn (Fn(
+                    Arc<dyn Any + Send + Sync>,
+                    Arc<dyn DependencyView + Send + Sync>,
+                ) -> Arc<dyn Any + Send + Sync + 'static>)
+                + Send
+                + Sync
+                + 'static,
+        >,
+    ),
+    Async(
+        Arc<
+            dyn (Fn(
+                    Arc<dyn Any + Send + Sync>,
+                    Arc<dyn DependencyView + Send + Sync>,
+                ) -> Pin<Box<dyn Future<Output = Arc<dyn Any + Send + Sync>>>>)
+                + Send
+                + Sync
+                + 'static,
+        >,
+    ),
+}
+
+/// Function-pointer wrappers used by Cloneable deps to convert the
+/// constructed value into wire bytes on the parent, and to deserialize those
+/// bytes into a typed value on the worker.
+#[derive(Clone)]
+#[allow(clippy::type_complexity)]
+pub struct CloneableCodec {
+    /// Parent-side: `to_wire`. Receives the dependency value as `Arc<dyn Any>`,
+    /// returns the encoded wire bytes.
+    pub to_wire: Arc<dyn (Fn(Arc<dyn Any + Send + Sync>) -> Vec<u8>) + Send + Sync + 'static>,
+    /// Worker-side: deserialize wire bytes into the boxed `Wire` payload that
+    /// is then fed to the [`WorkerReconstructor`].
+    pub from_wire_bytes: Arc<dyn (Fn(&[u8]) -> Arc<dyn Any + Send + Sync>) + Send + Sync + 'static>,
+}
+
 #[derive(Clone)]
 pub struct RegisteredDependency {
     pub name: String, // TODO: Should we use TypeId here?
@@ -383,6 +1041,76 @@ pub struct RegisteredDependency {
     pub module_path: String,
     pub constructor: DependencyConstructor,
     pub dependencies: Vec<String>,
+    /// Sharing strategy declared on the constructor. Defaults to
+    /// [`DepScope::Shared`] for backward compatibility.
+    pub scope: DepScope,
+    /// Worker-side reconstructor for `Cloneable` and `Hosted` deps
+    /// (`None` otherwise). For `Cloneable` the wire payload IS the dep value;
+    /// for `Hosted` the wire payload is the descriptor passed to
+    /// [`HostedDep::from_descriptor`](crate::internal::HostedDep::from_descriptor).
+    pub worker_fn: Option<WorkerReconstructor>,
+    /// Wire-bytes codec for `Cloneable` deps (`None` otherwise). The codec
+    /// shape is shared with [`Self::hosted_codec`] but the runtime dispatches
+    /// on whichever field is populated.
+    pub cloneable_codec: Option<CloneableCodec>,
+    /// Descriptor-bytes codec for `Hosted` deps (`None` otherwise). Same
+    /// shape as [`Self::cloneable_codec`]; the codec encodes the value
+    /// returned by [`HostedDep::descriptor`](crate::internal::HostedDep::descriptor)
+    /// into wire bytes on the parent (where the owner lives), and decodes
+    /// those bytes in the worker before they are passed to the registered
+    /// worker reconstructor.
+    pub hosted_codec: Option<CloneableCodec>,
+    /// Factories for `HostedRpc` deps (`None` otherwise). The parent uses
+    /// [`RpcFactory::owner_into_cell`] to extract the `HostedRpcOwnerCell`
+    /// returned by the constructor; the worker uses [`RpcFactory::build_stub`]
+    /// to construct its `Stub` from a fresh [`HostedRpcChannel`].
+    pub rpc_factory: Option<RpcFactory>,
+    /// Planner-only sibling dep names that must be retained together
+    /// with this dep during pruning. Unlike `dependencies`, companions
+    /// are **not** real dependency edges — no constructor argument is
+    /// derived from a companion, and no topological ordering is
+    /// implied. The pruner simply treats companions as mutually
+    /// reachable: if any companion in a group is in the keep-set, the
+    /// whole group is retained.
+    ///
+    /// Currently set by the `#[test_dep(scope = Hosted, worker = both(T))]`
+    /// macro lowering, which registers two paired dep entries (the
+    /// Hosted owner view and the HostedRpc stub view) backed by the
+    /// same parent-side `Arc<HostedBothShared>` cache. The async
+    /// flavour of that lowering has a sync resolver on the stub side
+    /// that assumes the Hosted side has already populated the shared
+    /// cache; if pruning ever dropped the Hosted half because the
+    /// selected tests only parameterised on the stub view, that
+    /// resolver would panic. Pairing the two as companions guarantees
+    /// the Hosted half is retained whenever either half is needed.
+    pub companions: Vec<String>,
+}
+
+impl RegisteredDependency {
+    /// Construct a `Shared` (legacy / default-scope) dependency. Preserves the
+    /// pre-scopes constructor signature so downstream code that built
+    /// `RegisteredDependency` directly keeps compiling.
+    pub fn new_shared(
+        name: String,
+        crate_name: String,
+        module_path: String,
+        constructor: DependencyConstructor,
+        dependencies: Vec<String>,
+    ) -> Self {
+        Self {
+            name,
+            crate_name,
+            module_path,
+            constructor,
+            dependencies,
+            scope: DepScope::Shared,
+            worker_fn: None,
+            cloneable_codec: None,
+            hosted_codec: None,
+            rpc_factory: None,
+            companions: Vec::new(),
+        }
+    }
 }
 
 impl Debug for RegisteredDependency {
@@ -412,6 +1140,19 @@ impl Hash for RegisteredDependency {
 impl RegisteredDependency {
     pub fn crate_and_module(&self) -> String {
         [&self.crate_name, &self.module_path]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect::<Vec<String>>()
+            .join("::")
+    }
+
+    /// Fully-qualified identifier used for cross-process bookkeeping of
+    /// Cloneable dependencies. The shape is `{crate_name}::{module_path}::{name}`
+    /// with empty segments dropped, so two deps with the same `name` registered
+    /// in different modules get distinct identifiers.
+    pub fn qualified_id(&self) -> String {
+        [&self.crate_name, &self.module_path, &self.name]
             .into_iter()
             .filter(|s| !s.is_empty())
             .cloned()

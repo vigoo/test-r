@@ -1,6 +1,7 @@
 test_r::enable!();
 
 mod other;
+mod sharing;
 
 #[cfg(test)]
 mod tests {

@@ -1,12 +1,16 @@
 use crate::args::{Arguments, TimeThreshold};
 use crate::bench::AsyncBencher;
-use crate::execution::{TestExecution, TestSuiteExecution};
+use crate::execution::{DepWireBytes, TestExecution, TestSuiteExecution};
 use crate::internal;
 use crate::internal::{
-    generate_tests, get_ensure_time, CapturedOutput, FailureCause, FlakinessControl,
-    RegisteredTest, SuiteResult, TestFunction, TestResult,
+    generate_tests, get_ensure_time, CapturedOutput, CloneableCodec, FailureCause,
+    FlakinessControl, HostedRpcChannel, HostedRpcError, HostedRpcOwnerCell, HostedRpcTransport,
+    InProcessHostedRpcTransport, RegisteredTest, RpcFactory, SuiteResult, TestFunction, TestResult,
+    WorkerReconstructor,
 };
-use crate::ipc::{ipc_name, IpcCommand, IpcResponse};
+use crate::ipc::{
+    ipc_name, read_frame_async, write_frame_async, HostedRpcReplyBody, IpcCommand, IpcResponse,
+};
 use crate::output::{test_runner_output, TestRunnerOutput};
 use desert_rust::{deserialize, serialize_to_byte_vec};
 use futures::FutureExt;
@@ -14,13 +18,15 @@ use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::tokio::{Listener, Stream};
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions};
 use std::any::Any;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::process::{ExitCode, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::spawn;
 use tokio::sync::Mutex;
@@ -40,6 +46,12 @@ pub fn test_runner() -> ExitCode {
 async fn async_test_runner() -> ExitCode {
     crate::panic_hook::install_panic_hook();
     let mut args = Arguments::from_args();
+    // When the parent spawned this process as a worker it passed
+    // `--worker-index <N>`. Stash it so `crate::worker::worker_index()`
+    // returns the correct value for PerWorker dep constructors.
+    if let Some(idx) = args.worker_index {
+        crate::worker::set_worker_index(idx);
+    }
     let output = test_runner_output(&args);
 
     let registered_tests = internal::REGISTERED_TESTS.lock().unwrap();
@@ -71,6 +83,96 @@ async fn async_test_runner() -> ExitCode {
                 registered_testsuite_props.as_slice(),
             );
             args.finalize_for_execution(&execution, output.clone());
+            let is_top_level_parent = args.is_top_level_parent();
+            let has_selected_tests = execution.remaining() > 0;
+            // Parent-side collection for dependency scopes whose worker-side
+            // value is shipped as bytes or represented as an RPC stub. Async
+            // constructors are awaited here, before workers receive their
+            // reconstructed values. Skip it for empty filtered runs.
+            let needs_parent_shared = execution.has_cloneable_dependencies()
+                || execution.has_hosted_dependencies()
+                || execution.has_hosted_rpc_dependencies();
+            let parent_shared = if is_top_level_parent && has_selected_tests && needs_parent_shared
+            {
+                execution.collect_parent_shared_dependencies_async().await
+            } else {
+                crate::execution::ParentSharedDependencies {
+                    cloneable_wire_bytes: Vec::new(),
+                    hosted_descriptor_bytes: Vec::new(),
+                    hosted_owners: Vec::new(),
+                    hosted_rpc_owner_cells: Vec::new(),
+                }
+            };
+            let cloneable_wire_bytes = parent_shared.cloneable_wire_bytes;
+            let hosted_descriptor_bytes = parent_shared.hosted_descriptor_bytes;
+            let _hosted_owners = parent_shared.hosted_owners;
+            let hosted_rpc_owner_cells: HashMap<String, Arc<HostedRpcOwnerCell>> =
+                parent_shared.hosted_rpc_owner_cells.into_iter().collect();
+            // Pre-built RpcFactory lookup keyed by qualified id, so worker
+            // subprocesses can build stubs without re-locking the global
+            // REGISTERED_DEPENDENCY_CONSTRUCTORS.
+            let rpc_factories: HashMap<String, RpcFactory> = registered_dependency_constructors
+                .iter()
+                .filter_map(|d| {
+                    if d.scope == crate::internal::DepScope::HostedRpc {
+                        d.rpc_factory
+                            .as_ref()
+                            .map(|f| (d.qualified_id(), f.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            // Build a combined Cloneable + Hosted codec/worker lookup table
+            // now, before `test_thread` workers are spawned (see sync.rs
+            // for rationale). Keyed by the dep's fully-qualified id
+            // (`{crate}::{module}::{name}`) so workers can route an incoming
+            // `ProvideCloneable` / `ProvideHostedDescriptor` to the correct
+            // dep even when two deps share a local `name` in different
+            // modules.
+            let cloneable_codecs: HashMap<String, (CloneableCodec, WorkerReconstructor)> =
+                registered_dependency_constructors
+                    .iter()
+                    .filter_map(|d| {
+                        let codec_opt = match d.scope {
+                            crate::internal::DepScope::Cloneable => d.cloneable_codec.as_ref(),
+                            crate::internal::DepScope::Hosted => d.hosted_codec.as_ref(),
+                            _ => None,
+                        };
+                        match (codec_opt, &d.worker_fn) {
+                            (Some(codec), Some(worker_fn)) => {
+                                Some((d.qualified_id(), (codec.clone(), worker_fn.clone())))
+                            }
+                            _ => None,
+                        }
+                    })
+                    .collect();
+            // Mode-consistent Hosted semantics: when this is the top-level
+            // parent AND we do NOT spawn workers (e.g. --nocapture), the
+            // test functions run in this same process, but they must still
+            // see the *worker-side handle* produced by
+            // `HostedDep::from_descriptor`. Reconstruct each handle locally
+            // via the descriptor round-trip and pre-populate the execution
+            // tree.
+            if is_top_level_parent && !args.spawn_workers && !hosted_descriptor_bytes.is_empty() {
+                apply_hosted_descriptors_locally(
+                    &mut execution,
+                    &cloneable_codecs,
+                    &hosted_descriptor_bytes,
+                )
+                .await;
+            }
+            // Mode-consistent HostedRpc semantics for the no-spawn-workers
+            // path: install in-process stubs that route straight to the
+            // parent-held owner cells, so tests see the same `Stub` value
+            // whether or not the runner spawns workers.
+            if is_top_level_parent && !args.spawn_workers && !hosted_rpc_owner_cells.is_empty() {
+                install_local_hosted_rpc_stubs(
+                    &mut execution,
+                    &rpc_factories,
+                    &hosted_rpc_owner_cells,
+                );
+            }
             if args.spawn_workers {
                 execution.skip_creating_dependencies();
             }
@@ -86,14 +188,29 @@ async fn async_test_runner() -> ExitCode {
             output.start_suite(&filtered_tests);
 
             let execution = Arc::new(Mutex::new(execution));
+            let cloneable_wire_bytes = Arc::new(cloneable_wire_bytes);
+            let hosted_descriptor_bytes = Arc::new(hosted_descriptor_bytes);
+            let cloneable_codecs = Arc::new(cloneable_codecs);
+            let rpc_factories = Arc::new(rpc_factories);
+            let hosted_rpc_owner_cells = Arc::new(hosted_rpc_owner_cells);
             let mut join_set = JoinSet::new();
             let threads = args.test_threads().get();
 
-            for _ in 0..threads {
+            for worker_idx in 0..threads {
                 let execution_clone = execution.clone();
                 let output_clone = output.clone();
-                let args_clone = args.clone();
+                // Stamp each test-thread's args with the worker index it will
+                // hand to its spawned child via `--worker-index <N>`.
+                let mut args_clone = args.clone();
+                if args_clone.spawn_workers {
+                    args_clone.worker_index = Some(worker_idx);
+                }
                 let results_clone = results.clone();
+                let wire_bytes_clone = cloneable_wire_bytes.clone();
+                let hosted_bytes_clone = hosted_descriptor_bytes.clone();
+                let codecs_clone = cloneable_codecs.clone();
+                let rpc_factories_clone = rpc_factories.clone();
+                let hosted_rpc_owner_cells_clone = hosted_rpc_owner_cells.clone();
                 let handle = tokio::runtime::Handle::current();
                 join_set.spawn_blocking(move || {
                     handle.block_on(test_thread(
@@ -102,6 +219,11 @@ async fn async_test_runner() -> ExitCode {
                         output_clone,
                         count,
                         results_clone,
+                        wire_bytes_clone,
+                        hosted_bytes_clone,
+                        codecs_clone,
+                        rpc_factories_clone,
+                        hosted_rpc_owner_cells_clone,
                     ))
                 });
             }
@@ -126,48 +248,140 @@ async fn async_test_runner() -> ExitCode {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn test_thread(
     args: Arguments,
     execution: Arc<Mutex<TestSuiteExecution>>,
     output: Arc<dyn TestRunnerOutput>,
     count: usize,
     results: Arc<Mutex<Vec<(RegisteredTest, TestResult)>>>,
+    cloneable_wire_bytes: Arc<Vec<DepWireBytes>>,
+    hosted_descriptor_bytes: Arc<Vec<DepWireBytes>>,
+    cloneable_codecs: Arc<HashMap<String, (CloneableCodec, WorkerReconstructor)>>,
+    rpc_factories: Arc<HashMap<String, RpcFactory>>,
+    hosted_rpc_owner_cells: Arc<HashMap<String, Arc<HostedRpcOwnerCell>>>,
 ) {
     let mut worker = spawn_worker_if_needed(&args).await;
-    let mut connection = if let Some(ref name) = args.ipc {
+    // Parent dispatches incoming `HostedRpcCall` frames against the owner
+    // cells materialised in the top-level parent. Workers don't need the owner
+    // cells (they own stubs instead), so they receive an empty map and the
+    // dispatch code path is never reached in subprocesses.
+    if let Some(worker) = worker.as_mut() {
+        worker.set_hosted_rpc_owner_cells(hosted_rpc_owner_cells.clone());
+    }
+    let connection_arc = if let Some(ref name) = args.ipc {
         let name = ipc_name(name.clone());
         let stream = Stream::connect(name)
             .await
             .expect("Failed to connect to IPC socket");
-        Some(stream)
+        Some(Arc::new(Mutex::new(stream)))
     } else {
         None
     };
 
+    if let Some(worker) = worker.as_mut() {
+        for (dep_id, wire_bytes) in cloneable_wire_bytes.iter() {
+            worker
+                .provide_cloneable(dep_id.clone(), wire_bytes.clone())
+                .await;
+        }
+        // Ship every Hosted dep's descriptor bytes too.
+        for (dep_id, descriptor_bytes) in hosted_descriptor_bytes.iter() {
+            worker
+                .provide_hosted_descriptor(dep_id.clone(), descriptor_bytes.clone())
+                .await;
+        }
+    }
+
+    // Worker subprocess side: build a stub for every HostedRpc dep registered
+    // in this binary using the IPC-backed transport sharing the same socket as
+    // the main IPC loop. Install the stubs in the execution tree so dependency
+    // materialisation skips the parent-only owner constructor.
+    if let Some(connection) = connection_arc.as_ref() {
+        if !rpc_factories.is_empty() {
+            install_worker_subprocess_hosted_rpc_stubs(
+                &execution,
+                &rpc_factories,
+                connection.clone(),
+            )
+            .await;
+        }
+    }
+
     let mut expected_test = None;
 
     while !is_done(&execution).await {
-        if let Some(connection) = &mut connection {
-            if expected_test.is_none() {
-                let mut command_size: [u8; 2] = [0, 0];
-                connection
-                    .read_exact(&mut command_size)
+        if let Some(connection) = connection_arc.as_ref() {
+            while expected_test.is_none() {
+                let mut conn = connection.lock().await;
+                let command_bytes = read_frame_async(&mut *conn)
                     .await
-                    .expect("Failed to read IPC command size");
-                let mut command = vec![0; u16::from_le_bytes(command_size) as usize];
-                connection
-                    .read_exact(&mut command)
-                    .await
-                    .expect("Failed to read IPC command");
+                    .expect("Failed to read IPC command frame");
+                drop(conn);
                 let command: IpcCommand =
-                    deserialize(&command).expect("Failed to decode IPC command");
+                    deserialize(&command_bytes).expect("Failed to decode IPC command");
 
-                let IpcCommand::RunTest {
-                    name,
-                    crate_name,
-                    module_path,
-                } = command;
-                expected_test = Some((name, crate_name, module_path));
+                match command {
+                    IpcCommand::RunTest {
+                        name,
+                        crate_name,
+                        module_path,
+                    } => {
+                        expected_test = Some((name, crate_name, module_path));
+                    }
+                    IpcCommand::ProvideCloneable { dep_id, wire_bytes } => {
+                        // Worker-side reconstruction (see sync.rs::apply_provided_wire_bytes).
+                        apply_provided_wire_bytes(
+                            &execution,
+                            &cloneable_codecs,
+                            &dep_id,
+                            &wire_bytes,
+                            "ProvideCloneable",
+                        )
+                        .await;
+                        let response = IpcResponse::CloneableAccepted { dep_id };
+                        let msg = serialize_to_byte_vec(&response)
+                            .expect("Failed to encode IPC response");
+                        let mut conn = connection.lock().await;
+                        write_frame_async(&mut *conn, &msg)
+                            .await
+                            .expect("Failed to write IPC response frame");
+                    }
+                    IpcCommand::ProvideHostedDescriptor { dep_id, wire_bytes } => {
+                        // Worker-side reconstruction: same shape as
+                        // ProvideCloneable but routed through the registered
+                        // HostedDep worker_fn.
+                        apply_provided_wire_bytes(
+                            &execution,
+                            &cloneable_codecs,
+                            &dep_id,
+                            &wire_bytes,
+                            "ProvideHostedDescriptor",
+                        )
+                        .await;
+                        let response = IpcResponse::HostedDescriptorAccepted { dep_id };
+                        let msg = serialize_to_byte_vec(&response)
+                            .expect("Failed to encode IPC response");
+                        let mut conn = connection.lock().await;
+                        write_frame_async(&mut *conn, &msg)
+                            .await
+                            .expect("Failed to write IPC response frame");
+                    }
+                    IpcCommand::HostedRpcReply { .. } => {
+                        // HR1.2: replies for worker-initiated HostedRpc calls
+                        // are consumed inline by the IPC transport during
+                        // test execution, never by this between-tests
+                        // command loop. Receiving one here means the
+                        // protocol got out of sync; surface that loudly
+                        // rather than dropping the frame.
+                        panic!(
+                            "unexpected `HostedRpcReply` while waiting for the next \
+                             between-tests command in the tokio worker subprocess: a \
+                             stub call must have left a reply on the wire without \
+                             draining it inline"
+                        );
+                    }
+                }
             }
         }
 
@@ -200,7 +414,7 @@ async fn test_thread(
                 .await;
                 output.finished_running_test(&next.test, next.index, count, &result);
 
-                if let Some(connection) = &mut connection {
+                if let Some(connection) = connection_arc.as_ref() {
                     let finish_marker = Uuid::new_v4().to_string();
                     let finish_marker_line = format!("{finish_marker}\n");
                     tokio::io::stdout()
@@ -220,15 +434,10 @@ async fn test_thread(
                     };
                     let msg =
                         serialize_to_byte_vec(&response).expect("Failed to encode IPC response");
-                    let message_size = (msg.len() as u16).to_le_bytes();
-                    connection
-                        .write_all(&message_size)
+                    let mut conn = connection.lock().await;
+                    write_frame_async(&mut *conn, &msg)
                         .await
-                        .expect("Failed to write IPC response message size");
-                    connection
-                        .write_all(&msg)
-                        .await
-                        .expect("Failed to write response to IPC connection");
+                        .expect("Failed to write IPC response frame");
                 }
 
                 results.lock().await.push((next.test.clone(), result));
@@ -240,6 +449,78 @@ async fn test_thread(
 async fn is_done(execution: &Arc<Mutex<TestSuiteExecution>>) -> bool {
     let execution = execution.lock().await;
     execution.is_done()
+}
+
+/// Async counterpart to `sync::apply_provided_wire_bytes`. Decodes the wire
+/// bytes into a worker-side dependency value (looked up by the dep's
+/// fully-qualified id `{crate}::{module}::{name}`) and stores it in the
+/// execution tree so the next `materialize_deps` call uses the pre-resolved
+/// value.
+///
+/// `source_command` is the textual name of the IPC command that delivered
+/// the bytes (`"ProvideCloneable"` or `"ProvideHostedDescriptor"`); used
+/// only in panic messages.
+async fn apply_provided_wire_bytes(
+    execution: &Arc<Mutex<TestSuiteExecution>>,
+    wire_codecs: &HashMap<String, (CloneableCodec, WorkerReconstructor)>,
+    dep_id: &str,
+    wire_bytes: &[u8],
+    source_command: &str,
+) {
+    let (codec, worker_fn) = wire_codecs.get(dep_id).unwrap_or_else(|| {
+        panic!("{source_command} referenced unknown wire-shipped dep '{dep_id}'")
+    });
+
+    let wire_payload = (codec.from_wire_bytes)(wire_bytes);
+    let empty_deps: Arc<dyn internal::DependencyView + Send + Sync> =
+        Arc::new(HashMap::<String, Arc<dyn Any + Send + Sync>>::new());
+    let reconstructed = match worker_fn {
+        WorkerReconstructor::Sync(f) => f(wire_payload, empty_deps),
+        WorkerReconstructor::Async(f) => f(wire_payload, empty_deps).await,
+    };
+
+    let mut execution = execution.lock().await;
+    let applied = execution.provide_cloneable_value(dep_id, reconstructed);
+    assert!(
+        applied,
+        "{source_command} for dep '{dep_id}' did not match any registered dep in this worker"
+    );
+}
+
+/// Mode-consistent Hosted semantics for the no-spawn-workers path on the
+/// tokio runner. Mirrors `sync::apply_hosted_descriptors_locally`: takes
+/// the parent-collected descriptor bytes and reconstructs each Hosted
+/// dep's worker-side handle (via the registered codec + worker_fn)
+/// directly in the parent's `TestSuiteExecution`.
+///
+/// Both `WorkerReconstructor::Sync` (`HostedDep::from_descriptor`) and
+/// `WorkerReconstructor::Async` (`AsyncHostedDep::from_descriptor`) are
+/// supported here so that `async_worker` Hosted deps see the same
+/// worker-side handle whether the runner ended up in spawned-worker mode
+/// or in the no-spawn fallback, matching the documented mode-consistent
+/// Hosted contract in `book/src/advanced_features/dependency_sharing.md`.
+async fn apply_hosted_descriptors_locally(
+    execution: &mut TestSuiteExecution,
+    wire_codecs: &HashMap<String, (CloneableCodec, WorkerReconstructor)>,
+    descriptor_bytes: &[DepWireBytes],
+) {
+    for (dep_id, wire_bytes) in descriptor_bytes {
+        let (codec, worker_fn) = wire_codecs.get(dep_id).unwrap_or_else(|| {
+            panic!("Hosted dep '{dep_id}' missing codec/worker_fn for local handle reconstruction")
+        });
+        let wire_payload = (codec.from_wire_bytes)(wire_bytes);
+        let empty_deps: Arc<dyn internal::DependencyView + Send + Sync> =
+            Arc::new(HashMap::<String, Arc<dyn Any + Send + Sync>>::new());
+        let reconstructed = match worker_fn {
+            WorkerReconstructor::Sync(f) => f(wire_payload, empty_deps),
+            WorkerReconstructor::Async(f) => f(wire_payload, empty_deps).await,
+        };
+        let applied = execution.provide_cloneable_value(dep_id, reconstructed);
+        assert!(
+            applied,
+            "Hosted dep '{dep_id}' could not be pre-populated locally"
+        );
+    }
 }
 
 async fn pick_next(execution: &Arc<Mutex<TestSuiteExecution>>) -> Option<TestExecution> {
@@ -487,9 +768,51 @@ struct Worker {
     err_lines: Arc<Mutex<VecDeque<CapturedOutput>>>,
     capture_enabled: Arc<Mutex<bool>>,
     connection: Stream,
+    /// Parent-held HostedRpc owner cells keyed by fully-qualified dep id. Used
+    /// to dispatch incoming `IpcResponse::HostedRpcCall` frames from the worker
+    /// subprocess back to the right owner.
+    hosted_rpc_owner_cells: Arc<HashMap<String, Arc<HostedRpcOwnerCell>>>,
 }
 
 impl Worker {
+    /// Installs the parent-side map of HostedRpc owner cells so this worker can
+    /// route incoming `IpcResponse::HostedRpcCall` frames to the right
+    /// `HostedRpcOwnerCell` while waiting for a worker subprocess response.
+    fn set_hosted_rpc_owner_cells(&mut self, cells: Arc<HashMap<String, Arc<HostedRpcOwnerCell>>>) {
+        self.hosted_rpc_owner_cells = cells;
+    }
+
+    /// Parent-side dispatcher for a single `IpcResponse::HostedRpcCall`. Looks
+    /// up the owner cell by fully-qualified dep id, runs the dispatch on the
+    /// parent's stored owner, and writes the matching
+    /// `IpcCommand::HostedRpcReply` back to the worker subprocess. Mirrors
+    /// `sync::Worker::handle_hosted_rpc_call`.
+    async fn handle_hosted_rpc_call(
+        &mut self,
+        dump_on_ipc_failure: &DumpOnFailure,
+        request_id: u64,
+        dep_id: String,
+        method_idx: u32,
+        args_bytes: Vec<u8>,
+    ) {
+        let body = match self.hosted_rpc_owner_cells.get(&dep_id) {
+            Some(cell) => match cell.dispatch(method_idx, &args_bytes) {
+                Ok(result_bytes) => HostedRpcReplyBody::Ok { result_bytes },
+                Err(message) => HostedRpcReplyBody::Err { message },
+            },
+            None => HostedRpcReplyBody::Err {
+                message: format!(
+                    "HostedRpc dispatch: unknown dep id '{dep_id}' in parent owner-cell map"
+                ),
+            },
+        };
+        let reply = IpcCommand::HostedRpcReply { request_id, body };
+        let msg = serialize_to_byte_vec(&reply).expect("Failed to encode HostedRpcReply");
+        dump_on_ipc_failure
+            .run(write_frame_async(&mut self.connection, &msg).await)
+            .await;
+    }
+
     pub async fn run_test(&mut self, nocapture: bool, test: &RegisteredTest) -> TestResult {
         let mut capture_enabled = self.capture_enabled.lock().await;
         *capture_enabled = test.props.capture_control.requires_capturing(!nocapture);
@@ -505,28 +828,45 @@ impl Worker {
         let dump_on_ipc_failure = self.dump_on_failure();
 
         let msg = serialize_to_byte_vec(&cmd).expect("Failed to encode IPC command");
-        let message_size = (msg.len() as u16).to_le_bytes();
         dump_on_ipc_failure
-            .run(self.connection.write_all(&message_size).await)
-            .await;
-        dump_on_ipc_failure
-            .run(self.connection.write_all(&msg).await)
+            .run(write_frame_async(&mut self.connection, &msg).await)
             .await;
 
-        let mut response_size: [u8; 2] = [0, 0];
-        dump_on_ipc_failure
-            .run(self.connection.read_exact(&mut response_size).await)
-            .await;
-        let mut response = vec![0; u16::from_le_bytes(response_size) as usize];
-        dump_on_ipc_failure
-            .run(self.connection.read_exact(&mut response).await)
-            .await;
-        let response: IpcResponse = dump_on_ipc_failure.run(deserialize(&response)).await;
+        let response = loop {
+            let response_bytes = dump_on_ipc_failure
+                .run(read_frame_async(&mut self.connection).await)
+                .await;
+            let response: IpcResponse = dump_on_ipc_failure.run(deserialize(&response_bytes)).await;
+            match response {
+                IpcResponse::TestFinished { .. } => break response,
+                IpcResponse::CloneableAccepted { .. }
+                | IpcResponse::HostedDescriptorAccepted { .. } => continue,
+                IpcResponse::HostedRpcCall {
+                    request_id,
+                    dep_id,
+                    method_idx,
+                    args_bytes,
+                } => {
+                    self.handle_hosted_rpc_call(
+                        &dump_on_ipc_failure,
+                        request_id,
+                        dep_id,
+                        method_idx,
+                        args_bytes,
+                    )
+                    .await;
+                    continue;
+                }
+            }
+        };
 
         let IpcResponse::TestFinished {
             result,
             finish_marker,
-        } = response;
+        } = response
+        else {
+            unreachable!("loop only breaks on TestFinished")
+        };
 
         if test.props.capture_control.requires_capturing(!nocapture) {
             let out_lines: Vec<_> =
@@ -536,6 +876,109 @@ impl Worker {
             result.into_test_result(out_lines, err_lines)
         } else {
             result.into_test_result(Vec::new(), Vec::new())
+        }
+    }
+
+    /// Async counterpart to `sync::Worker::provide_cloneable`. `dep_id` is the
+    /// dep's fully-qualified id (`{crate}::{module}::{name}`).
+    async fn provide_cloneable(&mut self, dep_id: String, wire_bytes: Vec<u8>) {
+        let dump_on_ipc_failure = self.dump_on_failure();
+        let cmd = IpcCommand::ProvideCloneable {
+            dep_id: dep_id.clone(),
+            wire_bytes,
+        };
+        let msg = serialize_to_byte_vec(&cmd).expect("Failed to encode IPC command");
+        dump_on_ipc_failure
+            .run(write_frame_async(&mut self.connection, &msg).await)
+            .await;
+
+        loop {
+            let response_bytes = dump_on_ipc_failure
+                .run(read_frame_async(&mut self.connection).await)
+                .await;
+            let response: IpcResponse = dump_on_ipc_failure.run(deserialize(&response_bytes)).await;
+            match response {
+                IpcResponse::CloneableAccepted { dep_id: ack_id } => {
+                    if ack_id == dep_id {
+                        return;
+                    }
+                }
+                IpcResponse::HostedDescriptorAccepted { .. } => {
+                    // Out-of-band ack from a previous ProvideHostedDescriptor; ignore.
+                }
+                IpcResponse::TestFinished { .. } => {
+                    // Should not happen before any RunTest.
+                }
+                IpcResponse::HostedRpcCall {
+                    request_id,
+                    dep_id: rpc_dep_id,
+                    method_idx,
+                    args_bytes,
+                } => {
+                    // A worker subprocess can issue a HostedRpc call from
+                    // inside an in-progress test, even while the parent is
+                    // mid-`ProvideCloneable` for a different dep. Dispatch it
+                    // so the protocol doesn't desync.
+                    self.handle_hosted_rpc_call(
+                        &dump_on_ipc_failure,
+                        request_id,
+                        rpc_dep_id,
+                        method_idx,
+                        args_bytes,
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
+    /// Async counterpart to `sync::Worker::provide_hosted_descriptor`.
+    async fn provide_hosted_descriptor(&mut self, dep_id: String, wire_bytes: Vec<u8>) {
+        let dump_on_ipc_failure = self.dump_on_failure();
+        let cmd = IpcCommand::ProvideHostedDescriptor {
+            dep_id: dep_id.clone(),
+            wire_bytes,
+        };
+        let msg = serialize_to_byte_vec(&cmd).expect("Failed to encode IPC command");
+        dump_on_ipc_failure
+            .run(write_frame_async(&mut self.connection, &msg).await)
+            .await;
+
+        loop {
+            let response_bytes = dump_on_ipc_failure
+                .run(read_frame_async(&mut self.connection).await)
+                .await;
+            let response: IpcResponse = dump_on_ipc_failure.run(deserialize(&response_bytes)).await;
+            match response {
+                IpcResponse::HostedDescriptorAccepted { dep_id: ack_id } => {
+                    if ack_id == dep_id {
+                        return;
+                    }
+                }
+                IpcResponse::CloneableAccepted { .. } => {
+                    // Out-of-band ack from a previous ProvideCloneable; ignore.
+                }
+                IpcResponse::TestFinished { .. } => {
+                    // Should not happen before any RunTest.
+                }
+                IpcResponse::HostedRpcCall {
+                    request_id,
+                    dep_id: rpc_dep_id,
+                    method_idx,
+                    args_bytes,
+                } => {
+                    // See provide_cloneable arm. Dispatch the call inline so
+                    // the IPC stream stays in sync.
+                    self.handle_hosted_rpc_call(
+                        &dump_on_ipc_failure,
+                        request_id,
+                        rpc_dep_id,
+                        method_idx,
+                        args_bytes,
+                    )
+                    .await;
+                }
+            }
         }
     }
 
@@ -684,8 +1127,154 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
             err_lines,
             connection,
             capture_enabled,
+            hosted_rpc_owner_cells: Arc::new(HashMap::new()),
         })
     } else {
         None
+    }
+}
+
+/// Parent-side `--nocapture` / no-spawn-workers helper. Builds one stub per
+/// HostedRpc dep using an [`InProcessHostedRpcTransport`] that points at the
+/// parent-held owner cells, and stashes it in the execution tree so dependency
+/// materialisation skips the owner-only constructor. Mirrors
+/// `sync::install_local_hosted_rpc_stubs`.
+fn install_local_hosted_rpc_stubs(
+    execution: &mut TestSuiteExecution,
+    rpc_factories: &HashMap<String, RpcFactory>,
+    owner_cells: &HashMap<String, Arc<HostedRpcOwnerCell>>,
+) {
+    let transport: Arc<dyn HostedRpcTransport> =
+        Arc::new(InProcessHostedRpcTransport::new(owner_cells.clone()));
+    for (dep_id, factory) in rpc_factories.iter() {
+        if !owner_cells.contains_key(dep_id) {
+            // No owner cell materialised for this dep (e.g. registered
+            // globally but not pulled into the current filter). Skip so
+            // we don't install a stub nothing routes.
+            continue;
+        }
+        let channel = HostedRpcChannel::new(dep_id.clone(), transport.clone());
+        let stub = (factory.build_stub)(channel);
+        let applied = execution.provide_cloneable_value(dep_id, stub);
+        assert!(
+            applied,
+            "Local HostedRpc stub for '{dep_id}' did not match any registered dep"
+        );
+    }
+}
+
+/// Worker subprocess helper. Builds one stub per registered HostedRpc dep backed
+/// by [`IpcHostedRpcTransport`], and installs it in the execution tree. Mirrors
+/// `sync::install_worker_subprocess_hosted_rpc_stubs` but runs on the tokio
+/// `Arc<Mutex<Stream>>` connection.
+async fn install_worker_subprocess_hosted_rpc_stubs(
+    execution: &Arc<Mutex<TestSuiteExecution>>,
+    rpc_factories: &HashMap<String, RpcFactory>,
+    connection_arc: Arc<Mutex<Stream>>,
+) {
+    let transport: Arc<dyn HostedRpcTransport> =
+        Arc::new(IpcHostedRpcTransport::new(connection_arc));
+    for (dep_id, factory) in rpc_factories.iter() {
+        let channel = HostedRpcChannel::new(dep_id.clone(), transport.clone());
+        let stub = (factory.build_stub)(channel);
+        let mut execution = execution.lock().await;
+        let applied = execution.provide_cloneable_value(dep_id, stub);
+        // Not every binary registers a HostedRpc dep that the current
+        // execution actually uses; if so, just move on.
+        let _ = applied;
+    }
+}
+
+/// Worker subprocess `HostedRpcTransport` for the tokio runner.
+/// Mirrors `sync::IpcHostedRpcTransport` but bridges a sync trait method
+/// to the async tokio IPC primitives via
+/// `tokio::task::block_in_place` + `Handle::current().block_on(...)`.
+///
+/// The shared `Arc<Mutex<Stream>>` is the same one used by the
+/// worker subprocess's main IPC loop; the lock guarantees that a stub
+/// call and the main loop never interleave a half-written frame. Calls
+/// serialise across all in-flight stubs by acquiring the mutex for the
+/// full request-then-reply round trip.
+///
+/// This relies on the temporal invariant documented on
+/// [`crate::internal::HostedRpcChannel::call`]: stubs are only invoked
+/// from inside a running test body, never from `build_stub`, and never
+/// from detached background work that outlives the test. Under those
+/// rules the main IPC loop is only reading between tests, so it cannot
+/// race with a stub call.
+struct IpcHostedRpcTransport {
+    connection: Arc<Mutex<Stream>>,
+    next_request_id: AtomicU64,
+}
+
+impl IpcHostedRpcTransport {
+    fn new(connection: Arc<Mutex<Stream>>) -> Self {
+        Self {
+            connection,
+            next_request_id: AtomicU64::new(0),
+        }
+    }
+}
+
+impl HostedRpcTransport for IpcHostedRpcTransport {
+    fn call(
+        &self,
+        dep_id: &str,
+        method_idx: u32,
+        args: Vec<u8>,
+    ) -> Result<Vec<u8>, HostedRpcError> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let call = IpcResponse::HostedRpcCall {
+            request_id,
+            dep_id: dep_id.to_string(),
+            method_idx,
+            args_bytes: args,
+        };
+        let msg = serialize_to_byte_vec(&call).map_err(|e| {
+            HostedRpcError::Transport(format!("encode HostedRpcCall failed: {e:?}"))
+        })?;
+
+        let connection = self.connection.clone();
+        let handle = tokio::runtime::Handle::current();
+
+        // Run the async I/O round-trip from inside this sync trait
+        // method. `block_in_place` releases this worker thread back to
+        // the scheduler so the parent's read loop can continue making
+        // progress on other tasks while we wait for the reply.
+        tokio::task::block_in_place(move || {
+            handle.block_on(async move {
+                let mut conn = connection.lock().await;
+                write_frame_async(&mut *conn, &msg).await.map_err(|e| {
+                    HostedRpcError::Transport(format!("write HostedRpcCall failed: {e:?}"))
+                })?;
+                let reply_bytes = read_frame_async(&mut *conn).await.map_err(|e| {
+                    HostedRpcError::Transport(format!("read HostedRpcReply failed: {e:?}"))
+                })?;
+                let command: IpcCommand = deserialize(&reply_bytes).map_err(|e| {
+                    HostedRpcError::Transport(format!("decode HostedRpcReply failed: {e:?}"))
+                })?;
+                match command {
+                    IpcCommand::HostedRpcReply {
+                        request_id: reply_id,
+                        body,
+                    } => {
+                        if reply_id != request_id {
+                            return Err(HostedRpcError::Transport(format!(
+                                "HostedRpcReply request_id mismatch: expected {request_id}, got {reply_id}"
+                            )));
+                        }
+                        match body {
+                            HostedRpcReplyBody::Ok { result_bytes } => Ok(result_bytes),
+                            HostedRpcReplyBody::Err { message } => {
+                                Err(HostedRpcError::Dispatch(message))
+                            }
+                        }
+                    }
+                    other => Err(HostedRpcError::Transport(format!(
+                        "unexpected IpcCommand while waiting for HostedRpcReply: {other:?}"
+                    ))),
+                }
+            })
+        })
     }
 }
