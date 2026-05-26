@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.6](https://github.com/vigoo/test-r/compare/test-r-v3.0.5...test-r-v3.0.6) - 2026-05-26
+
+### Other
+
+- Support for async methods in hosted-rpc deps ([#168](https://github.com/vigoo/test-r/pull/168))
+
 ## [3.0.5](https://github.com/vigoo/test-r/compare/test-r-v3.0.4...test-r-v3.0.5) - 2026-05-26
 
 ### Other
