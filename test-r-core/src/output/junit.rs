@@ -1,4 +1,5 @@
 use crate::internal::{CapturedOutput, RegisteredTest, SuiteResult, TestResult};
+use crate::output::progress::StderrProgress;
 use crate::output::{write_failure_summary_to_stderr, LogFile, StdoutOrLogFile, TestRunnerOutput};
 use quick_xml::events::Event::Decl;
 use quick_xml::events::{BytesCData, BytesDecl};
@@ -12,6 +13,7 @@ pub(crate) struct JUnit {
     writer: Mutex<Writer<StdoutOrLogFile>>,
     show_output: bool,
     intermediate_state: Mutex<IntermediateState>,
+    progress: StderrProgress,
 }
 
 impl JUnit {
@@ -30,6 +32,7 @@ impl JUnit {
                 tests: Vec::new(),
                 results: Vec::new(),
             }),
+            progress: StderrProgress::new(),
         }
     }
 
@@ -187,12 +190,15 @@ impl JUnit {
 }
 
 impl TestRunnerOutput for JUnit {
-    fn start_suite(&self, _tests: &[RegisteredTest]) {
+    fn start_suite(&self, tests: &[RegisteredTest]) {
         let decl = Decl(BytesDecl::new("1.0", Some("UTF-8"), None));
         self.writer.lock().unwrap().write_event(decl).unwrap();
+        self.progress.start_suite(tests.len());
     }
 
-    fn start_running_test(&self, _test: &RegisteredTest, _idx: usize, _count: usize) {}
+    fn start_running_test(&self, test: &RegisteredTest, idx: usize, count: usize) {
+        self.progress.start_running_test(test, idx, count);
+    }
 
     fn repeat_running_test(
         &self,
@@ -208,10 +214,12 @@ impl TestRunnerOutput for JUnit {
     fn finished_running_test(
         &self,
         test: &RegisteredTest,
-        _idx: usize,
-        _count: usize,
+        idx: usize,
+        count: usize,
         result: &TestResult,
     ) {
+        self.progress
+            .finished_running_test(test, idx, count, result);
         let mut intermediate_state = self.intermediate_state.lock().unwrap();
         intermediate_state.tests.push(test.clone());
         intermediate_state

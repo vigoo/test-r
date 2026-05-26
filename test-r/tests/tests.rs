@@ -483,3 +483,57 @@ mod lazy_dep_pruning_tests {
         );
     }
 }
+
+mod nocapture_no_spawn_workers_tests {
+    use super::*;
+
+    /// Regression: when the tokio runner runs in `--nocapture` mode (which
+    /// forces `spawn_workers = false`), every `Cloneable` dep constructor
+    /// must run exactly once end-to-end. Historically the runner would
+    /// compute the Cloneable wire bytes in
+    /// `collect_parent_shared_dependencies_async` (running the constructor
+    /// once), then discard those bytes — so `materialize_deps` re-ran the
+    /// constructor a second time inside the execution tree.
+    ///
+    /// The example-tokio fixture
+    /// `sharing::cloneable_no_double_init::tests::cloneable_no_double_init_test`
+    /// prints a unique marker every time its Cloneable constructor runs.
+    /// We invoke that fixture under `--nocapture` and grep-count the marker
+    /// on stdout: it must appear exactly once.
+    #[test]
+    #[serial]
+    fn cloneable_constructor_runs_once_under_nocapture() {
+        let cwd = std::env::current_dir().unwrap();
+        let root = cwd.parent().unwrap().join("example-tokio");
+
+        let process = std::process::Command::new("cargo")
+            .arg("test")
+            .arg("sharing::cloneable_no_double_init::tests::cloneable_no_double_init_test")
+            .arg("--")
+            .arg("--exact")
+            .arg("--nocapture")
+            .current_dir(&root)
+            .output()
+            .unwrap();
+
+        let stdout = String::from_utf8_lossy(&process.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&process.stderr).into_owned();
+
+        assert_eq!(
+            process.status.code(),
+            Some(0),
+            "fixture test must pass under --nocapture; stderr:\n{stderr}\nstdout:\n{stdout}"
+        );
+
+        let marker = "CLONEABLE_NO_DOUBLE_INIT_MARKER: build_probe()";
+        let combined = format!("{stdout}{stderr}");
+        let marker_count = combined.matches(marker).count();
+
+        assert_eq!(
+            marker_count, 1,
+            "Cloneable constructor must run exactly once in --nocapture mode, \
+             but the marker `{marker}` appeared {marker_count} time(s) on the \
+             test runner's output.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    }
+}

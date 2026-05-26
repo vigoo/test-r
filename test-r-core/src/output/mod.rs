@@ -3,6 +3,7 @@ mod ipc;
 mod json;
 mod junit;
 mod pretty;
+mod progress;
 mod term_progress;
 mod terse;
 
