@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-test-r"
-version = "2.2.5"
+version = "2.2.6"
 dependencies = [
  "anyhow",
  "camino",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "test-r"
-version = "3.0.5"
+version = "3.0.6"
 dependencies = [
  "ctor",
  "serde_json",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "test-r-core"
-version = "7.0.0"
+version = "8.0.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1536,7 +1536,7 @@ dependencies = [
 
 [[package]]
 name = "test-r-macro"
-version = "1.4.5"
+version = "1.4.6"
 dependencies = [
  "darling",
  "humantime",
