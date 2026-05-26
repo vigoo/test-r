@@ -9,6 +9,7 @@
 //! Hosted worker-view picker) under the tokio runner.
 
 pub mod cloneable_basic;
+pub mod cloneable_no_double_init;
 pub mod hosted_async_worker;
 pub mod hosted_async_worker_rpc_legacy;
 pub mod hosted_basic;

@@ -6,7 +6,6 @@ use ctrf_rs::test::{Status, Test};
 use ctrf_rs::tool::Tool;
 use std::collections::HashMap;
 use std::io::Write;
-use std::ops::Add;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -135,7 +134,13 @@ impl TestRunnerOutput for Ctrf {
                 .as_millis() as u64,
         );
 
-        state.builder.as_mut().unwrap().add_test(test);
+        let value = serde_json::to_value(&test).expect("Failed to serialize CTRF test");
+        state.tests.push(value);
+
+        // Write an intermediate snapshot to the log file (if any) so partial
+        // results survive even if the process is killed (e.g. due to a hanging
+        // test). For stdout we wait for the final report.
+        write_ctrf_snapshot(&mut state, false);
     }
 
     fn finished_suite(
@@ -145,25 +150,9 @@ impl TestRunnerOutput for Ctrf {
         exec_time: Duration,
     ) {
         let mut state = self.state.lock().unwrap();
-        let started = state
-            .start
-            .take()
-            .expect("finished_suite called without a start time");
-        let ctrf_results = state
-            .builder
-            .take()
-            .unwrap()
-            .build(started, started.add(exec_time));
-        let report = Report::new(
-            None,
-            Some(SystemTime::now()),
-            Some("test-r".to_string()),
-            ctrf_results,
-        );
-
-        let raw = serde_json::to_string(&report).expect("Failed to serialize CTRF document");
-        let out = &mut state.target;
-        writeln!(out, "{}", raw).expect("Failed to write to output");
+        write_ctrf_snapshot(&mut state, true);
+        // Clear the start marker now that the suite has truly finished.
+        state.start = None;
 
         write_failure_summary_to_stderr(results, exec_time);
     }
@@ -171,9 +160,53 @@ impl TestRunnerOutput for Ctrf {
     fn test_list(&self, _registered_tests: &[RegisteredTest]) {}
 }
 
+/// Serializes the currently accumulated CTRF tests and writes them to the
+/// configured output. When the target is a log file the file is truncated
+/// first so each snapshot is a complete, valid CTRF document. For stdout the
+/// snapshot is only written when `is_final` is true to avoid spamming stdout
+/// with partial reports.
+fn write_ctrf_snapshot(state: &mut CtrfState, is_final: bool) {
+    let started = match state.start {
+        Some(s) => s,
+        None => return,
+    };
+
+    let reset = state
+        .target
+        .reset_log_file()
+        .expect("Failed to reset CTRF log file");
+    if !reset && !is_final {
+        // Writing to stdout - only emit on the final call.
+        return;
+    }
+
+    let mut builder = ResultsBuilder::new(Tool::new(None));
+    for value in &state.tests {
+        let test: Test =
+            serde_json::from_value(value.clone()).expect("Failed to deserialize cached CTRF test");
+        builder.add_test(test);
+    }
+    let ctrf_results = builder.build(started, SystemTime::now());
+    let report = Report::new(
+        None,
+        Some(SystemTime::now()),
+        Some("test-r".to_string()),
+        ctrf_results,
+    );
+
+    let raw = serde_json::to_string(&report).expect("Failed to serialize CTRF document");
+    let out = &mut state.target;
+    writeln!(out, "{}", raw).expect("Failed to write to output");
+    out.flush().expect("Failed to flush CTRF output");
+}
+
 struct CtrfState {
     pub target: StdoutOrLogFile,
-    pub builder: Option<ResultsBuilder>,
+    /// Each completed test is cached here as a serialized `serde_json::Value`
+    /// because `ctrf_rs::test::Test` is not `Clone` and we need to be able to
+    /// rebuild a complete `Results` document each time we emit an intermediate
+    /// snapshot.
+    pub tests: Vec<serde_json::Value>,
     pub pending_tests: HashMap<String, Test>,
     pub start: Option<SystemTime>,
 }
@@ -182,7 +215,7 @@ impl CtrfState {
     pub fn new(target: StdoutOrLogFile) -> Self {
         Self {
             target,
-            builder: Some(ResultsBuilder::new(Tool::new(None))),
+            tests: Vec::new(),
             pending_tests: HashMap::new(),
             start: None,
         }

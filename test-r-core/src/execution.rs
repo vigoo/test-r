@@ -39,6 +39,20 @@ pub type HostedDescriptorCollection = (Vec<DepWireBytes>, Vec<HostedOwner>);
 /// constructor in each worker process.
 pub struct ParentSharedDependencies {
     pub cloneable_wire_bytes: Vec<DepWireBytes>,
+    /// Parent-constructed `Cloneable` values keyed by fully-qualified dep id.
+    /// In **no-spawn-workers** mode (e.g. `--nocapture`) the runner installs
+    /// these directly into the execution tree via
+    /// [`TestSuiteExecution::provide_cloneable_value`] so tests see the
+    /// parent's value without re-running the constructor in
+    /// `materialize_deps`. For Cloneable, the round-trip
+    /// `from_wire(to_wire(value))` is by contract semantics-preserving, so
+    /// reusing the parent value directly is equivalent to round-tripping
+    /// while avoiding the duplicate constructor run that historically
+    /// occurred on the no-spawn-workers code path.
+    ///
+    /// In spawn-workers mode this list is unused — workers receive
+    /// `cloneable_wire_bytes` over IPC instead.
+    pub cloneable_local_values: Vec<(String, Arc<dyn Any + Send + Sync>)>,
     pub hosted_descriptor_bytes: Vec<DepWireBytes>,
     pub hosted_owners: Vec<HostedOwner>,
     pub hosted_rpc_owner_cells: Vec<(String, Arc<HostedRpcOwnerCell>)>,
@@ -48,6 +62,7 @@ impl ParentSharedDependencies {
     fn new() -> Self {
         Self {
             cloneable_wire_bytes: Vec::new(),
+            cloneable_local_values: Vec::new(),
             hosted_descriptor_bytes: Vec::new(),
             hosted_owners: Vec::new(),
             hosted_rpc_owner_cells: Vec::new(),
@@ -262,6 +277,12 @@ impl TestSuiteExecution {
                     });
                     out.cloneable_wire_bytes
                         .push((dep.qualified_id(), (codec.to_wire)(value.clone())));
+                    // Keep the parent-constructed value too, for the
+                    // no-spawn-workers code path that installs Cloneable
+                    // values directly into the execution tree (instead of
+                    // re-running the constructor inside `materialize_deps`).
+                    out.cloneable_local_values
+                        .push((dep.qualified_id(), value.clone()));
                 }
                 DepScope::Hosted => {
                     let codec = dep.hosted_codec.as_ref().unwrap_or_else(|| {
@@ -376,6 +397,13 @@ impl TestSuiteExecution {
                         });
                         out.cloneable_wire_bytes
                             .push((dep.qualified_id(), (codec.to_wire)(value.clone())));
+                        // Keep the parent-constructed value too, for the
+                        // no-spawn-workers code path that installs Cloneable
+                        // values directly into the execution tree (instead
+                        // of re-running the constructor inside
+                        // `materialize_deps`).
+                        out.cloneable_local_values
+                            .push((dep.qualified_id(), value.clone()));
                     }
                     DepScope::Hosted => {
                         let codec = dep.hosted_codec.as_ref().unwrap_or_else(|| {

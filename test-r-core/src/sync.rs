@@ -80,12 +80,14 @@ pub fn test_runner() -> ExitCode {
             } else {
                 crate::execution::ParentSharedDependencies {
                     cloneable_wire_bytes: Vec::new(),
+                    cloneable_local_values: Vec::new(),
                     hosted_descriptor_bytes: Vec::new(),
                     hosted_owners: Vec::new(),
                     hosted_rpc_owner_cells: Vec::new(),
                 }
             };
             let cloneable_wire_bytes = parent_shared.cloneable_wire_bytes;
+            let cloneable_local_values = parent_shared.cloneable_local_values;
             let hosted_descriptor_bytes = parent_shared.hosted_descriptor_bytes;
             let _hosted_owners = parent_shared.hosted_owners;
             let hosted_rpc_owner_cells: HashMap<String, Arc<HostedRpcOwnerCell>> =
@@ -105,6 +107,17 @@ pub fn test_runner() -> ExitCode {
             // REGISTERED_DEPENDENCY_CONSTRUCTORS.
             let rpc_factories: HashMap<String, RpcFactory> =
                 build_rpc_factories(&registered_dependency_constructors);
+            // Mode-consistent Cloneable semantics for the no-spawn-workers
+            // path: reuse the parent-constructed value directly instead of
+            // re-running the user constructor in `materialize_deps_sync`.
+            // Without this, a Cloneable dep's constructor would run twice
+            // (once for parent-side `collect_parent_shared_dependencies_sync`
+            // and once for the in-process test execution), which both
+            // violates the "constructor runs once" expectation and can
+            // deadlock when the constructor takes a runtime-wide lock.
+            if is_top_level_parent && !args.spawn_workers && !cloneable_local_values.is_empty() {
+                apply_cloneable_values_locally(&mut execution, &cloneable_local_values);
+            }
             // Mode-consistent Hosted semantics: when this is the top-level
             // parent AND we do NOT spawn workers (e.g. --nocapture, single
             // process), the test functions run in this same process, but
@@ -447,6 +460,33 @@ fn apply_provided_wire_bytes(
         applied,
         "{command_name} for dep '{dep_id}' did not match any registered dep in this worker"
     );
+}
+
+/// Mode-consistent Cloneable semantics for the no-spawn-workers path: takes
+/// the parent-constructed Cloneable values (collected once by
+/// `collect_parent_shared_dependencies_sync`) and installs them directly
+/// into the parent's `TestSuiteExecution`, so `materialize_deps_sync`
+/// reuses them instead of re-running the user constructor.
+///
+/// For `Cloneable`, the documented round-trip
+/// `from_wire(to_wire(value))` is semantics-preserving, so reusing the
+/// parent value directly is equivalent to round-tripping it through the
+/// wire codec while avoiding the duplicate constructor run that would
+/// otherwise occur on the no-spawn-workers code path. The duplicate run
+/// historically caused user-visible problems (extra observable side
+/// effects under `--nocapture`, and deadlocks when the constructor takes
+/// a runtime-wide lock).
+fn apply_cloneable_values_locally(
+    execution: &mut TestSuiteExecution,
+    cloneable_local_values: &[(String, Arc<dyn Any + Send + Sync>)],
+) {
+    for (dep_id, value) in cloneable_local_values {
+        let applied = execution.provide_cloneable_value(dep_id, value.clone());
+        assert!(
+            applied,
+            "Cloneable dep '{dep_id}' could not be pre-populated locally"
+        );
+    }
 }
 
 /// Mode-consistent Hosted semantics for the no-spawn-workers path: takes
