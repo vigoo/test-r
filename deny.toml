@@ -34,10 +34,12 @@ deny = []
 skip = [
     "getrandom",
     "r-efi",
-    "redox_syscall",
+    "wit-bindgen",
 ]
 skip-tree = [
     "wasi",
+    "wasip2",
+    "wasip3",
     "windows-sys"
 ]
 
