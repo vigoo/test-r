@@ -689,59 +689,414 @@ impl<T: HostedRpcDep> HostedRpcDispatcher for T {
     }
 }
 
+/// Async counterpart of [`HostedRpcDep`]. Implement this when the owner-side
+/// method dispatcher needs to `.await` (e.g. controlling subprocesses, holding
+/// `tokio::sync` locks, calling other async APIs).
+///
+/// No opt-in flag is required: under the `tokio` test runtime the runtime
+/// always routes HostedRpc dispatch through `AsyncHostedRpcDep`, regardless
+/// of whether the user wrote `impl HostedRpcDep` (covered by the blanket
+/// bridge below) or `impl AsyncHostedRpcDep` directly. The `#[hosted_rpc]`
+/// macro mirrors this transparency: if any trait method is `async fn`, the
+/// generated dispatcher is async, otherwise it stays sync.
+///
+/// `build_stub` stays synchronous and the worker-side stub still calls a
+/// synchronous [`HostedRpcChannel::call`] in its method bodies, exactly as
+/// in [`HostedRpcDep`]; the only difference is that owner-side `dispatch`
+/// returns a `Future` so it can await.
+pub trait AsyncHostedRpcDep: Send + Sync + 'static {
+    /// The worker-side handle type that tests parameterise on. Same shape
+    /// as [`HostedRpcDep::Stub`].
+    type Stub: Send + Sync + 'static;
+
+    /// Owner-side: handle one method call asynchronously. `method_idx` is the
+    /// per-method index assigned by the implementor / `#[hosted_rpc]` macro;
+    /// `args` is the worker-supplied serialized payload.
+    fn dispatch<'a>(
+        &'a mut self,
+        method_idx: u32,
+        args: &'a [u8],
+    ) -> impl Future<Output = Result<Vec<u8>, String>> + Send + 'a;
+
+    /// Worker-side: build a `Self::Stub` over the channel that connects
+    /// back to the parent's owner. Identical contract to
+    /// [`HostedRpcDep::build_stub`].
+    fn build_stub(channel: HostedRpcChannel) -> Self::Stub;
+}
+
+/// Blanket bridge: every [`HostedRpcDep`] is automatically also an
+/// [`AsyncHostedRpcDep`]. The bridged `dispatch` returns
+/// [`std::future::ready`] so the bridge itself adds only an
+/// immediately-ready future and the tokio runtime can await all HostedRpc
+/// dispatch uniformly.
+///
+/// This lets the test-r runtime drive **every** HostedRpc dispatch through
+/// one async path under the `tokio` runtime, regardless of whether the
+/// owner's own implementation is sync (`impl HostedRpcDep for ...`) or
+/// async (`impl AsyncHostedRpcDep for ...`). No annotation flag is needed
+/// on `#[hosted_rpc]` or `#[test_dep]`; the implementor picks sync vs
+/// async purely at the trait-impl call site.
+///
+/// **Coherence note:** on stable Rust, with this blanket impl in place
+/// a concrete owner type cannot manually implement both `HostedRpcDep` and
+/// `AsyncHostedRpcDep` — rustc rejects that as conflicting implementations.
+/// That compile-time error is the intended signal that one of the two manual
+/// impls is redundant and should be removed.
+///
+/// **Source-compat note:** if downstream code imports both
+/// `HostedRpcDep` and `AsyncHostedRpcDep` into the same scope and calls
+/// trait methods by method syntax (e.g. `MyOwner::build_stub(channel)`
+/// or `owner.dispatch(idx, args)`), the call can become ambiguous now
+/// that one type satisfies both traits. Resolve with UFCS —
+/// `<MyOwner as HostedRpcDep>::build_stub(channel)`.
+impl<T: HostedRpcDep> AsyncHostedRpcDep for T {
+    type Stub = <T as HostedRpcDep>::Stub;
+
+    fn dispatch<'a>(
+        &'a mut self,
+        method_idx: u32,
+        args: &'a [u8],
+    ) -> impl Future<Output = Result<Vec<u8>, String>> + Send + 'a {
+        std::future::ready(<T as HostedRpcDep>::dispatch(self, method_idx, args))
+    }
+
+    fn build_stub(channel: HostedRpcChannel) -> Self::Stub {
+        <T as HostedRpcDep>::build_stub(channel)
+    }
+}
+
+/// Object-safe sibling of [`AsyncHostedRpcDep`] used by the parent's
+/// async owner cell. Auto-implemented for every [`AsyncHostedRpcDep`].
+pub trait AsyncHostedRpcDispatcher: Send + Sync {
+    fn dispatch<'a>(
+        &'a mut self,
+        method_idx: u32,
+        args: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
+}
+
+impl<T: AsyncHostedRpcDep> AsyncHostedRpcDispatcher for T {
+    fn dispatch<'a>(
+        &'a mut self,
+        method_idx: u32,
+        args: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+        Box::pin(<T as AsyncHostedRpcDep>::dispatch(self, method_idx, args))
+    }
+}
+
+#[cfg(test)]
+mod hosted_rpc_blanket_bridge_tests {
+    use super::{AsyncHostedRpcDep, HostedRpcChannel, HostedRpcDep};
+
+    /// Sync-only HostedRpc owner fixture: implements [`HostedRpcDep`].
+    /// The blanket bridge must also expose it as [`AsyncHostedRpcDep`].
+    struct SyncOnlyOwner {
+        next: u64,
+    }
+
+    /// Worker-side stub stand-in — the bridge tests do not exercise
+    /// channel-side dispatch, so the stub just stashes the channel.
+    pub struct SyncOnlyStub {
+        _channel: HostedRpcChannel,
+    }
+
+    impl HostedRpcDep for SyncOnlyOwner {
+        type Stub = SyncOnlyStub;
+
+        fn dispatch(&mut self, method_idx: u32, _args: &[u8]) -> Result<Vec<u8>, String> {
+            if method_idx == 0 {
+                self.next += 1;
+                Ok(self.next.to_be_bytes().to_vec())
+            } else {
+                Err(format!("SyncOnlyOwner: unknown method_idx {method_idx}"))
+            }
+        }
+
+        fn build_stub(channel: HostedRpcChannel) -> Self::Stub {
+            SyncOnlyStub { _channel: channel }
+        }
+    }
+
+    /// Compile-time pin that the blanket `impl<T: HostedRpcDep>
+    /// AsyncHostedRpcDep for T` covers a sync-only `HostedRpcDep`. If a
+    /// future change ever drops or narrows the blanket, this function's
+    /// signature stops compiling: it requires `T: AsyncHostedRpcDep` and
+    /// we hand it a `SyncOnlyOwner` (which only implements `HostedRpcDep`).
+    fn requires_async_hosted_rpc_dep<T: AsyncHostedRpcDep>(_t: &T) {}
+
+    #[test]
+    fn blanket_impl_exposes_sync_hosted_rpc_dep_via_async_api() {
+        let owner = SyncOnlyOwner { next: 0 };
+        // 1. Compile-time witness: the bound `T: AsyncHostedRpcDep`
+        //    resolves for `SyncOnlyOwner` because of the blanket bridge.
+        requires_async_hosted_rpc_dep(&owner);
+    }
+
+    /// Driving the bridge async dispatch end-to-end requires a tokio
+    /// runtime, so the runtime-only assertion is cfg-gated. The sync
+    /// build keeps the compile-time witness above; this test extends
+    /// it by actually polling the bridged future and checking the
+    /// dispatched bytes match what the sync dispatcher would produce.
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn bridged_async_dispatch_round_trips_sync_owner_bytes() {
+        let mut owner = SyncOnlyOwner { next: 0 };
+        let rt = ::tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+        let bytes = rt
+            .block_on(<SyncOnlyOwner as AsyncHostedRpcDep>::dispatch(
+                &mut owner,
+                0,
+                &[],
+            ))
+            .expect("bridged dispatch must succeed");
+        assert_eq!(
+            bytes,
+            1u64.to_be_bytes().to_vec(),
+            "bridged async dispatch must yield the same bytes the sync impl produces"
+        );
+    }
+}
+
 /// Type-erased, parent-owned cell that holds the owner value behind a
 /// `Mutex` and exposes a `&self` dispatch entry point. Constructed by the
 /// macro-generated registration code on the parent (the `DependencyConstructor`
 /// for a `HostedRpc` dep returns one of these wrapped in `Arc<dyn Any>`)
 /// and kept alive in `_hosted_owners` for the suite's lifetime.
+///
+/// Two internal variants:
+/// - `Sync` holds a [`HostedRpcDep`] dispatcher and supports the legacy
+///   synchronous dispatch path. The sync runtime uses this exclusively.
+/// - `Async` holds an [`AsyncHostedRpcDep`] dispatcher behind a
+///   [`tokio::sync::Mutex`] so awaits inside the dispatcher don't
+///   block other tokio tasks waiting for the lock. The tokio runtime
+///   constructs this variant for HostedRpc registrations.
 pub struct HostedRpcOwnerCell {
-    inner: Mutex<Box<dyn HostedRpcDispatcher>>,
+    inner: HostedRpcOwnerCellInner,
+}
+
+enum HostedRpcOwnerCellInner {
+    Sync(Mutex<Box<dyn HostedRpcDispatcher>>),
+    #[cfg(feature = "tokio")]
+    Async(AsyncOwnerCell),
+}
+
+#[cfg(feature = "tokio")]
+struct AsyncOwnerCell {
+    /// Mirrors the sync `Mutex` poisoning semantics: `tokio::sync::Mutex`
+    /// itself does not poison, so we track poisoning out-of-band via this
+    /// flag. Once a dispatched call panics, every subsequent dispatch
+    /// short-circuits with the stable `"hosted rpc owner poisoned"` error.
+    poisoned: std::sync::atomic::AtomicBool,
+    inner: tokio::sync::Mutex<Box<dyn AsyncHostedRpcDispatcher>>,
 }
 
 impl HostedRpcOwnerCell {
-    /// Wrap an owner value into a `HostedRpcOwnerCell`. The owner type must
-    /// implement [`HostedRpcDep`].
+    /// Wrap a synchronous owner value into a `HostedRpcOwnerCell`. The owner
+    /// type must implement [`HostedRpcDep`]. This is the back-compat
+    /// constructor used by the sync runtime and by any manual hand-written
+    /// fixture; the runtime never blocks on async dispatch through cells
+    /// built this way.
     pub fn from_owner<T: HostedRpcDep>(owner: T) -> Self {
         Self {
-            inner: Mutex::new(Box::new(owner) as Box<dyn HostedRpcDispatcher>),
+            inner: HostedRpcOwnerCellInner::Sync(Mutex::new(
+                Box::new(owner) as Box<dyn HostedRpcDispatcher>
+            )),
         }
     }
 
-    /// Dispatch one method call. Catches owner panics and turns them into
-    /// `Err("hosted rpc owner panicked: …")` so the dispatcher loop never
-    /// dies. The lock is acquired *inside* the `catch_unwind` closure on
-    /// purpose: when the owner panics, the `MutexGuard` drops during the
-    /// unwind, which poisons the mutex. Every subsequent `dispatch` call
-    /// then short-circuits with the stable `"hosted rpc owner poisoned"`
-    /// error and does NOT retry the (possibly half-mutated) owner.
+    /// Wrap an owner value that exposes an async dispatcher into a
+    /// `HostedRpcOwnerCell`. Accepts any [`AsyncHostedRpcDep`] — including
+    /// every [`HostedRpcDep`] via the blanket bridge — so the tokio runtime
+    /// can route both sync and async owners through one async dispatch path.
+    #[cfg(feature = "tokio")]
+    pub fn from_async_owner<T: AsyncHostedRpcDep>(owner: T) -> Self {
+        Self {
+            inner: HostedRpcOwnerCellInner::Async(AsyncOwnerCell {
+                poisoned: std::sync::atomic::AtomicBool::new(false),
+                inner: tokio::sync::Mutex::new(Box::new(owner) as Box<dyn AsyncHostedRpcDispatcher>),
+            }),
+        }
+    }
+
+    /// Dispatch one method call synchronously. Catches owner panics and
+    /// turns them into `Err("hosted rpc owner panicked: …")` so the
+    /// dispatcher loop never dies. The lock is acquired *inside* the
+    /// `catch_unwind` closure on purpose: when the owner panics, the
+    /// `MutexGuard` drops during the unwind, which poisons the mutex.
+    /// Every subsequent `dispatch` call then short-circuits with the
+    /// stable `"hosted rpc owner poisoned"` error and does NOT retry the
+    /// (possibly half-mutated) owner.
+    ///
+    /// For cells constructed via [`Self::from_async_owner`], synchronous
+    /// dispatch is unsupported and the call returns
+    /// `Err("hosted rpc owner cell uses the async dispatch path; use dispatch_async or dispatch_blocking")`.
+    /// Note that under the tokio feature a plain `HostedRpcDep` owner may
+    /// also end up in the async cell variant via the blanket bridge, so
+    /// this branch is not strictly limited to user-authored async owners.
+    /// The sync runtime never builds async cells, so this branch only
+    /// fires in misuse cases.
     pub fn dispatch(&self, method_idx: u32, args: &[u8]) -> Result<Vec<u8>, String> {
-        // The lock acquire lives inside the catch_unwind closure on
-        // purpose. If we acquired the lock outside and the user dispatch
-        // panicked, the panic would be caught before the MutexGuard had a
-        // chance to drop during unwinding, leaving the mutex healthy — and
-        // we want it poisoned so that subsequent calls see a deterministic
-        // "owner is dead" error rather than re-entering a half-mutated
-        // owner value.
-        let dispatch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut guard = match self.inner.lock() {
-                Ok(g) => g,
-                Err(_) => return Err("hosted rpc owner poisoned".to_string()),
-            };
-            guard.dispatch(method_idx, args)
-        }));
-        match dispatch_result {
-            Ok(r) => r,
-            Err(payload) => {
-                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
-                    (*s).to_string()
-                } else if let Some(s) = payload.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "<non-string panic payload>".to_string()
-                };
-                Err(format!("hosted rpc owner panicked: {msg}"))
+        match &self.inner {
+            HostedRpcOwnerCellInner::Sync(mtx) => sync_dispatch_inner(mtx, method_idx, args),
+            #[cfg(feature = "tokio")]
+            HostedRpcOwnerCellInner::Async(_) => Err(
+                "hosted rpc owner cell uses the async dispatch path; use dispatch_async or dispatch_blocking"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// Async dispatch entry point used by the tokio runtime's parent-side
+    /// HostedRpc loop and by the in-process transport's `block_on` bridge.
+    /// Works for both `Sync` and `Async` cell variants:
+    ///
+    /// - `Sync` variant: invokes the synchronous dispatcher inline (no
+    ///   `await` actually happens).
+    /// - `Async` variant: awaits the user's async dispatcher with panic
+    ///   capture so an `await`-side panic poisons the cell.
+    #[cfg(feature = "tokio")]
+    pub async fn dispatch_async(&self, method_idx: u32, args: &[u8]) -> Result<Vec<u8>, String> {
+        match &self.inner {
+            HostedRpcOwnerCellInner::Sync(mtx) => sync_dispatch_inner(mtx, method_idx, args),
+            HostedRpcOwnerCellInner::Async(cell) => {
+                async_dispatch_inner(cell, method_idx, args).await
             }
         }
+    }
+
+    /// Synchronous bridge to [`Self::dispatch_async`] for sync call sites
+    /// (such as [`InProcessHostedRpcTransport::call`]) that need to feed
+    /// an async owner cell. Drives the future with
+    /// [`tokio::task::block_in_place`] + [`tokio::runtime::Handle::block_on`]
+    /// when an async cell is present, and falls back to the regular sync
+    /// dispatch otherwise.
+    ///
+    /// `Sync` cells short-circuit through the regular sync path with no
+    /// runtime requirement. `Async` cells require a running multi-thread
+    /// Tokio runtime, matching the IPC transport's existing requirement.
+    #[cfg(feature = "tokio")]
+    pub fn dispatch_blocking(&self, method_idx: u32, args: &[u8]) -> Result<Vec<u8>, String> {
+        match &self.inner {
+            HostedRpcOwnerCellInner::Sync(mtx) => sync_dispatch_inner(mtx, method_idx, args),
+            HostedRpcOwnerCellInner::Async(cell) => {
+                let handle = tokio::runtime::Handle::try_current().map_err(|_| {
+                    "hosted rpc owner is async-only and no Tokio runtime is active at the dispatch site"
+                        .to_string()
+                })?;
+                // `block_in_place` panics on a `current_thread` runtime
+                // even though `Handle::try_current()` succeeded. Probe
+                // the runtime flavor and return a clean error instead
+                // of hitting the panic — the API contract is
+                // `Result<_, String>`.
+                if !matches!(
+                    handle.runtime_flavor(),
+                    tokio::runtime::RuntimeFlavor::MultiThread
+                ) {
+                    return Err(
+                        "hosted rpc owner is async-only and the current Tokio runtime is not multi-threaded"
+                            .to_string(),
+                    );
+                }
+                tokio::task::block_in_place(|| {
+                    handle.block_on(async_dispatch_inner(cell, method_idx, args))
+                })
+            }
+        }
+    }
+}
+
+fn sync_dispatch_inner(
+    mtx: &Mutex<Box<dyn HostedRpcDispatcher>>,
+    method_idx: u32,
+    args: &[u8],
+) -> Result<Vec<u8>, String> {
+    // The lock acquire lives inside the catch_unwind closure on
+    // purpose. If we acquired the lock outside and the user dispatch
+    // panicked, the panic would be caught before the MutexGuard had a
+    // chance to drop during unwinding, leaving the mutex healthy — and
+    // we want it poisoned so that subsequent calls see a deterministic
+    // "owner is dead" error rather than re-entering a half-mutated
+    // owner value.
+    let dispatch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut guard = match mtx.lock() {
+            Ok(g) => g,
+            Err(_) => return Err("hosted rpc owner poisoned".to_string()),
+        };
+        guard.dispatch(method_idx, args)
+    }));
+    panic_payload_to_err(dispatch_result)
+}
+
+#[cfg(feature = "tokio")]
+async fn async_dispatch_inner(
+    cell: &AsyncOwnerCell,
+    method_idx: u32,
+    args: &[u8],
+) -> Result<Vec<u8>, String> {
+    use futures::FutureExt;
+    use std::sync::atomic::Ordering;
+
+    // Fast-path check: avoids acquiring the async mutex when the owner
+    // has already been poisoned by an earlier panic.
+    if cell.poisoned.load(Ordering::SeqCst) {
+        return Err("hosted rpc owner poisoned".to_string());
+    }
+    let mut guard = cell.inner.lock().await;
+    // Re-check inside the lock: a second dispatch can park on
+    // `lock().await` *before* the first dispatch panics. Without this
+    // re-check the second waiter would acquire the lock and re-enter
+    // the (possibly half-mutated) owner because the poison flag is
+    // only stored after the panicking task drops its guard. This
+    // mirrors the std::sync::Mutex poisoning semantics the sync cell
+    // gets for free.
+    if cell.poisoned.load(Ordering::SeqCst) {
+        return Err("hosted rpc owner poisoned".to_string());
+    }
+    let fut = std::panic::AssertUnwindSafe(async {
+        AsyncHostedRpcDispatcher::dispatch(&mut **guard, method_idx, args).await
+    });
+    let outcome = fut.catch_unwind().await;
+    match outcome {
+        Ok(r) => {
+            drop(guard);
+            r
+        }
+        Err(payload) => {
+            // Set the poison flag *while still holding the guard* so any
+            // waiter that subsequently acquires the mutex sees the flag
+            // on its in-lock re-check above and short-circuits without
+            // re-entering the owner.
+            cell.poisoned.store(true, Ordering::SeqCst);
+            drop(guard);
+            let msg = panic_payload_to_string(&payload);
+            Err(format!("hosted rpc owner panicked: {msg}"))
+        }
+    }
+}
+
+fn panic_payload_to_err(
+    dispatch_result: Result<Result<Vec<u8>, String>, Box<dyn Any + Send>>,
+) -> Result<Vec<u8>, String> {
+    match dispatch_result {
+        Ok(r) => r,
+        Err(payload) => {
+            let msg = panic_payload_to_string(&payload);
+            Err(format!("hosted rpc owner panicked: {msg}"))
+        }
+    }
+}
+
+fn panic_payload_to_string(payload: &Box<dyn Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
     }
 }
 
@@ -911,8 +1266,15 @@ impl HostedRpcTransport for InProcessHostedRpcTransport {
         let cell = self.cells.get(dep_id).ok_or_else(|| {
             HostedRpcError::Transport(format!("in-process HostedRpc: unknown dep id '{dep_id}'"))
         })?;
-        cell.dispatch(method_idx, &args)
-            .map_err(HostedRpcError::Dispatch)
+        // Under the tokio feature, route through `dispatch_blocking` so async
+        // owners (and bridged sync owners stored in `Async` cells) are driven
+        // by the surrounding multi-thread tokio runtime. Without the tokio
+        // feature only sync cells exist, so the plain sync `dispatch` is fine.
+        #[cfg(feature = "tokio")]
+        let result = cell.dispatch_blocking(method_idx, &args);
+        #[cfg(not(feature = "tokio"))]
+        let result = cell.dispatch(method_idx, &args);
+        result.map_err(HostedRpcError::Dispatch)
     }
 }
 
@@ -964,8 +1326,9 @@ pub enum DepScope {
     /// Like [`Self::Hosted`], but the owner stays in the parent AND workers
     /// talk back to it via the runtime's built-in RPC layer instead of reaching
     /// out via their own transport. The dep implementor provides a
-    /// [`HostedRpcDep`] impl on the owner type with a stub type, a method
-    /// dispatch function, and a stub builder.
+    /// [`HostedRpcDep`] impl (sync owners) — or, under the `tokio` feature,
+    /// an [`AsyncHostedRpcDep`] impl (async owners) — on the owner type
+    /// with a stub type, a method dispatch function, and a stub builder.
     HostedRpc,
 }
 

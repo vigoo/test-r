@@ -2282,6 +2282,296 @@ mod cloneable_tests {
         }
     }
 
+    /// Async owner used to verify `AsyncHostedRpcDep`-flavoured cells
+    /// dispatch through the async path and surface results correctly.
+    /// Yields once to force the future to actually `.await` (a no-op
+    /// `std::future::ready` wouldn't exercise the async cell machinery).
+    #[cfg(feature = "tokio")]
+    struct AsyncRpcCounter {
+        n: u64,
+    }
+
+    #[cfg(feature = "tokio")]
+    impl crate::internal::AsyncHostedRpcDep for AsyncRpcCounter {
+        type Stub = RpcCounterStub;
+        async fn dispatch(&mut self, method_idx: u32, _args: &[u8]) -> Result<Vec<u8>, String> {
+            // Force a real `.await` so the async dispatch machinery
+            // is actually exercised (not just a `ready(...)` bridge).
+            ::tokio::task::yield_now().await;
+            if method_idx == 1 {
+                self.n += 1;
+                Ok(self.n.to_be_bytes().to_vec())
+            } else {
+                Err(format!("AsyncRpcCounter: unknown method_idx {method_idx}"))
+            }
+        }
+        fn build_stub(channel: HostedRpcChannel) -> Self::Stub {
+            RpcCounterStub { channel }
+        }
+    }
+
+    /// Async owner that always panics — exercises the
+    /// `futures::FutureExt::catch_unwind` + poison-flag machinery on
+    /// the async cell variant.
+    #[cfg(feature = "tokio")]
+    struct PanickingAsyncRpcOwner;
+
+    #[cfg(feature = "tokio")]
+    impl crate::internal::AsyncHostedRpcDep for PanickingAsyncRpcOwner {
+        type Stub = RpcCounterStub;
+        async fn dispatch(&mut self, _method_idx: u32, _args: &[u8]) -> Result<Vec<u8>, String> {
+            ::tokio::task::yield_now().await;
+            panic!("async_owner_panic_for_test");
+        }
+        fn build_stub(channel: HostedRpcChannel) -> Self::Stub {
+            RpcCounterStub { channel }
+        }
+    }
+
+    /// End-to-end: an async owner registered via `from_async_owner`
+    /// dispatches via `dispatch_async` and returns the expected bytes
+    /// after actually `.await`ing inside its method body.
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn async_hosted_rpc_owner_dispatches_through_async_cell() {
+        let cell = HostedRpcOwnerCell::from_async_owner(AsyncRpcCounter { n: 0 });
+        let rt = ::tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        let bytes_a = rt
+            .block_on(cell.dispatch_async(1, &[]))
+            .expect("first async dispatch must succeed");
+        assert_eq!(bytes_a, 1u64.to_be_bytes().to_vec());
+
+        let bytes_b = rt
+            .block_on(cell.dispatch_async(1, &[]))
+            .expect("second async dispatch must succeed");
+        assert_eq!(bytes_b, 2u64.to_be_bytes().to_vec());
+    }
+
+    /// An async owner panic must surface as
+    /// `"hosted rpc owner panicked: ..."` and poison the cell so every
+    /// subsequent dispatch short-circuits with the stable
+    /// `"hosted rpc owner poisoned"` error. Mirrors the sync test.
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn async_hosted_rpc_owner_panic_surfaces_then_poisons() {
+        let cell = HostedRpcOwnerCell::from_async_owner(PanickingAsyncRpcOwner);
+        let rt = ::tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        let err1 = rt
+            .block_on(cell.dispatch_async(1, &[]))
+            .expect_err("first async dispatch must surface the panic as Err");
+        assert!(
+            err1.contains("hosted rpc owner panicked: async_owner_panic_for_test"),
+            "expected first-call error to wrap the async panic payload, got '{err1}'"
+        );
+
+        let err2 = rt
+            .block_on(cell.dispatch_async(1, &[]))
+            .expect_err("second async dispatch must short-circuit on the poisoned cell");
+        assert_eq!(
+            err2, "hosted rpc owner poisoned",
+            "expected poisoned-cell error on the second async call, got '{err2}'"
+        );
+    }
+
+    /// Regression for the async poison race: a second dispatch that
+    /// parks on `tokio::sync::Mutex::lock().await` *before* the first
+    /// dispatch panics must still observe the poison flag once it
+    /// acquires the mutex, and must not re-enter the owner. Without
+    /// the in-lock re-check the second waiter would get a fresh
+    /// `MutexGuard` and call the user method on the half-mutated
+    /// owner.
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn async_hosted_rpc_owner_poison_blocks_concurrent_waiter() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        /// Counts dispatch entries to verify the second call never
+        /// re-enters after the first call's panic.
+        struct OnePanicThenForbidden {
+            entries: Arc<AtomicUsize>,
+        }
+
+        impl crate::internal::AsyncHostedRpcDep for OnePanicThenForbidden {
+            type Stub = RpcCounterStub;
+            async fn dispatch(
+                &mut self,
+                _method_idx: u32,
+                _args: &[u8],
+            ) -> Result<Vec<u8>, String> {
+                let n = self.entries.fetch_add(1, Ordering::SeqCst);
+                // First entry: hold the mutex for long enough that a
+                // second dispatch parks on `lock().await`, then panic.
+                if n == 0 {
+                    ::tokio::time::sleep(Duration::from_millis(50)).await;
+                    panic!("first_dispatch_panic_poison_race");
+                }
+                // Any subsequent re-entry is a bug: the poison flag
+                // re-check inside the lock should have short-circuited
+                // before we got here.
+                panic!("second_dispatch_unexpectedly_re_entered_after_poison");
+            }
+            fn build_stub(channel: HostedRpcChannel) -> Self::Stub {
+                RpcCounterStub { channel }
+            }
+        }
+
+        let entries = Arc::new(AtomicUsize::new(0));
+        let cell = Arc::new(HostedRpcOwnerCell::from_async_owner(
+            OnePanicThenForbidden {
+                entries: entries.clone(),
+            },
+        ));
+
+        let rt = ::tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        rt.block_on(async {
+            let cell_a = cell.clone();
+            let cell_b = cell.clone();
+
+            let first = ::tokio::spawn(async move { cell_a.dispatch_async(1, &[]).await });
+
+            // Give `first` a head start so it definitely owns the
+            // mutex before `second` starts and parks on `lock().await`.
+            ::tokio::time::sleep(Duration::from_millis(5)).await;
+
+            let second = ::tokio::spawn(async move { cell_b.dispatch_async(1, &[]).await });
+
+            let first_res = first.await.expect("first task must not be cancelled");
+            let second_res = second.await.expect("second task must not be cancelled");
+
+            let first_err =
+                first_res.expect_err("first dispatch must surface the panic as Err, not Ok");
+            assert!(
+                first_err.contains("hosted rpc owner panicked: first_dispatch_panic_poison_race"),
+                "expected the first call to surface the panic; got '{first_err}'"
+            );
+
+            let second_err = second_res
+                .expect_err("second dispatch must short-circuit on the poisoned cell, not Ok");
+            assert_eq!(
+                second_err, "hosted rpc owner poisoned",
+                "expected the second waiter to see the poison flag; got '{second_err}'"
+            );
+        });
+
+        // Exactly one entry into the owner: the second waiter must
+        // have been turned away by the poison re-check, never reaching
+        // the user dispatcher body.
+        assert_eq!(
+            entries.load(Ordering::SeqCst),
+            1,
+            "owner dispatcher must run at most once across the poisoned pair"
+        );
+    }
+
+    /// `dispatch_blocking` against an `Async` cell on a multi-thread
+    /// tokio runtime must succeed (it bridges to `dispatch_async`
+    /// via `block_in_place` + `block_on`).
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn async_hosted_rpc_dispatch_blocking_drives_async_cell() {
+        let cell = HostedRpcOwnerCell::from_async_owner(AsyncRpcCounter { n: 0 });
+        let rt = ::tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+        let bytes = rt
+            .block_on(async {
+                ::tokio::task::spawn_blocking(move || cell.dispatch_blocking(1, &[])).await
+            })
+            .expect("spawn_blocking joined")
+            .expect("dispatch_blocking must succeed against an async cell on multi-thread rt");
+        assert_eq!(bytes, 1u64.to_be_bytes().to_vec());
+    }
+
+    /// `dispatch_blocking` on a `current_thread` runtime must return a
+    /// clean `Err` rather than panicking inside `block_in_place`. The
+    /// API contract is `Result<_, String>`; a `current_thread` runtime
+    /// is unsupported but it must not blow up the dispatcher loop.
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn async_hosted_rpc_dispatch_blocking_rejects_current_thread_runtime() {
+        let cell = HostedRpcOwnerCell::from_async_owner(AsyncRpcCounter { n: 0 });
+        let rt = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build current-thread tokio runtime");
+        // `dispatch_blocking` is invoked *from* the current-thread
+        // runtime so that `Handle::try_current()` resolves to it.
+        let err = rt
+            .block_on(async { cell.dispatch_blocking(1, &[]) })
+            .expect_err("dispatch_blocking must reject current-thread runtimes cleanly");
+        assert!(
+            err.contains("multi-threaded"),
+            "expected the rejection error to mention multi-threaded requirement, got '{err}'"
+        );
+    }
+
+    /// `InProcessHostedRpcTransport` is the `--nocapture` / no-spawn
+    /// codepath. Under the tokio runner it must route to async owner
+    /// cells via the sync `call` -> `dispatch_blocking` bridge so the
+    /// in-process and IPC modes look identical to the user.
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn async_hosted_rpc_in_process_transport_routes_to_async_cell() {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let dep_id = "in_process_async_owner".to_string();
+        let cell = Arc::new(HostedRpcOwnerCell::from_async_owner(AsyncRpcCounter {
+            n: 0,
+        }));
+        let mut cells = HashMap::new();
+        cells.insert(dep_id.clone(), cell);
+
+        let transport: Arc<dyn crate::internal::HostedRpcTransport> =
+            Arc::new(InProcessHostedRpcTransport::new(cells));
+
+        let rt = ::tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        let transport_clone = transport.clone();
+        let dep_id_clone = dep_id.clone();
+        let bytes = rt
+            .block_on(async move {
+                ::tokio::task::spawn_blocking(move || {
+                    transport_clone.call(&dep_id_clone, 1, vec![])
+                })
+                .await
+                .expect("spawn_blocking joined")
+            })
+            .expect("first in-process dispatch must succeed");
+        assert_eq!(bytes, 1u64.to_be_bytes().to_vec());
+
+        let transport_clone = transport.clone();
+        let dep_id_clone = dep_id.clone();
+        let bytes2 = rt
+            .block_on(async move {
+                ::tokio::task::spawn_blocking(move || {
+                    transport_clone.call(&dep_id_clone, 1, vec![])
+                })
+                .await
+                .expect("spawn_blocking joined")
+            })
+            .expect("second in-process dispatch must succeed");
+        assert_eq!(bytes2, 2u64.to_be_bytes().to_vec());
+    }
+
     #[test]
     fn hosted_rpc_owner_panic_surfaces_then_poisons() {
         let cell = HostedRpcOwnerCell::from_owner(PanickingRpcOwner);

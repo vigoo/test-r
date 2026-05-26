@@ -18,4 +18,5 @@ pub mod hosted_both_async_descriptor;
 pub mod hosted_both_basic;
 pub mod hosted_rpc_basic;
 pub mod hosted_rpc_macro;
+pub mod hosted_rpc_macro_async;
 pub mod per_worker_basic;

@@ -30,19 +30,21 @@ pub use test_r_core::bench::Bencher;
 pub use test_r_core::spawn::spawn;
 pub use test_r_core::spawn::spawn_thread;
 
-pub use test_r_core::internal::{AsyncHostedDep, CloneableDep, HostedDep, HostedRpcDep};
+pub use test_r_core::internal::{
+    AsyncHostedDep, AsyncHostedRpcDep, CloneableDep, HostedDep, HostedRpcDep,
+};
 pub use test_r_core::worker_index;
 
 pub mod core {
     use std::time::Duration;
     pub use test_r_core::internal::{
-        AsyncHostedDep, CaptureControl, CloneableCodec, CloneableDep, DepScope,
-        DependencyConstructor, DependencyView, DetachedPanicPolicy, DynamicTestRegistration,
-        FailureCause, FlakinessControl, GeneratedTest, HostedBothShared, HostedDep,
-        HostedRpcChannel, HostedRpcDep, HostedRpcDispatcher, HostedRpcError, HostedRpcOwnerCell,
-        HostedRpcTransport, InProcessHostedRpcTransport, ReportTimeControl, RpcFactory,
-        ShouldPanic, TestFunction, TestGeneratorFunction, TestProperties, TestReturnValue,
-        TestType, WorkerReconstructor,
+        AsyncHostedDep, AsyncHostedRpcDep, AsyncHostedRpcDispatcher, CaptureControl,
+        CloneableCodec, CloneableDep, DepScope, DependencyConstructor, DependencyView,
+        DetachedPanicPolicy, DynamicTestRegistration, FailureCause, FlakinessControl,
+        GeneratedTest, HostedBothShared, HostedDep, HostedRpcChannel, HostedRpcDep,
+        HostedRpcDispatcher, HostedRpcError, HostedRpcOwnerCell, HostedRpcTransport,
+        InProcessHostedRpcTransport, ReportTimeControl, RpcFactory, ShouldPanic, TestFunction,
+        TestGeneratorFunction, TestProperties, TestReturnValue, TestType, WorkerReconstructor,
     };
     pub use test_r_core::*;
 

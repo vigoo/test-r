@@ -201,16 +201,19 @@ where
 
 /// **Hidden macro-support helper.** Build the shared owner cell for
 /// a `worker = both(T)` dep. Tokio variant: descriptor is computed
-/// via [`internal::AsyncHostedDep::descriptor`].
+/// via [`internal::AsyncHostedDep::descriptor`] and the RPC cell is
+/// constructed via [`internal::HostedRpcOwnerCell::from_async_owner`]
+/// so both sync and async HostedRpc owners flow through the same
+/// async dispatch path.
 #[doc(hidden)]
 #[cfg(feature = "tokio")]
 pub fn __test_r_make_hosted_both_shared<T>(owner: T) -> internal::HostedBothShared
 where
-    T: internal::AsyncHostedDep + internal::HostedRpcDep,
+    T: internal::AsyncHostedDep + internal::AsyncHostedRpcDep,
 {
     use std::sync::Arc;
     let descriptor_bytes = <T as internal::AsyncHostedDep>::descriptor(&owner);
-    let rpc_cell = Arc::new(internal::HostedRpcOwnerCell::from_owner(owner));
+    let rpc_cell = Arc::new(internal::HostedRpcOwnerCell::from_async_owner(owner));
     internal::HostedBothShared::new(descriptor_bytes, rpc_cell)
 }
 
@@ -227,6 +230,32 @@ where
     let descriptor_bytes = <T as internal::HostedDep>::descriptor(&owner);
     let rpc_cell = Arc::new(internal::HostedRpcOwnerCell::from_owner(owner));
     internal::HostedBothShared::new(descriptor_bytes, rpc_cell)
+}
+
+/// **Hidden macro-support helper.** Wrap a HostedRpc owner value into a
+/// [`internal::HostedRpcOwnerCell`]. The tokio variant goes through
+/// [`internal::HostedRpcOwnerCell::from_async_owner`] so async owners
+/// are dispatched asynchronously; the sync variant uses the back-compat
+/// sync constructor. Used by the `#[test_dep(scope = HostedRpc)]`
+/// lowering so the choice of async vs sync cell happens in one place.
+#[doc(hidden)]
+#[cfg(feature = "tokio")]
+pub fn __test_r_make_hosted_rpc_cell<T>(owner: T) -> internal::HostedRpcOwnerCell
+where
+    T: internal::AsyncHostedRpcDep,
+{
+    internal::HostedRpcOwnerCell::from_async_owner(owner)
+}
+
+/// **Hidden macro-support helper.** Sync-runtime variant of
+/// [`__test_r_make_hosted_rpc_cell`].
+#[doc(hidden)]
+#[cfg(not(feature = "tokio"))]
+pub fn __test_r_make_hosted_rpc_cell<T>(owner: T) -> internal::HostedRpcOwnerCell
+where
+    T: internal::HostedRpcDep,
+{
+    internal::HostedRpcOwnerCell::from_owner(owner)
 }
 
 /// **Hidden macro-support helper.** Hosted-view codec for the `both`
@@ -258,6 +287,35 @@ pub fn __test_r_make_hosted_both_codec() -> internal::CloneableCodec {
 /// the shared cell and reuses the user's
 /// [`internal::HostedRpcDep::build_stub`] for the worker stub.
 #[doc(hidden)]
+#[cfg(feature = "tokio")]
+pub fn __test_r_make_hosted_both_rpc_factory<T, Stub>() -> internal::RpcFactory
+where
+    T: internal::AsyncHostedRpcDep<Stub = Stub>,
+    Stub: Send + Sync + 'static,
+{
+    use std::any::Any;
+    use std::sync::Arc;
+    internal::RpcFactory {
+        owner_into_cell: Arc::new(|any: Arc<dyn Any + Send + Sync>| {
+            let shared: Arc<internal::HostedBothShared> = any
+                .downcast::<internal::HostedBothShared>()
+                .expect("HostedBothShared downcast failed in both-rpc-factory owner_into_cell");
+            shared.rpc_cell()
+        }),
+        build_stub: Arc::new(|channel: internal::HostedRpcChannel| {
+            let stub: Stub = <T as internal::AsyncHostedRpcDep>::build_stub(channel);
+            let boxed: Arc<dyn Any + Send + Sync> = Arc::new(stub);
+            boxed
+        }),
+    }
+}
+
+/// **Hidden macro-support helper.** Sync-runtime variant of
+/// [`__test_r_make_hosted_both_rpc_factory`]. The `build_stub` is sourced
+/// from [`internal::HostedRpcDep::build_stub`] because the sync runtime
+/// cannot drive `AsyncHostedRpcDep` owners.
+#[doc(hidden)]
+#[cfg(not(feature = "tokio"))]
 pub fn __test_r_make_hosted_both_rpc_factory<T, Stub>() -> internal::RpcFactory
 where
     T: internal::HostedRpcDep<Stub = Stub>,
@@ -271,6 +329,56 @@ where
                 .downcast::<internal::HostedBothShared>()
                 .expect("HostedBothShared downcast failed in both-rpc-factory owner_into_cell");
             shared.rpc_cell()
+        }),
+        build_stub: Arc::new(|channel: internal::HostedRpcChannel| {
+            let stub: Stub = <T as internal::HostedRpcDep>::build_stub(channel);
+            let boxed: Arc<dyn Any + Send + Sync> = Arc::new(stub);
+            boxed
+        }),
+    }
+}
+
+/// **Hidden macro-support helper.** Build a `RpcFactory` for the
+/// stand-alone `scope = HostedRpc` lowering (no `both(T)` companion).
+/// Tokio variant goes through [`internal::AsyncHostedRpcDep::build_stub`]
+/// so async owners flow through one entry point.
+#[doc(hidden)]
+#[cfg(feature = "tokio")]
+pub fn __test_r_make_hosted_rpc_factory<T, Stub>() -> internal::RpcFactory
+where
+    T: internal::AsyncHostedRpcDep<Stub = Stub>,
+    Stub: Send + Sync + 'static,
+{
+    use std::any::Any;
+    use std::sync::Arc;
+    internal::RpcFactory {
+        owner_into_cell: Arc::new(|any: Arc<dyn Any + Send + Sync>| {
+            any.downcast::<internal::HostedRpcOwnerCell>()
+                .expect("HostedRpc owner downcast to HostedRpcOwnerCell failed")
+        }),
+        build_stub: Arc::new(|channel: internal::HostedRpcChannel| {
+            let stub: Stub = <T as internal::AsyncHostedRpcDep>::build_stub(channel);
+            let boxed: Arc<dyn Any + Send + Sync> = Arc::new(stub);
+            boxed
+        }),
+    }
+}
+
+/// **Hidden macro-support helper.** Sync-runtime variant of
+/// [`__test_r_make_hosted_rpc_factory`].
+#[doc(hidden)]
+#[cfg(not(feature = "tokio"))]
+pub fn __test_r_make_hosted_rpc_factory<T, Stub>() -> internal::RpcFactory
+where
+    T: internal::HostedRpcDep<Stub = Stub>,
+    Stub: Send + Sync + 'static,
+{
+    use std::any::Any;
+    use std::sync::Arc;
+    internal::RpcFactory {
+        owner_into_cell: Arc::new(|any: Arc<dyn Any + Send + Sync>| {
+            any.downcast::<internal::HostedRpcOwnerCell>()
+                .expect("HostedRpc owner downcast to HostedRpcOwnerCell failed")
         }),
         build_stub: Arc::new(|channel: internal::HostedRpcChannel| {
             let stub: Stub = <T as internal::HostedRpcDep>::build_stub(channel);
@@ -486,12 +594,38 @@ mod hosted_helper_tests {
         assert_eq!(shared.descriptor_bytes(), &[10, 20, 30]);
         // The owner cell must be live: a dispatch call must succeed
         // (the closure runs the method without panicking and returns
-        // a non-empty reply).
-        let reply = shared
-            .rpc_cell()
-            .dispatch(1, &[])
-            .expect("dispatch must succeed");
+        // a non-empty reply). Under the tokio feature the cell is the
+        // async variant — drive it through `dispatch_async` on a
+        // tokio runtime; under the sync feature the cell is sync.
+        let reply =
+            dispatch_cell_for_test(&shared.rpc_cell(), 1, &[]).expect("dispatch must succeed");
         assert_eq!(reply, 1u64.to_be_bytes().to_vec());
+    }
+
+    /// Helper: dispatch on a `HostedRpcOwnerCell` whose async/sync
+    /// variant depends on the active cargo feature. Used by the
+    /// `worker = both(T)` helper tests so the test bodies don't need
+    /// to know whether the cell was built via `from_owner` or
+    /// `from_async_owner` — both surface the same per-call result.
+    fn dispatch_cell_for_test(
+        cell: &internal::HostedRpcOwnerCell,
+        method_idx: u32,
+        args: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        #[cfg(feature = "tokio")]
+        {
+            // `tokio` resolves to the local `mod tokio` inside this
+            // crate; reach the external crate with `::tokio`.
+            let rt = ::tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("build tokio runtime");
+            rt.block_on(cell.dispatch_async(method_idx, args))
+        }
+        #[cfg(not(feature = "tokio"))]
+        {
+            cell.dispatch(method_idx, args)
+        }
     }
 
     /// `__test_r_make_hosted_both_codec().to_wire` downcasts the
@@ -541,8 +675,11 @@ mod hosted_helper_tests {
         );
 
         // The cell is functional: dispatch routes to the real owner
-        // method (counter starts at 0; first call must yield 1).
-        let reply = cell.dispatch(1, &[]).expect("dispatch must succeed");
+        // method (counter starts at 0; first call must yield 1). Same
+        // cargo-feature-aware dispatch as
+        // `make_hosted_both_shared_captures_descriptor_bytes` since the
+        // underlying cell shares the same async/sync split.
+        let reply = dispatch_cell_for_test(&cell, 1, &[]).expect("dispatch must succeed");
         assert_eq!(reply, 1u64.to_be_bytes().to_vec());
     }
 

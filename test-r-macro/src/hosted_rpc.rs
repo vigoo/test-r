@@ -15,7 +15,6 @@
 //! - supertraits
 //! - `unsafe trait` / `unsafe fn` / non-default ABI / `extern fn`
 //! - default-impl methods (they would not appear on the wire)
-//! - `async fn` methods (HR1 / HR2)
 //! - `impl Trait` in argument or return position
 //! - non-identifier argument patterns (`_`, destructuring, etc.)
 //! - receivers other than `&self` (no `self`, `mut self`,
@@ -25,6 +24,23 @@
 //!   normal `#[test] fn (s: &MyStub)` parameter)
 //! - `#[cfg(...)]` / `#[cfg_attr(...)]` on the trait or its methods
 //!   (the generated sibling items + dispatch arms aren't cfg-propagated)
+//!
+//! Async methods:
+//!
+//! - `async fn` methods are auto-detected. A trait with one or more
+//!   `async fn` methods is "async-mode": every method is required to
+//!   be `async fn` (mixed sync/async is rejected so the worker-side
+//!   stub doesn't end up with a mixed trait surface), the generated
+//!   `<Trait>Dispatch` helper exposes
+//!   `async fn dispatch_<snake>(...)`, and the user implements
+//!   [`AsyncHostedRpcDep`] on the owner. A trait with only sync
+//!   methods stays in legacy "sync-mode" and the user implements
+//!   [`HostedRpcDep`] as before. No explicit flag on
+//!   `#[hosted_rpc]` is required — the choice flows naturally from
+//!   the user-authored trait signature.
+//!
+//! [`AsyncHostedRpcDep`]: ../test_r_core/internal/trait.AsyncHostedRpcDep.html
+//! [`HostedRpcDep`]: ../test_r_core/internal/trait.HostedRpcDep.html
 //!
 //! Wire format:
 //!
@@ -122,6 +138,26 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
         })
         .collect();
 
+    // Auto-detect async mode: a trait whose first method is `async fn` is
+    // async-mode; every method then must also be async. A trait with no
+    // async methods stays in legacy sync-mode and generates the same code
+    // it did before. Mixed sync/async is rejected because the generated
+    // worker-side stub `impl <Trait> for <Trait>Stub` must match the
+    // user-authored trait's signatures method-by-method — a mixed trait
+    // would yield half-async stub methods that call sync `channel.call(...)`
+    // and half-sync methods that would have to do the same: confusing for
+    // implementors of `AsyncHostedRpcDep` on the owner side. Forcing
+    // all-or-nothing keeps the runtime contract simple.
+    let async_mode = methods.iter().any(|m| m.sig.asyncness.is_some());
+    if async_mode && let Some(sync_method) = methods.iter().find(|m| m.sig.asyncness.is_none()) {
+        return syn::Error::new_spanned(
+            &sync_method.sig,
+            "`#[hosted_rpc]` requires methods to be either all `async fn` or all sync \
+             (mixed sync/async traits are rejected so the generated stub trait surface stays consistent)",
+        )
+        .to_compile_error();
+    }
+
     for m in &methods {
         if let Some(g) = m.sig.generics.params.first() {
             return syn::Error::new_spanned(
@@ -130,13 +166,10 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
             )
             .to_compile_error();
         }
-        if m.sig.asyncness.is_some() {
-            return syn::Error::new_spanned(
-                m.sig.asyncness,
-                "`#[hosted_rpc]` methods must be synchronous in the MVP",
-            )
-            .to_compile_error();
-        }
+        // `async fn` is allowed: when present on every method, the macro
+        // generates an async dispatch helper that lets owners implement
+        // `AsyncHostedRpcDep`. We still reject `unsafe`, non-default ABI,
+        // variadic, and default-bodied methods below.
         if m.sig.unsafety.is_some() {
             return syn::Error::new_spanned(
                 m.sig.unsafety,
@@ -259,12 +292,32 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
         format_ident!("dispatch_{}", to_snake_case(&trait_ident.to_string()));
 
     // For each method generate: stub impl arm, dispatch arm.
+    //
+    // Stub side: the generated stub method copies the user-authored
+    // signature verbatim — sync stays sync, `async fn` stays `async fn`
+    // — and uses the synchronous `channel.call(...)` in its body. That
+    // is correct in both modes because a sync call inside an async fn
+    // body is legal; the outer async signature is what lets the test
+    // body `.await` the stub.
+    //
+    // Dispatch side: in async-mode the per-method arm awaits the user's
+    // owner-side trait method; in sync-mode it calls it synchronously
+    // exactly as before.
     let mut stub_impl_arms: Vec<TokenStream2> = Vec::new();
     let mut dispatch_arms: Vec<TokenStream2> = Vec::new();
     for (idx, m) in methods.iter().enumerate() {
         let method_idx = idx as u32;
         let sig = &m.sig;
         let method_ident = &sig.ident;
+        // Preserve the user's asyncness on both the stub method
+        // signature and the matching `impl <Trait> for <Trait>Stub`
+        // method.
+        let asyncness = &sig.asyncness;
+        let await_token = if asyncness.is_some() {
+            quote!(.await)
+        } else {
+            quote!()
+        };
         let (receiver, typed_args): (TokenStream2, Vec<&PatType>) = {
             let mut recv = quote!();
             let mut others: Vec<&PatType> = Vec::new();
@@ -347,7 +400,7 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
         );
         stub_impl_arms.push(quote! {
             #(#attrs)*
-            fn #method_ident(#receiver, #(#typed_args),*) -> #ret_ty {
+            #asyncness fn #method_ident(#receiver, #(#typed_args),*) -> #ret_ty {
                 let __args: #args_tuple_ty = #args_pack;
                 let __args_bytes: ::std::vec::Vec<u8> =
                     ::test_r::core::desert_rust::serialize_to_byte_vec(&__args)
@@ -367,7 +420,7 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
                     ::test_r::core::desert_rust::deserialize(args)
                         .map_err(|e| ::std::format!(#dispatch_decode_args_fmt, e))?;
                 #(#arg_unpack)*
-                let __result: #ret_ty = self.#method_ident(#(#arg_idents),*);
+                let __result: #ret_ty = self.#method_ident(#(#arg_idents),*) #await_token;
                 ::test_r::core::desert_rust::serialize_to_byte_vec(&__result)
                     .map_err(|e| ::std::format!(#dispatch_encode_reply_fmt, e))
             }
@@ -383,6 +436,33 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
     let dispatch_unknown_method_text = format!("{}: unknown method_idx {{}}", trait_ident);
 
     let stub_struct_name_text = stub_ident.to_string();
+
+    // In async-mode, the dispatch helper exposes
+    //   `async fn dispatch_<snake>(&mut self, method_idx, args) -> Result<...>`
+    // so an owner-side `AsyncHostedRpcDep::dispatch` impl can delegate to it
+    // with `.await`. In sync-mode the dispatch helper stays synchronous,
+    // matching the legacy `HostedRpcDep::dispatch` signature.
+    //
+    // In async-mode the dispatch helper's blanket impl adds
+    // `Send + Sync` to the `T: Trait` bound. Two reasons:
+    //
+    // 1. `AsyncHostedRpcDep` requires the owner to be `Send + Sync`, so
+    //    the helper has to admit the same set of owner types.
+    // 2. The returned future for an `async fn` only inherits `Send`
+    //    when every captured `&self` / `&mut self` is itself `Send`
+    //    (which requires `T: Sync` / `T: Send`). The parent dispatcher
+    //    polls this future on a tokio task that requires `Send`, so
+    //    insufficient bounds here would show up as a `Send` error at
+    //    the owner's `AsyncHostedRpcDep::dispatch` impl site.
+    //
+    // In sync-mode no extra bounds are needed — the helper's
+    // `dispatch_<snake>` is a plain `fn`.
+    let dispatch_asyncness = if async_mode { quote!(async) } else { quote!() };
+    let blanket_bound = if async_mode {
+        quote!(#trait_ident + ::core::marker::Send + ::core::marker::Sync + ?Sized)
+    } else {
+        quote!(#trait_ident + ?Sized)
+    };
 
     quote! {
         #trait_decl
@@ -422,19 +502,25 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
 
         /// Owner-side helper trait generated by `#[hosted_rpc]`. It is
         /// blanket-implemented for every type that implements the host
-        /// trait, so a `HostedRpcDep::dispatch` impl can delegate to
-        /// `Self::dispatch_<snake_case_trait_name>(self, method_idx, args)`
+        /// trait, so an owner's `HostedRpcDep::dispatch` (sync mode) or
+        /// `AsyncHostedRpcDep::dispatch` (async mode) impl can delegate
+        /// to `Self::dispatch_<snake_case_trait_name>(self, method_idx, args)`
         /// without writing the per-method match arms by hand.
+        ///
+        /// In async-mode the helper method is itself `async fn`; the
+        /// generated dispatch arms `.await` each owner-side method call
+        /// so the user's `async fn next(&self) -> u64` runs to completion
+        /// before its result is encoded for the worker.
         #trait_vis trait #dispatch_ident {
-            fn #dispatch_method_ident(
+            #dispatch_asyncness fn #dispatch_method_ident(
                 &mut self,
                 method_idx: u32,
                 args: &[u8],
             ) -> ::std::result::Result<::std::vec::Vec<u8>, ::std::string::String>;
         }
 
-        impl<__T: #trait_ident + ?Sized> #dispatch_ident for __T {
-            fn #dispatch_method_ident(
+        impl<__T: #blanket_bound> #dispatch_ident for __T {
+            #dispatch_asyncness fn #dispatch_method_ident(
                 &mut self,
                 method_idx: u32,
                 args: &[u8],
@@ -558,19 +644,53 @@ mod tests {
     }
 
     #[test]
-    fn rejects_async_method() {
+    fn rejects_mixed_sync_and_async_methods() {
+        // Pinning the all-or-nothing rule: a trait with at least one
+        // `async fn` method and at least one sync method must be
+        // rejected so the generated stub doesn't produce a half-async
+        // surface for the worker side to implement.
         let s = expand_to_string(parse_quote! {
             trait Foo {
-                async fn one(&self);
+                async fn async_one(&self);
+                fn sync_two(&self);
             }
         });
         assert!(
             s.contains("compile_error"),
-            "expected a compile_error! for async methods, got: {s}"
+            "expected a compile_error! for mixed sync/async methods, got: {s}"
         );
         assert!(
-            s.contains("synchronous"),
-            "expected the rejection to mention synchronous, got: {s}"
+            s.contains("all `async fn`") || s.contains("all sync"),
+            "expected the rejection to mention all-or-nothing async, got: {s}"
+        );
+    }
+
+    #[test]
+    fn accepts_all_async_methods_and_emits_async_dispatch() {
+        // Pin async-mode auto-detection: every method `async fn` →
+        // the generated dispatch helper trait method is also `async fn`.
+        let s = expand_to_string(parse_quote! {
+            trait Counter {
+                async fn next(&self) -> u64;
+                async fn reserve(&self, count: u32) -> u64;
+            }
+        });
+        assert!(
+            !s.contains("compile_error"),
+            "valid async trait must not emit compile_error!, got: {s}"
+        );
+        let normalized: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        // Both the generated dispatcher trait method and its blanket
+        // impl method must be `async fn`. The exact identifier name is
+        // `dispatch_counter` (snake_case of `Counter`).
+        assert!(
+            normalized.contains("async fn dispatch_counter"),
+            "async-mode must produce an async dispatch helper method, got: {normalized}"
+        );
+        // Stub methods must keep the user's `async fn` signature.
+        assert!(
+            normalized.contains("async fn next") && normalized.contains("async fn reserve"),
+            "async-mode stub impl methods must stay `async fn`, got: {normalized}"
         );
     }
 

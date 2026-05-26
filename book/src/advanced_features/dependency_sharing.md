@@ -222,8 +222,8 @@ for the same parent-held owner:
 | `worker = …`         | Worker-visible value                                                                                              | Owner trait(s) required                                                  |
 |----------------------|-------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------|
 | `descriptor` (default) | `HostedDep::from_descriptor(parent_descriptor_bytes)` — a reconstructed handle (typically holding an address). | [`HostedDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedDep.html) (or [`AsyncHostedDep`](https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedDep.html)). |
-| `rpc(Trait)`         | An auto-generated `<Trait>Stub` whose methods route each call back to the parent over the runtime's IPC channel. | [`HostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedRpcDep.html) implemented for the owner; trait declared with [`#[hosted_rpc]`](#hostedrpc-attribute-macro-eliminating-the-boilerplate). |
-| `both(Trait)`        | **Both** a descriptor-shaped handle and a `<Trait>Stub`, backed by the same single owner instance.                | Descriptor side: [`HostedDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedDep.html) **or** [`AsyncHostedDep`](https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedDep.html). RPC side: [`HostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedRpcDep.html). Both impls are on the same owner type. |
+| `rpc(Trait)`         | An auto-generated `<Trait>Stub` whose methods route each call back to the parent over the runtime's IPC channel. | [`HostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedRpcDep.html) **or** [`AsyncHostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedRpcDep.html) implemented for the owner; trait declared with [`#[hosted_rpc]`](#hostedrpc-attribute-macro-eliminating-the-boilerplate). Async mode is inferred from `async fn` methods. |
+| `both(Trait)`        | **Both** a descriptor-shaped handle and a `<Trait>Stub`, backed by the same single owner instance.                | Descriptor side: [`HostedDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedDep.html) **or** [`AsyncHostedDep`](https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedDep.html). RPC side: [`HostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedRpcDep.html) **or** [`AsyncHostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedRpcDep.html). Both impls are on the same owner type. |
 
 In all three cases the parent constructs the owner exactly once and
 keeps it alive for the whole suite. Workers obtain their view through
@@ -381,11 +381,20 @@ Use this when:
 - One in-flight call at a time per worker subprocess. Each `stub.foo()`
   takes the IPC connection lock, writes the request frame, reads exactly
   one reply frame, and returns. No multiplexer or out-of-order replies.
-- The stub methods are **synchronous** even under the tokio runner: the
-  tokio transport bridges the sync trait method to the async IPC
-  primitives via `tokio::task::block_in_place` +
-  `Handle::current().block_on(...)`. Native async stub methods are
-  deferred.
+- Stub methods can be either **synchronous** or **`async fn`** — the
+  shape is inferred from the trait declaration:
+  - A trait whose methods are all plain sync `fn`s produces a sync
+    stub and the owner implements [`HostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedRpcDep.html).
+    Under the tokio runner the sync stub method is still bridged to
+    the async IPC primitives via `tokio::task::block_in_place` +
+    `Handle::current().block_on(...)`.
+  - A trait whose methods are all `async fn`s produces an async stub
+    and the owner implements [`AsyncHostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedRpcDep.html).
+    Under the tokio runner the parent dispatches through the async
+    owner directly (no `block_on` bridge).
+  - Mixing sync and `async fn` methods in the same trait is rejected
+    at macro time. There is **no** explicit `#[hosted_rpc(async)]`
+    flag — async mode is auto-detected from the methods.
 
 ### `HostedRpcDep` (the trait)
 
@@ -520,6 +529,81 @@ remains the right choice for hand-written stubs that are not backed by
 a trait at all (see the [`HostedRpcDep`](#hostedrpcdep-the-trait)
 example above).
 
+#### Async `#[hosted_rpc]` traits
+
+If every method in the trait is declared `async fn`, the macro
+switches to **async mode** automatically. The generated stub
+methods preserve the `async fn` signature, the generated dispatch
+helper becomes `async fn dispatch_<snake>(...)`, and the owner
+implements [`AsyncHostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedRpcDep.html)
+instead of [`HostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedRpcDep.html).
+There is **no `#[hosted_rpc(async)]` flag** — the mode is inferred
+from the trait declaration. Mixing sync and `async fn` methods in
+the same trait is a compile error.
+
+```rust
+use std::time::Duration;
+use test_r::core::{AsyncHostedRpcDep, HostedRpcChannel};
+use test_r::{hosted_rpc, test, test_dep};
+use tokio::sync::Mutex;
+
+#[hosted_rpc]
+pub trait AsyncCounter {
+    async fn next(&self) -> u64;
+    async fn add(&self, a: u32, b: u32) -> u64;
+}
+
+pub struct AsyncCounterOwner { counter: Mutex<u64> }
+
+impl AsyncCounter for AsyncCounterOwner {
+    async fn next(&self) -> u64 {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let mut g = self.counter.lock().await;
+        *g += 1; *g
+    }
+    async fn add(&self, a: u32, b: u32) -> u64 {
+        tokio::task::yield_now().await;
+        a as u64 + b as u64
+    }
+}
+
+impl AsyncHostedRpcDep for AsyncCounterOwner {
+    type Stub = AsyncCounterStub;
+
+    async fn dispatch(&mut self, method_idx: u32, args: &[u8])
+        -> Result<Vec<u8>, String>
+    {
+        AsyncCounterDispatch::dispatch_async_counter(self, method_idx, args).await
+    }
+
+    fn build_stub(channel: HostedRpcChannel) -> Self::Stub {
+        AsyncCounterStub::new(channel)
+    }
+}
+
+#[test_dep(scope = Hosted, worker = rpc(AsyncCounter))]
+fn async_counter_owner() -> AsyncCounterOwner {
+    AsyncCounterOwner { counter: Mutex::new(0) }
+}
+
+#[test]
+async fn async_stub_round_trips(c: &AsyncCounterStub) {
+    let id = c.next().await;
+    let sum = c.add(7, 35).await;
+    assert!(id > 0);
+    assert_eq!(sum, 42);
+}
+```
+
+The registration syntax is **identical** to the sync case:
+`#[test_dep(scope = Hosted, worker = rpc(AsyncCounter))]`. The
+sync–or–async choice flows from the trait declaration only. A
+blanket `impl<T: HostedRpcDep> AsyncHostedRpcDep for T` also exists,
+so under the tokio runner a sync owner can be reused unchanged in
+contexts that require an async dispatcher. See
+[`hosted_rpc_macro_async`](https://github.com/vigoo/test-r/blob/main/example-tokio/src/sharing/hosted_rpc_macro_async.rs)
+for the full runnable version.
+
 What the macro emits next to the trait declaration:
 
 - A struct `<Trait>Stub { channel: HostedRpcChannel }` with a
@@ -555,14 +639,17 @@ Restrictions enforced at macro time (the macro emits a
 - The trait must be non-generic, must not be `unsafe trait`, must not
   have supertraits, and must only declare methods (no associated
   `type` / `const` items).
-- Methods must be non-generic, synchronous (no `async fn`), must not
-  be `unsafe fn`, must use the default Rust ABI (no `extern "..."`),
-  must not be variadic, must not have a default body, and the first
-  argument must be **`&self`** (no by-value `self`, no explicit
-  `self: T` type, and **no `&mut self`** either — test-r injects test
-  deps as `&Stub` immutable references, so `&mut self` stub methods
-  would compile but be uncallable from a normal
-  `#[test] fn (s: &MyStub)` parameter).
+- Methods must be non-generic, must not be `unsafe fn`, must use the
+  default Rust ABI (no `extern "..."`), must not be variadic, must not
+  have a default body, and the first argument must be **`&self`** (no
+  by-value `self`, no explicit `self: T` type, and **no `&mut self`**
+  either — test-r injects test deps as `&Stub` immutable references,
+  so `&mut self` stub methods would compile but be uncallable from a
+  normal `#[test] fn (s: &MyStub)` parameter).
+- Methods may be either all plain sync `fn` or all `async fn`. Mixing
+  sync and `async fn` methods in the same `#[hosted_rpc]` trait is
+  rejected at macro time. Async mode is inferred from the methods —
+  there is no `#[hosted_rpc(async)]` flag.
 - Argument types must use plain identifier patterns (no `_`, no
   destructuring like `(a, b): (u32, u32)`).
 - `impl Trait` is not allowed in argument or return position.
@@ -595,12 +682,20 @@ and only infrastructure failures panic.
 4. The parent's worker dispatch loop intercepts incoming `HostedRpcCall`
    frames, looks up the right `HostedRpcOwnerCell` by dep id, runs the
    owner's `dispatch(method_idx, &args)` behind a `Mutex`, and writes
-   the reply back.
-5. Owner panics are caught by `HostedRpcOwnerCell::dispatch` and surfaced
-   to the calling worker as `HostedRpcError::Dispatch("hosted rpc owner panicked: …")`.
-   The mutex is poisoned after a panic; subsequent calls then return a
-   stable `"hosted rpc owner poisoned"` error so a single bad call
-   doesn't bring down the rest of the suite.
+   the reply back. Sync owners run behind a `std::sync::Mutex`; under
+   the tokio runner async owners run behind a `tokio::sync::Mutex` and
+   the parent loop awaits `HostedRpcOwnerCell::dispatch_async(...)`
+   directly so user `async fn` methods can `.await`.
+5. Owner panics are caught by `HostedRpcOwnerCell::dispatch` /
+   `dispatch_async` and surfaced to the calling worker as
+   `HostedRpcError::Dispatch("hosted rpc owner panicked: …")`.
+   Sync cells rely on the standard `std::sync::Mutex` poisoning;
+   async cells use an out-of-band `AtomicBool` poison flag that is
+   re-checked inside the lock so a waiter parked on `lock().await`
+   when the previous dispatch panics still returns the stable
+   `"hosted rpc owner poisoned"` error instead of re-entering the
+   (possibly half-mutated) owner. A single bad call doesn't bring
+   down the rest of the suite.
 6. In `--nocapture` / single-process mode, the runtime swaps the
    IPC-backed transport for `InProcessHostedRpcTransport`, which calls
    the owner cell directly — tests see the same stub regardless of
@@ -608,8 +703,19 @@ and only infrastructure failures panic.
 
 ### HostedRpc restrictions
 
-- The stub trait methods are synchronous on both runners. Async stub
-  methods are deferred.
+- The stub trait methods may be either synchronous or `async fn`, but
+  all methods of a single `#[hosted_rpc]` trait must use the same
+  shape. Async-mode traits require the owner to implement
+  [`AsyncHostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedRpcDep.html);
+  sync-mode traits continue to use [`HostedRpcDep`](https://docs.rs/test-r/latest/test_r/core/trait.HostedRpcDep.html).
+  Async `#[hosted_rpc]` registrations are only usable under the
+  tokio runner; the trait itself is re-exported unconditionally but
+  the runtime async dispatch path (the `Async` owner cell,
+  `dispatch_async`, `dispatch_blocking`) is `tokio`-feature-gated.
+  Without the tokio feature, owners must implement `HostedRpcDep`.
+  The blanket `impl<T: HostedRpcDep> AsyncHostedRpcDep for T` also
+  lets a sync owner be plugged into the tokio runner's async dispatch
+  path without further code changes.
 - The constructor may take other `#[test_dep]` parameters. Those dependencies
   are resolved only in the parent while constructing the owner. Workers receive
   an RPC channel and call `HostedRpcDep::build_stub(channel)`, so the
