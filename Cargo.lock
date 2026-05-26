@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "test-r"
-version = "3.0.6"
+version = "3.0.7"
 dependencies = [
  "ctor",
  "serde_json",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "test-r-core"
-version = "8.0.0"
+version = "8.0.1"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1536,7 +1536,7 @@ dependencies = [
 
 [[package]]
 name = "test-r-macro"
-version = "1.4.6"
+version = "1.4.7"
 dependencies = [
  "darling",
  "humantime",
