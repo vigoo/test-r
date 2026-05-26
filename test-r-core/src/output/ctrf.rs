@@ -1,10 +1,9 @@
 use crate::internal::{FlakinessControl, RegisteredTest, TestResult};
+use crate::output::progress::StderrProgress;
 use crate::output::{write_failure_summary_to_stderr, LogFile, StdoutOrLogFile, TestRunnerOutput};
-use ctrf_rs::report::Report;
-use ctrf_rs::results::ResultsBuilder;
 use ctrf_rs::test::{Status, Test};
-use ctrf_rs::tool::Tool;
-use std::collections::HashMap;
+use serde_json::json;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -13,6 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub(crate) struct Ctrf {
     show_output: bool,
     state: Mutex<CtrfState>,
+    progress: StderrProgress,
 }
 
 impl Ctrf {
@@ -24,17 +24,19 @@ impl Ctrf {
         Self {
             show_output,
             state: Mutex::new(CtrfState::new(target)),
+            progress: StderrProgress::new(),
         }
     }
 }
 
 impl TestRunnerOutput for Ctrf {
-    fn start_suite(&self, _tests: &[RegisteredTest]) {
+    fn start_suite(&self, tests: &[RegisteredTest]) {
         let mut state = self.state.lock().unwrap();
         state.start.replace(SystemTime::now());
+        self.progress.start_suite(tests.len());
     }
 
-    fn start_running_test(&self, registered_test: &RegisteredTest, _idx: usize, _count: usize) {
+    fn start_running_test(&self, registered_test: &RegisteredTest, idx: usize, count: usize) {
         let mut state = self.state.lock().unwrap();
         let mut test = Test::new(
             registered_test.fully_qualified_name(),
@@ -50,6 +52,9 @@ impl TestRunnerOutput for Ctrf {
         state
             .pending_tests
             .insert(registered_test.fully_qualified_name(), test);
+        drop(state);
+        self.progress
+            .start_running_test(registered_test, idx, count);
     }
 
     fn repeat_running_test(
@@ -77,10 +82,12 @@ impl TestRunnerOutput for Ctrf {
     fn finished_running_test(
         &self,
         registered_test: &RegisteredTest,
-        _idx: usize,
-        _count: usize,
+        idx: usize,
+        count: usize,
         result: &TestResult,
     ) {
+        self.progress
+            .finished_running_test(registered_test, idx, count, result);
         let mut state = self.state.lock().unwrap();
         let pending_test = state
             .pending_tests
@@ -134,8 +141,20 @@ impl TestRunnerOutput for Ctrf {
                 .as_millis() as u64,
         );
 
+        let status = test.status();
+        let suite = test.suite.clone();
         let value = serde_json::to_value(&test).expect("Failed to serialize CTRF test");
         state.tests.push(value);
+        match status {
+            Status::Passed => state.summary.passed += 1,
+            Status::Failed => state.summary.failed += 1,
+            Status::Pending => state.summary.pending += 1,
+            Status::Skipped => state.summary.skipped += 1,
+            Status::Other => state.summary.other += 1,
+        }
+        if let Some(s) = suite {
+            state.suites.insert(s);
+        }
 
         // Write an intermediate snapshot to the log file (if any) so partial
         // results survive even if the process is killed (e.g. due to a hanging
@@ -165,6 +184,13 @@ impl TestRunnerOutput for Ctrf {
 /// first so each snapshot is a complete, valid CTRF document. For stdout the
 /// snapshot is only written when `is_final` is true to avoid spamming stdout
 /// with partial reports.
+///
+/// The CTRF JSON document is built manually here (rather than via
+/// `ctrf_rs::Report`) so we can keep each previously emitted `Test` as a
+/// cached `serde_json::Value`. `ctrf_rs::test::Test` is neither `Clone` nor
+/// safely round-trippable through `serde_json` (several of its fields use
+/// `skip_serializing_if` without `default`), which would otherwise force us
+/// to rebuild every test from scratch on every snapshot.
 fn write_ctrf_snapshot(state: &mut CtrfState, is_final: bool) {
     let started = match state.start {
         Some(s) => s,
@@ -180,24 +206,57 @@ fn write_ctrf_snapshot(state: &mut CtrfState, is_final: bool) {
         return;
     }
 
-    let mut builder = ResultsBuilder::new(Tool::new(None));
-    for value in &state.tests {
-        let test: Test =
-            serde_json::from_value(value.clone()).expect("Failed to deserialize cached CTRF test");
-        builder.add_test(test);
+    let now = SystemTime::now();
+    let start_ms = started.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let stop_ms = now.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let total = state.summary.passed
+        + state.summary.failed
+        + state.summary.pending
+        + state.summary.skipped
+        + state.summary.other;
+
+    let mut summary = json!({
+        "tests": total,
+        "passed": state.summary.passed,
+        "failed": state.summary.failed,
+        "pending": state.summary.pending,
+        "skipped": state.summary.skipped,
+        "other": state.summary.other,
+        "start": start_ms,
+        "stop": stop_ms,
+    });
+    if !state.suites.is_empty() {
+        summary
+            .as_object_mut()
+            .unwrap()
+            .insert("suites".to_string(), json!(state.suites.len()));
     }
-    let ctrf_results = builder.build(started, SystemTime::now());
-    let report = Report::new(
-        None,
-        Some(SystemTime::now()),
-        Some("test-r".to_string()),
-        ctrf_results,
-    );
+
+    let report = json!({
+        "reportFormat": ctrf_rs::report::REPORT_FORMAT,
+        "specVersion": ctrf_rs::report::SPEC_VERSION.to_string(),
+        "timestamp": format!("{now:?}"),
+        "generatedBy": "test-r",
+        "results": {
+            "tool": { "name": "ctrf-rs" },
+            "summary": summary,
+            "tests": state.tests,
+        },
+    });
 
     let raw = serde_json::to_string(&report).expect("Failed to serialize CTRF document");
     let out = &mut state.target;
     writeln!(out, "{}", raw).expect("Failed to write to output");
     out.flush().expect("Failed to flush CTRF output");
+}
+
+#[derive(Default)]
+struct SummaryCounts {
+    passed: usize,
+    failed: usize,
+    pending: usize,
+    skipped: usize,
+    other: usize,
 }
 
 struct CtrfState {
@@ -207,6 +266,8 @@ struct CtrfState {
     /// rebuild a complete `Results` document each time we emit an intermediate
     /// snapshot.
     pub tests: Vec<serde_json::Value>,
+    pub summary: SummaryCounts,
+    pub suites: HashSet<String>,
     pub pending_tests: HashMap<String, Test>,
     pub start: Option<SystemTime>,
 }
@@ -216,6 +277,8 @@ impl CtrfState {
         Self {
             target,
             tests: Vec::new(),
+            summary: SummaryCounts::default(),
+            suites: HashSet::new(),
             pending_tests: HashMap::new(),
             start: None,
         }
