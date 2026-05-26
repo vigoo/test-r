@@ -8,12 +8,9 @@
 //! both worker-side views (`&LiveServiceOwner` and
 //! `&LiveControlStub`) resolve to the same parent-side owner.
 //!
-//! Step 4 restricts the supported surface to **sync constructors**
-//! (matching the existing HostedRpc MVP restriction). This example
-//! uses `std::net::TcpListener` from a sync constructor — the
-//! listener is converted to a tokio listener inside the owner's
-//! `_accept_task`, so the parent's tokio runtime still drives the
-//! accept loop without forcing the constructor itself to be `async`.
+//! This example uses `std::net::TcpListener` from a sync constructor. The
+//! listener is converted to a tokio listener inside the owner's `_accept_task`,
+//! so the parent's tokio runtime still drives the accept loop.
 
 #[cfg(test)]
 mod tests {
@@ -44,10 +41,9 @@ mod tests {
 
     impl LiveServiceOwner {
         fn new() -> Self {
-            // Bind synchronously so the constructor stays sync (Step 4
-            // restriction). Convert to a tokio TcpListener on the
-            // parent's runtime; nonblocking is set so the conversion
-            // succeeds without rebinding.
+            // Bind synchronously and convert to a tokio TcpListener on the
+            // parent's runtime; nonblocking is set so the conversion succeeds
+            // without rebinding.
             let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind localhost");
             std_listener.set_nonblocking(true).expect("set_nonblocking");
             let addr = std_listener.local_addr().expect("local_addr");

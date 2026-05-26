@@ -22,11 +22,38 @@ pub type DepWireBytes = (String, Vec<u8>);
 /// the owner alive for the suite's duration).
 pub type HostedOwner = Arc<dyn Any + Send + Sync>;
 
+#[cfg(feature = "tokio")]
+type ParentSharedDependenciesFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = HashMap<String, Arc<dyn Any + Send + Sync>>> + 'a>,
+>;
+
+#[cfg(test)]
 /// Result of [`TestSuiteExecution::collect_hosted_descriptor_bytes_sync`] /
 /// [`TestSuiteExecution::collect_hosted_descriptor_bytes_async`]: the
 /// descriptor bytes that get shipped to workers, plus the parent-held owner
 /// values that must outlive every worker.
 pub type HostedDescriptorCollection = (Vec<DepWireBytes>, Vec<HostedOwner>);
+
+/// Parent-side materialisation output for dependency scopes whose worker-side
+/// value is derived from parent-owned state instead of by rerunning the user
+/// constructor in each worker process.
+pub struct ParentSharedDependencies {
+    pub cloneable_wire_bytes: Vec<DepWireBytes>,
+    pub hosted_descriptor_bytes: Vec<DepWireBytes>,
+    pub hosted_owners: Vec<HostedOwner>,
+    pub hosted_rpc_owner_cells: Vec<(String, Arc<HostedRpcOwnerCell>)>,
+}
+
+impl ParentSharedDependencies {
+    fn new() -> Self {
+        Self {
+            cloneable_wire_bytes: Vec::new(),
+            hosted_descriptor_bytes: Vec::new(),
+            hosted_owners: Vec::new(),
+            hosted_rpc_owner_cells: Vec::new(),
+        }
+    }
+}
 
 pub(crate) struct TestSuiteExecution {
     crate_and_module: String,
@@ -142,7 +169,7 @@ impl TestSuiteExecution {
     }
 
     /// Returns true if any dependency in this subtree uses `DepScope::Cloneable`.
-    #[allow(dead_code)] // used by Phase 1A.5 wiring (see sync.rs / tokio.rs)
+    #[allow(dead_code)]
     pub fn has_cloneable_dependencies(&self) -> bool {
         self.dependencies
             .iter()
@@ -153,11 +180,10 @@ impl TestSuiteExecution {
                 .any(|inner| inner.has_cloneable_dependencies())
     }
 
-    /// Phase 1B: returns true if any dependency in this subtree uses
-    /// `DepScope::Hosted`. The parent runs Hosted owners exactly once and
-    /// keeps them alive for the duration of the suite while shipping
-    /// descriptors to workers.
-    #[allow(dead_code)] // used by Phase 1B wiring (see sync.rs / tokio.rs)
+    /// Returns true if any dependency in this subtree uses `DepScope::Hosted`.
+    /// The parent keeps Hosted owners alive for the duration of the suite
+    /// while shipping descriptors to workers.
+    #[allow(dead_code)]
     pub fn has_hosted_dependencies(&self) -> bool {
         self.dependencies
             .iter()
@@ -168,10 +194,9 @@ impl TestSuiteExecution {
                 .any(|inner| inner.has_hosted_dependencies())
     }
 
-    /// Phase 1C: returns true if any dependency in this subtree uses
-    /// `DepScope::HostedRpc`. The parent runs HostedRpc owners exactly once,
-    /// keeps the owner cells alive for the suite, and routes worker-initiated
-    /// IPC calls to those cells.
+    /// Returns true if any dependency in this subtree uses `DepScope::HostedRpc`.
+    /// The parent keeps owner cells alive for the suite and routes
+    /// worker-initiated IPC calls to those cells.
     #[allow(dead_code)]
     pub fn has_hosted_rpc_dependencies(&self) -> bool {
         self.dependencies
@@ -184,7 +209,7 @@ impl TestSuiteExecution {
     }
 
     /// Collects every Cloneable dependency in this subtree (depth-first).
-    #[allow(dead_code)] // used by Phase 1A.5 wiring (see sync.rs / tokio.rs)
+    #[allow(dead_code)]
     pub fn collect_cloneable_dependencies(&self) -> Vec<RegisteredDependency> {
         let mut out = Vec::new();
         self.collect_cloneable_dependencies_into(&mut out);
@@ -203,214 +228,194 @@ impl TestSuiteExecution {
         }
     }
 
-    /// Phase 1A: walks the subtree, runs every Cloneable dep's constructor in
-    /// the parent (passing an empty dep view — Cloneable deps must not take
-    /// other dependencies in 1A), encodes the result to wire bytes via the
-    /// registered [`crate::internal::CloneableCodec`], and discards the
-    /// materialised value. The returned items are keyed by the dep's
-    /// fully-qualified id (`{crate}::{module}::{name}`) so deps with the same
-    /// local name registered in different modules don't collide on the wire.
-    /// The parent ships them to each worker via
-    /// [`crate::ipc::IpcCommand::ProvideCloneable`].
-    pub fn collect_cloneable_wire_bytes_sync(&self) -> Vec<(String, Vec<u8>)> {
-        let mut out = Vec::new();
-        self.collect_cloneable_wire_bytes_into(&mut out);
+    /// Walks the subtree, materialising dependencies in dependency order and
+    /// collecting the parent-side wire/state needed by Cloneable, Hosted, and
+    /// HostedRpc scopes. Constructor dependencies are resolved in this parent
+    /// context, but workers still receive these shared scopes as dependency-free
+    /// leaves: Cloneable/Hosted values are reconstructed from bytes, and
+    /// HostedRpc values are stubs backed by a channel.
+    pub fn collect_parent_shared_dependencies_sync(&self) -> ParentSharedDependencies {
+        let mut out = ParentSharedDependencies::new();
+        let parent_map = HashMap::new();
+        self.collect_parent_shared_dependencies_into_sync(&parent_map, &mut out);
         out
     }
 
-    fn collect_cloneable_wire_bytes_into(&self, out: &mut Vec<(String, Vec<u8>)>) {
-        for dep in &self.dependencies {
-            if dep.scope == DepScope::Cloneable {
-                assert!(
-                    dep.dependencies.is_empty(),
-                    "Phase 1A Cloneable dep '{}' may not depend on other deps (depends on {:?})",
-                    dep.name,
-                    dep.dependencies
-                );
-                let codec = dep.cloneable_codec.as_ref().unwrap_or_else(|| {
-                    panic!("Cloneable dep '{}' missing CloneableCodec", dep.name)
-                });
-                let empty: HashMap<String, Arc<dyn Any + Send + Sync>> = HashMap::new();
-                let value = match &dep.constructor {
-                    DependencyConstructor::Sync(cons) => cons(Arc::new(empty)),
-                    DependencyConstructor::Async(_) => {
-                        panic!(
-                            "Cloneable dep '{}' has async constructor; not supported in sync runner",
-                            dep.name
-                        );
-                    }
-                };
-                let bytes = (codec.to_wire)(value);
-                out.push((dep.qualified_id(), bytes));
-            }
-        }
-        for inner in &self.inner {
-            inner.collect_cloneable_wire_bytes_into(out);
-        }
-    }
-
-    /// Phase 1B: parent-side materialisation for `Hosted` dependencies.
-    ///
-    /// For each Hosted dep in this subtree, runs the owner constructor on
-    /// the parent (with an empty dep view — Hosted owners may not depend on
-    /// other test deps in Phase 1B), encodes the descriptor via the
-    /// registered [`crate::internal::CloneableCodec`] stored in
-    /// `hosted_codec`, and returns BOTH the descriptor bytes (keyed by the
-    /// dep's fully-qualified id) AND the owner values themselves so the
-    /// caller can keep them alive for the duration of the suite. Unlike
-    /// Cloneable, Hosted owners must NOT be dropped — they hold resources
-    /// (TCP listeners, Docker containers, gRPC clients, etc.) that workers'
-    /// reconstructed handles depend on.
-    pub fn collect_hosted_descriptor_bytes_sync(&self) -> HostedDescriptorCollection {
-        let mut descriptors = Vec::new();
-        let mut owners = Vec::new();
-        self.collect_hosted_descriptor_bytes_into(&mut descriptors, &mut owners);
-        (descriptors, owners)
-    }
-
-    fn collect_hosted_descriptor_bytes_into(
+    fn collect_parent_shared_dependencies_into_sync(
         &self,
-        descriptors: &mut Vec<DepWireBytes>,
-        owners: &mut Vec<HostedOwner>,
-    ) {
-        for dep in &self.dependencies {
-            if dep.scope == DepScope::Hosted {
-                assert!(
-                    dep.dependencies.is_empty(),
-                    "Phase 1B Hosted dep '{}' may not depend on other deps (depends on {:?})",
-                    dep.name,
-                    dep.dependencies
-                );
-                let codec = dep
-                    .hosted_codec
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("Hosted dep '{}' missing hosted codec", dep.name));
-                let empty: HashMap<String, Arc<dyn Any + Send + Sync>> = HashMap::new();
-                let value = match &dep.constructor {
-                    DependencyConstructor::Sync(cons) => cons(Arc::new(empty)),
-                    DependencyConstructor::Async(_) => {
-                        panic!(
-                            "Hosted dep '{}' has async constructor; not supported in sync runner",
-                            dep.name
-                        );
-                    }
-                };
-                let bytes = (codec.to_wire)(value.clone());
-                descriptors.push((dep.qualified_id(), bytes));
-                owners.push(value);
+        parent_map: &HashMap<String, Arc<dyn Any + Send + Sync>>,
+        out: &mut ParentSharedDependencies,
+    ) -> HashMap<String, Arc<dyn Any + Send + Sync>> {
+        let mut dependency_map = parent_map.clone();
+        let sorted_dependencies = self.sorted_dependencies();
+
+        for dep in sorted_dependencies {
+            if dependency_map.contains_key(&dep.name) {
+                continue;
             }
-        }
-        for inner in &self.inner {
-            inner.collect_hosted_descriptor_bytes_into(descriptors, owners);
-        }
-    }
 
-    /// Phase 1C: parent-side materialisation for `HostedRpc` dependencies.
-    ///
-    /// For each HostedRpc dep in this subtree, runs the owner constructor on
-    /// the parent (with an empty dep view — HostedRpc owners may not depend
-    /// on other test deps in Phase 1C), downcasts the resulting
-    /// `Arc<dyn Any>` to the dep's `HostedRpcOwnerCell` via the registered
-    /// [`crate::internal::RpcFactory::owner_into_cell`], and returns
-    /// `(qualified_id, cell)` pairs that the runtime keeps alive for the
-    /// suite's lifetime and uses to dispatch worker-initiated RPC calls.
-    pub fn collect_hosted_rpc_owner_cells_sync(&self) -> Vec<(String, Arc<HostedRpcOwnerCell>)> {
-        let mut out = Vec::new();
-        self.collect_hosted_rpc_owner_cells_into(&mut out);
-        out
-    }
-
-    fn collect_hosted_rpc_owner_cells_into(
-        &self,
-        out: &mut Vec<(String, Arc<HostedRpcOwnerCell>)>,
-    ) {
-        for dep in &self.dependencies {
-            if dep.scope == DepScope::HostedRpc {
-                assert!(
-                    dep.dependencies.is_empty(),
-                    "Phase 1C HostedRpc dep '{}' may not depend on other deps (depends on {:?})",
-                    dep.name,
-                    dep.dependencies
-                );
-                let factory = dep
-                    .rpc_factory
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("HostedRpc dep '{}' missing RpcFactory", dep.name));
-                let empty: HashMap<String, Arc<dyn Any + Send + Sync>> = HashMap::new();
-                let value = match &dep.constructor {
-                    DependencyConstructor::Sync(cons) => cons(Arc::new(empty)),
-                    DependencyConstructor::Async(_) => {
-                        panic!(
-                            "HostedRpc dep '{}' has async constructor; not supported in the MVP \
-                             on either the sync or tokio runner. Use a sync constructor that \
-                             returns the owner directly.",
-                            dep.name
-                        );
-                    }
-                };
-                let cell = (factory.owner_into_cell)(value);
-                out.push((dep.qualified_id(), cell));
-            }
-        }
-        for inner in &self.inner {
-            inner.collect_hosted_rpc_owner_cells_into(out);
-        }
-    }
-
-    /// Phase 1B async counterpart of [`Self::collect_hosted_descriptor_bytes_sync`].
-    /// Same semantics, but `async fn` owner constructors are awaited on the
-    /// parent. Like its Cloneable sibling this future is intentionally
-    /// `!Send` and must be awaited on the root runner task.
-    #[cfg(feature = "tokio")]
-    pub async fn collect_hosted_descriptor_bytes_async(&self) -> HostedDescriptorCollection {
-        let mut descriptors = Vec::new();
-        let mut owners = Vec::new();
-        self.collect_hosted_descriptor_bytes_into_async(&mut descriptors, &mut owners)
-            .await;
-        (descriptors, owners)
-    }
-
-    #[cfg(feature = "tokio")]
-    fn collect_hosted_descriptor_bytes_into_async<'a>(
-        &'a self,
-        descriptors: &'a mut Vec<DepWireBytes>,
-        owners: &'a mut Vec<HostedOwner>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
-        Box::pin(async move {
-            for dep in &self.dependencies {
-                if dep.scope == DepScope::Hosted {
-                    assert!(
-                        dep.dependencies.is_empty(),
-                        "Phase 1B Hosted dep '{}' may not depend on other deps (depends on {:?})",
-                        dep.name,
-                        dep.dependencies
-                    );
+            let value = Self::construct_dependency_sync(dep, &dependency_map);
+            match dep.scope {
+                DepScope::Cloneable => {
+                    let codec = dep.cloneable_codec.as_ref().unwrap_or_else(|| {
+                        panic!("Cloneable dep '{}' missing CloneableCodec", dep.name)
+                    });
+                    out.cloneable_wire_bytes
+                        .push((dep.qualified_id(), (codec.to_wire)(value.clone())));
+                }
+                DepScope::Hosted => {
                     let codec = dep.hosted_codec.as_ref().unwrap_or_else(|| {
                         panic!("Hosted dep '{}' missing hosted codec", dep.name)
                     });
-                    let empty: HashMap<String, Arc<dyn Any + Send + Sync>> = HashMap::new();
-                    let value = match &dep.constructor {
-                        DependencyConstructor::Sync(cons) => cons(Arc::new(empty)),
-                        DependencyConstructor::Async(cons) => cons(Arc::new(empty)).await,
-                    };
-                    let bytes = (codec.to_wire)(value.clone());
-                    descriptors.push((dep.qualified_id(), bytes));
-                    owners.push(value);
+                    out.hosted_descriptor_bytes
+                        .push((dep.qualified_id(), (codec.to_wire)(value.clone())));
+                    out.hosted_owners.push(value.clone());
                 }
+                DepScope::HostedRpc => {
+                    let factory = dep.rpc_factory.as_ref().unwrap_or_else(|| {
+                        panic!("HostedRpc dep '{}' missing RpcFactory", dep.name)
+                    });
+                    let cell = (factory.owner_into_cell)(value.clone());
+                    out.hosted_rpc_owner_cells.push((dep.qualified_id(), cell));
+                }
+                DepScope::Shared | DepScope::PerWorker => {}
             }
+
+            dependency_map.insert(dep.name.clone(), value);
+        }
+
+        for inner in &self.inner {
+            inner.collect_parent_shared_dependencies_into_sync(&dependency_map, out);
+        }
+
+        dependency_map
+    }
+
+    fn construct_dependency_sync(
+        dep: &RegisteredDependency,
+        dependency_map: &HashMap<String, Arc<dyn Any + Send + Sync>>,
+    ) -> Arc<dyn Any + Send + Sync> {
+        match &dep.constructor {
+            DependencyConstructor::Sync(cons) => cons(Arc::new(dependency_map.clone())),
+            DependencyConstructor::Async(cons) => {
+                futures::executor::block_on(cons(Arc::new(dependency_map.clone())))
+            }
+        }
+    }
+
+    /// Collects only Cloneable wire bytes. The runner uses
+    /// [`Self::collect_parent_shared_dependencies_sync`] to collect all shared
+    /// parent-side values in one pass; this narrower helper remains for unit
+    /// tests and focused callers.
+    #[cfg(test)]
+    pub fn collect_cloneable_wire_bytes_sync(&self) -> Vec<(String, Vec<u8>)> {
+        self.collect_parent_shared_dependencies_sync()
+            .cloneable_wire_bytes
+    }
+
+    /// Parent-side materialisation for `Hosted` dependencies.
+    ///
+    /// The returned descriptor bytes are keyed by fully-qualified dep id and
+    /// the returned owner values must be kept alive for the duration of the
+    /// suite. Unlike Cloneable, Hosted owners may hold resources (TCP
+    /// listeners, Docker containers, gRPC clients, etc.) that workers'
+    /// reconstructed handles depend on.
+    #[cfg(test)]
+    pub fn collect_hosted_descriptor_bytes_sync(&self) -> HostedDescriptorCollection {
+        let collected = self.collect_parent_shared_dependencies_sync();
+        (collected.hosted_descriptor_bytes, collected.hosted_owners)
+    }
+
+    /// Parent-side materialisation for `HostedRpc` dependencies.
+    ///
+    /// Returns `(qualified_id, cell)` pairs that the runtime keeps alive for
+    /// the suite's lifetime and uses to dispatch worker-initiated RPC calls.
+    #[cfg(test)]
+    pub fn collect_hosted_rpc_owner_cells_sync(&self) -> Vec<(String, Arc<HostedRpcOwnerCell>)> {
+        self.collect_parent_shared_dependencies_sync()
+            .hosted_rpc_owner_cells
+    }
+
+    /// Async counterpart of [`Self::collect_parent_shared_dependencies_sync`].
+    /// Async constructors are awaited on the parent before workers receive
+    /// wire bytes, descriptors, or RPC stubs.
+    #[cfg(feature = "tokio")]
+    pub async fn collect_parent_shared_dependencies_async(&self) -> ParentSharedDependencies {
+        let mut out = ParentSharedDependencies::new();
+        let parent_map = HashMap::new();
+        self.collect_parent_shared_dependencies_into_async(&parent_map, &mut out)
+            .await;
+        out
+    }
+
+    #[cfg(feature = "tokio")]
+    fn collect_parent_shared_dependencies_into_async<'a>(
+        &'a self,
+        parent_map: &'a HashMap<String, Arc<dyn Any + Send + Sync>>,
+        out: &'a mut ParentSharedDependencies,
+    ) -> ParentSharedDependenciesFuture<'a> {
+        Box::pin(async move {
+            let mut dependency_map = parent_map.clone();
+            let sorted_dependencies = self.sorted_dependencies();
+
+            for dep in sorted_dependencies {
+                if dependency_map.contains_key(&dep.name) {
+                    continue;
+                }
+
+                let value = match &dep.constructor {
+                    DependencyConstructor::Sync(cons) => cons(Arc::new(dependency_map.clone())),
+                    DependencyConstructor::Async(cons) => {
+                        cons(Arc::new(dependency_map.clone())).await
+                    }
+                };
+                match dep.scope {
+                    DepScope::Cloneable => {
+                        let codec = dep.cloneable_codec.as_ref().unwrap_or_else(|| {
+                            panic!("Cloneable dep '{}' missing CloneableCodec", dep.name)
+                        });
+                        out.cloneable_wire_bytes
+                            .push((dep.qualified_id(), (codec.to_wire)(value.clone())));
+                    }
+                    DepScope::Hosted => {
+                        let codec = dep.hosted_codec.as_ref().unwrap_or_else(|| {
+                            panic!("Hosted dep '{}' missing hosted codec", dep.name)
+                        });
+                        out.hosted_descriptor_bytes
+                            .push((dep.qualified_id(), (codec.to_wire)(value.clone())));
+                        out.hosted_owners.push(value.clone());
+                    }
+                    DepScope::HostedRpc => {
+                        let factory = dep.rpc_factory.as_ref().unwrap_or_else(|| {
+                            panic!("HostedRpc dep '{}' missing RpcFactory", dep.name)
+                        });
+                        let cell = (factory.owner_into_cell)(value.clone());
+                        out.hosted_rpc_owner_cells.push((dep.qualified_id(), cell));
+                    }
+                    DepScope::Shared | DepScope::PerWorker => {}
+                }
+
+                dependency_map.insert(dep.name.clone(), value);
+            }
+
             for inner in &self.inner {
                 inner
-                    .collect_hosted_descriptor_bytes_into_async(descriptors, owners)
+                    .collect_parent_shared_dependencies_into_async(&dependency_map, out)
                     .await;
             }
+            dependency_map
         })
     }
 
-    /// Async counterpart of [`Self::collect_cloneable_wire_bytes_sync`]. Used by
-    /// the tokio runner so that `async fn` Cloneable constructors are awaited
-    /// on the parent. Mirrors the sync collector otherwise: parent-side
-    /// materialisation with an empty dep view, the result is encoded via the
-    /// registered codec and discarded.
+    /// Async Hosted-only collection helper retained for focused callers.
+    #[cfg(feature = "tokio")]
+    #[cfg(test)]
+    pub async fn collect_hosted_descriptor_bytes_async(&self) -> HostedDescriptorCollection {
+        let collected = self.collect_parent_shared_dependencies_async().await;
+        (collected.hosted_descriptor_bytes, collected.hosted_owners)
+    }
+
+    /// Async Cloneable-only collection helper retained for focused callers.
     ///
     /// **Intentionally `!Send`.** The underlying `DependencyConstructor::Async`
     /// future is not `Send`, so the returned future from this collector cannot
@@ -420,42 +425,11 @@ impl TestSuiteExecution {
     /// collection onto a worker, the constructor type would need to require
     /// `Send` first.
     #[cfg(feature = "tokio")]
+    #[cfg(test)]
     pub async fn collect_cloneable_wire_bytes_async(&self) -> Vec<(String, Vec<u8>)> {
-        let mut out = Vec::new();
-        self.collect_cloneable_wire_bytes_into_async(&mut out).await;
-        out
-    }
-
-    #[cfg(feature = "tokio")]
-    fn collect_cloneable_wire_bytes_into_async<'a>(
-        &'a self,
-        out: &'a mut Vec<(String, Vec<u8>)>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
-        Box::pin(async move {
-            for dep in &self.dependencies {
-                if dep.scope == DepScope::Cloneable {
-                    assert!(
-                        dep.dependencies.is_empty(),
-                        "Phase 1A Cloneable dep '{}' may not depend on other deps (depends on {:?})",
-                        dep.name,
-                        dep.dependencies
-                    );
-                    let codec = dep.cloneable_codec.as_ref().unwrap_or_else(|| {
-                        panic!("Cloneable dep '{}' missing CloneableCodec", dep.name)
-                    });
-                    let empty: HashMap<String, Arc<dyn Any + Send + Sync>> = HashMap::new();
-                    let value = match &dep.constructor {
-                        DependencyConstructor::Sync(cons) => cons(Arc::new(empty)),
-                        DependencyConstructor::Async(cons) => cons(Arc::new(empty)).await,
-                    };
-                    let bytes = (codec.to_wire)(value);
-                    out.push((dep.qualified_id(), bytes));
-                }
-            }
-            for inner in &self.inner {
-                inner.collect_cloneable_wire_bytes_into_async(out).await;
-            }
-        })
+        self.collect_parent_shared_dependencies_async()
+            .await
+            .cloneable_wire_bytes
     }
 
     /// Worker-side counterpart to [`Self::collect_cloneable_wire_bytes_sync`]:
@@ -471,19 +445,37 @@ impl TestSuiteExecution {
         dep_id: &str,
         value: Arc<dyn Any + Send + Sync>,
     ) -> bool {
+        let applied = self.provide_cloneable_value_internal(dep_id, value);
+        if applied {
+            self.prune_unused_deps();
+        }
+        applied
+    }
+
+    fn provide_cloneable_value_internal(
+        &mut self,
+        dep_id: &str,
+        value: Arc<dyn Any + Send + Sync>,
+    ) -> bool {
         let mut applied = false;
-        if let Some(local_name) = self
+        if let Some((local_name, dep_idx)) = self
             .dependencies
             .iter()
-            .find(|d| d.qualified_id() == dep_id)
-            .map(|d| d.name.clone())
+            .enumerate()
+            .find(|(_, d)| d.qualified_id() == dep_id)
+            .map(|(idx, d)| (d.name.clone(), idx))
         {
+            // From the worker execution tree's perspective this dependency is
+            // now a leaf: its value came from wire bytes or a HostedRpc channel,
+            // so the worker must not instantiate constructor-only dependencies
+            // that were needed solely in the parent collection context.
+            self.dependencies[dep_idx].dependencies.clear();
             self.materialized_dependencies
                 .insert(local_name, value.clone());
             applied = true;
         }
         for inner in &mut self.inner {
-            applied |= inner.provide_cloneable_value(dep_id, value.clone());
+            applied |= inner.provide_cloneable_value_internal(dep_id, value.clone());
         }
         applied
     }
@@ -855,8 +847,8 @@ impl TestSuiteExecution {
             }
             let materialized_dep = match &dep.constructor {
                 DependencyConstructor::Sync(cons) => cons(Arc::new(dependency_map.clone())),
-                DependencyConstructor::Async(_cons) => {
-                    panic!("Async dependencies are not supported in sync mode")
+                DependencyConstructor::Async(cons) => {
+                    futures::executor::block_on(cons(Arc::new(dependency_map.clone())))
                 }
             };
             deps.insert(dep.name.clone(), materialized_dep.clone());
@@ -1360,6 +1352,43 @@ mod cloneable_tests {
         );
     }
 
+    #[test]
+    fn provided_shared_value_is_a_worker_side_leaf() {
+        let provided_counter = Arc::new(AtomicUsize::new(0));
+        let parent_only_counter = Arc::new(AtomicUsize::new(0));
+        let mut provided_dep = registered_cloneable_dep("clone_dep", provided_counter.clone());
+        provided_dep.dependencies = vec!["parent_only_dep".to_string()];
+        let parent_only_dep =
+            registered_cloneable_dep("parent_only_dep", parent_only_counter.clone());
+        let test = registered_test("t1", vec!["clone_dep".to_string()]);
+
+        let (mut execution, _filtered) = TestSuiteExecution::construct(
+            &Arguments::default(),
+            &[provided_dep, parent_only_dep],
+            &[test],
+            &[],
+        );
+
+        let pre_value: Arc<dyn Any + Send + Sync> = Arc::new(99_u64);
+        let applied = execution.provide_cloneable_value("tcrate::clone_dep", pre_value);
+        assert!(applied);
+
+        let next = execution.pick_next_sync().expect("test should be picked");
+        let view = next.deps.get("clone_dep").expect("dep available");
+        let value: Arc<u64> = view.downcast::<u64>().unwrap();
+        assert_eq!(*value, 99);
+        assert_eq!(
+            provided_counter.load(Ordering::SeqCst),
+            0,
+            "worker-side provided values must not run their original constructor"
+        );
+        assert_eq!(
+            parent_only_counter.load(Ordering::SeqCst),
+            0,
+            "constructor dependencies are parent-only once a value arrives from wire bytes or an RPC stub"
+        );
+    }
+
     /// Async-constructor counterpart for the parent-side collector used by the
     /// tokio runner. Verifies that a Cloneable owner declared with
     /// `async fn` is awaited on the parent and its wire bytes are produced
@@ -1430,10 +1459,9 @@ mod cloneable_tests {
         );
     }
 
-    /// Regression test for the oracle's "Cloneable dep identity" bug:
-    /// two cloneable deps that share a local `name` but live in different
-    /// modules must not collide on the wire and must not cross-apply on the
-    /// worker side.
+    /// Regression test: two cloneable deps that share a local `name` but live
+    /// in different modules must not collide on the wire and must not
+    /// cross-apply on the worker side.
     #[test]
     fn cloneable_value_routing_uses_qualified_id_across_modules() {
         let counter_a = Arc::new(AtomicUsize::new(0));
@@ -1535,7 +1563,7 @@ mod cloneable_tests {
         );
     }
 
-    // -------- Phase 1B: Hosted dep tests --------
+    // -------- Hosted dep tests --------
 
     /// Builds a Hosted RegisteredDependency for tests. Owner value is a u64
     /// (`payload`). `descriptor()` is modelled by the codec's `to_wire` as
@@ -1678,9 +1706,8 @@ mod cloneable_tests {
         assert!(!execution.has_cloneable_dependencies());
     }
 
-    /// The parent-hosted Phase 1B design: the owner constructor must run
-    /// EXACTLY once even with multiple workers — descriptors are computed
-    /// once on the parent and shipped to each worker.
+    /// The owner constructor must run EXACTLY once even with multiple workers —
+    /// descriptors are computed once on the parent and shipped to each worker.
     #[test]
     fn hosted_owner_runs_exactly_once_even_when_collecting_multiple_times() {
         // The collector is what the parent calls once; we verify the
@@ -1863,15 +1890,15 @@ mod cloneable_tests {
         let (mut execution, _filtered) =
             TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
 
-        // Step 1: parent runs owner constructor once and collects descriptor
-        // bytes (mirroring `collect_hosted_descriptor_bytes_sync` invoked by
-        // the no-spawn-workers parent runner).
+        // Parent runs the owner constructor once and collects descriptor bytes
+        // (mirroring `collect_hosted_descriptor_bytes_sync` invoked by the
+        // no-spawn-workers parent runner).
         let (descriptors, owners) = execution.collect_hosted_descriptor_bytes_sync();
         assert_eq!(descriptors.len(), 1);
         assert_eq!(owners.len(), 1);
         let (dep_id, wire_bytes) = &descriptors[0];
 
-        // Step 2: parent reconstructs the WORKER-side handle locally via
+        // Parent reconstructs the WORKER-side handle locally via
         // codec.from_wire_bytes + worker_fn (mirroring
         // `apply_hosted_descriptors_locally` in sync.rs / tokio.rs).
         let wire_payload = (codec.from_wire_bytes)(wire_bytes.as_slice());
@@ -1884,8 +1911,8 @@ mod cloneable_tests {
         let applied = execution.provide_cloneable_value(dep_id, reconstructed);
         assert!(applied);
 
-        // Step 3: pick the test — it must see the WORKER handle (~owner),
-        // NOT the owner constructor's return value.
+        // Pick the test — it must see the WORKER handle (~owner), NOT the owner
+        // constructor's return value.
         let next = execution.pick_next_sync().expect("test picked");
         let view = next.deps.get("hosted_dep").expect("dep available");
         let value: Arc<u64> = view.clone().downcast::<u64>().unwrap();
@@ -1901,22 +1928,28 @@ mod cloneable_tests {
         );
     }
 
-    /// Phase 1B Hosted owners that depend on other test deps must be
-    /// rejected at descriptor-collection time. (The macro layer also rejects
-    /// this at compile time; this exercises the runtime backstop.)
+    /// Hosted owners construct their dependencies in the parent collection
+    /// context. Worker-side values reconstructed from descriptors are leaves;
+    /// the constructor dependencies are not re-created from wire bytes.
     #[test]
-    #[should_panic(expected = "may not depend on other deps")]
-    fn hosted_dep_with_owner_dependencies_panics_at_collection() {
-        let mut dep = registered_hosted_dep("h_with_deps", 0, Arc::new(AtomicUsize::new(0)));
-        dep.dependencies = vec!["some_other_dep".to_string()];
+    fn hosted_dep_with_owner_dependencies_constructs_in_parent_context() {
+        let dep_counter = Arc::new(AtomicUsize::new(0));
+        let owner_counter = Arc::new(AtomicUsize::new(0));
+        let dep = registered_cloneable_dep("some_other_dep", dep_counter.clone());
+        let mut hosted = registered_hosted_dep("h_with_deps", 0, owner_counter.clone());
+        hosted.dependencies = vec!["some_other_dep".to_string()];
         let test = registered_test("t1", vec!["h_with_deps".to_string()]);
         let (execution, _filtered) =
-            TestSuiteExecution::construct(&Arguments::default(), &[dep], &[test], &[]);
-        let _ = execution.collect_hosted_descriptor_bytes_sync();
+            TestSuiteExecution::construct(&Arguments::default(), &[dep, hosted], &[test], &[]);
+        let collected = execution.collect_parent_shared_dependencies_sync();
+
+        assert_eq!(collected.hosted_descriptor_bytes.len(), 1);
+        assert_eq!(dep_counter.load(Ordering::SeqCst), 1);
+        assert_eq!(owner_counter.load(Ordering::SeqCst), 1);
     }
 
-    /// Phase 1B tokio path: async owner constructors are awaited on the
-    /// parent's collector.
+    /// Tokio path: async owner constructors are awaited on the parent's
+    /// collector.
     #[cfg(feature = "tokio")]
     #[test]
     fn async_hosted_descriptor_collection_awaits_async_constructor() {
@@ -1987,7 +2020,7 @@ mod cloneable_tests {
     }
 
     // ===========================================================
-    // Phase 1C — HostedRpc unit tests
+    // HostedRpc unit tests
     // ===========================================================
 
     use crate::internal::{
@@ -2010,7 +2043,7 @@ mod cloneable_tests {
                     self.n += 1;
                     Ok(self.n.to_be_bytes().to_vec())
                 }
-                // HR1.0: large-payload echo. Args are a 4-byte big-endian
+                // Large-payload echo. Args are a 4-byte big-endian
                 // u32 size; the owner returns `size` bytes filled with a
                 // deterministic `i % 251` pattern so framing corruption
                 // is caught explicitly, not just length mismatch.
@@ -2045,7 +2078,7 @@ mod cloneable_tests {
             u64::from_be_bytes(arr)
         }
 
-        /// HR1.0: request `size` bytes back from the owner.
+        /// Request `size` bytes back from the owner.
         fn echo(&self, size: u32) -> Vec<u8> {
             self.channel
                 .call(2, size.to_be_bytes().to_vec())
@@ -2129,6 +2162,29 @@ mod cloneable_tests {
     }
 
     #[test]
+    fn hosted_rpc_owner_dependencies_construct_in_parent_context() {
+        let parent_only_counter = Arc::new(AtomicUsize::new(0));
+        let owner_counter = Arc::new(AtomicUsize::new(0));
+        let parent_only_dep =
+            registered_cloneable_dep("parent_only_dep", parent_only_counter.clone());
+        let mut rpc_dep = registered_hosted_rpc_dep("rpc_dep", "", owner_counter.clone());
+        rpc_dep.dependencies = vec!["parent_only_dep".to_string()];
+        let test = registered_test("t1", vec!["rpc_dep".to_string()]);
+
+        let (execution, _filtered) = TestSuiteExecution::construct(
+            &Arguments::default(),
+            &[parent_only_dep, rpc_dep],
+            &[test],
+            &[],
+        );
+
+        let cells = execution.collect_hosted_rpc_owner_cells_sync();
+        assert_eq!(cells.len(), 1);
+        assert_eq!(parent_only_counter.load(Ordering::SeqCst), 1);
+        assert_eq!(owner_counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn hosted_rpc_in_process_transport_routes_to_owner_cell() {
         let counter = Arc::new(AtomicUsize::new(0));
         let dep = registered_hosted_rpc_dep("rpc_dep", "", counter.clone());
@@ -2206,11 +2262,10 @@ mod cloneable_tests {
     }
 
     // -------------------------------------------------------------
-    // Optional oracle-suggested coverage: owner panic + mutex
-    // poisoning. The owner-cell catches the panic, turns it into
-    // `Err("hosted rpc owner panicked: ...")` for the first call, and
-    // subsequent calls hit the poisoned mutex and get the stable
-    // `"hosted rpc owner poisoned"` error.
+    // Coverage for owner panic + mutex poisoning. The owner-cell catches the
+    // panic, turns it into `Err("hosted rpc owner panicked: ...")` for the
+    // first call, and subsequent calls hit the poisoned mutex and get the
+    // stable `"hosted rpc owner poisoned"` error.
     // -------------------------------------------------------------
 
     /// Owner that panics on every dispatch call. Used to exercise the
@@ -2260,7 +2315,7 @@ mod cloneable_tests {
     }
 
     // -------------------------------------------------------------
-    // HR1.0 coverage: large-payload IPC framing (>64 KiB) and
+    // Large-payload IPC framing coverage (>64 KiB) and
     // concurrent in-flight RPC requests routed through the in-process
     // transport without deadlock or framing corruption.
     // -------------------------------------------------------------

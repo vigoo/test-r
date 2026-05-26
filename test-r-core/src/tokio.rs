@@ -1,6 +1,6 @@
 use crate::args::{Arguments, TimeThreshold};
 use crate::bench::AsyncBencher;
-use crate::execution::{DepWireBytes, HostedOwner, TestExecution, TestSuiteExecution};
+use crate::execution::{DepWireBytes, TestExecution, TestSuiteExecution};
 use crate::internal;
 use crate::internal::{
     generate_tests, get_ensure_time, CapturedOutput, CloneableCodec, FailureCause,
@@ -46,7 +46,7 @@ pub fn test_runner() -> ExitCode {
 async fn async_test_runner() -> ExitCode {
     crate::panic_hook::install_panic_hook();
     let mut args = Arguments::from_args();
-    // Phase 3.3: when the parent spawned this process as a worker it passed
+    // When the parent spawned this process as a worker it passed
     // `--worker-index <N>`. Stash it so `crate::worker::worker_index()`
     // returns the correct value for PerWorker dep constructors.
     if let Some(idx) = args.worker_index {
@@ -83,52 +83,34 @@ async fn async_test_runner() -> ExitCode {
                 registered_testsuite_props.as_slice(),
             );
             args.finalize_for_execution(&execution, output.clone());
-            // Phase 1A.5: materialise Cloneable deps in the parent and
-            // ship the wire bytes to each worker via IPC (see sync.rs for
-            // the equivalent code path). We use the async collector here so
-            // `async fn` Cloneable constructors are awaited on the parent.
-            // Only the top-level parent (no `--ipc` set) does this; IPC
-            // worker subprocesses wait for `ProvideCloneable` from the
-            // parent and never run the original constructor.
             let is_top_level_parent = args.is_top_level_parent();
-            let cloneable_wire_bytes: Vec<DepWireBytes> =
-                if is_top_level_parent && args.spawn_workers {
-                    execution.collect_cloneable_wire_bytes_async().await
-                } else {
-                    Vec::new()
-                };
-            // Phase 1B: only the top-level parent materialises Hosted
-            // owners and keeps them alive in `_hosted_owners` for the
-            // entire suite (see sync.rs for the rationale). IPC worker
-            // subprocesses must NOT run Hosted constructors: they would
-            // duplicate singleton resources (TCP listeners, containers, …)
-            // and could even hang worker startup if the constructor
-            // panics before we accept the parent's IPC connection.
-            let (hosted_descriptor_bytes, _hosted_owners): (Vec<DepWireBytes>, Vec<HostedOwner>) =
-                if is_top_level_parent && execution.has_hosted_dependencies() {
-                    execution.collect_hosted_descriptor_bytes_async().await
-                } else {
-                    (Vec::new(), Vec::new())
-                };
-            // HR1.2: top-level parent materialises HostedRpc owner cells
-            // once. Workers never run these constructors; they get stubs
-            // backed by the IPC transport (spawn-workers mode) or the
-            // in-process transport (no-spawn-workers mode). We keep the
-            // owner cells alive in `hosted_rpc_owner_cells` (HashMap by
-            // qualified dep id) so dispatch loops can route incoming
-            // `IpcResponse::HostedRpcCall` frames to the right owner.
+            let has_selected_tests = execution.remaining() > 0;
+            // Parent-side collection for dependency scopes whose worker-side
+            // value is shipped as bytes or represented as an RPC stub. Async
+            // constructors are awaited here, before workers receive their
+            // reconstructed values. Skip it for empty filtered runs.
+            let needs_parent_shared = execution.has_cloneable_dependencies()
+                || execution.has_hosted_dependencies()
+                || execution.has_hosted_rpc_dependencies();
+            let parent_shared = if is_top_level_parent && has_selected_tests && needs_parent_shared
+            {
+                execution.collect_parent_shared_dependencies_async().await
+            } else {
+                crate::execution::ParentSharedDependencies {
+                    cloneable_wire_bytes: Vec::new(),
+                    hosted_descriptor_bytes: Vec::new(),
+                    hosted_owners: Vec::new(),
+                    hosted_rpc_owner_cells: Vec::new(),
+                }
+            };
+            let cloneable_wire_bytes = parent_shared.cloneable_wire_bytes;
+            let hosted_descriptor_bytes = parent_shared.hosted_descriptor_bytes;
+            let _hosted_owners = parent_shared.hosted_owners;
             let hosted_rpc_owner_cells: HashMap<String, Arc<HostedRpcOwnerCell>> =
-                if is_top_level_parent && execution.has_hosted_rpc_dependencies() {
-                    execution
-                        .collect_hosted_rpc_owner_cells_sync()
-                        .into_iter()
-                        .collect()
-                } else {
-                    HashMap::new()
-                };
-            // HR1.2: pre-built RpcFactory lookup keyed by qualified id, so
-            // worker subprocesses can build stubs without re-locking the
-            // global REGISTERED_DEPENDENCY_CONSTRUCTORS.
+                parent_shared.hosted_rpc_owner_cells.into_iter().collect();
+            // Pre-built RpcFactory lookup keyed by qualified id, so worker
+            // subprocesses can build stubs without re-locking the global
+            // REGISTERED_DEPENDENCY_CONSTRUCTORS.
             let rpc_factories: HashMap<String, RpcFactory> = registered_dependency_constructors
                 .iter()
                 .filter_map(|d| {
@@ -180,12 +162,10 @@ async fn async_test_runner() -> ExitCode {
                 )
                 .await;
             }
-            // HR1.2 mode-consistent HostedRpc semantics for the
-            // no-spawn-workers path: install in-process stubs that route
-            // straight to the parent-held owner cells, so tests see the
-            // same `Stub` value whether or not the runner spawns workers.
-            // The transport here is the same `InProcessHostedRpcTransport`
-            // used by the sync runner.
+            // Mode-consistent HostedRpc semantics for the no-spawn-workers
+            // path: install in-process stubs that route straight to the
+            // parent-held owner cells, so tests see the same `Stub` value
+            // whether or not the runner spawns workers.
             if is_top_level_parent && !args.spawn_workers && !hosted_rpc_owner_cells.is_empty() {
                 install_local_hosted_rpc_stubs(
                     &mut execution,
@@ -219,10 +199,8 @@ async fn async_test_runner() -> ExitCode {
             for worker_idx in 0..threads {
                 let execution_clone = execution.clone();
                 let output_clone = output.clone();
-                // Phase 3.3: stamp each test-thread's args with the worker
-                // index it will hand to its spawned child via
-                // `--worker-index <N>`. See sync.rs for the matching
-                // sync-mode comment.
+                // Stamp each test-thread's args with the worker index it will
+                // hand to its spawned child via `--worker-index <N>`.
                 let mut args_clone = args.clone();
                 if args_clone.spawn_workers {
                     args_clone.worker_index = Some(worker_idx);
@@ -284,10 +262,10 @@ async fn test_thread(
     hosted_rpc_owner_cells: Arc<HashMap<String, Arc<HostedRpcOwnerCell>>>,
 ) {
     let mut worker = spawn_worker_if_needed(&args).await;
-    // HR1.2: parent dispatches incoming `HostedRpcCall` frames against
-    // the owner cells materialised in the top-level parent. Workers don't
-    // need the owner cells (they own stubs instead), so they receive an
-    // empty map and the dispatch code path is never reached in subprocesses.
+    // Parent dispatches incoming `HostedRpcCall` frames against the owner
+    // cells materialised in the top-level parent. Workers don't need the owner
+    // cells (they own stubs instead), so they receive an empty map and the
+    // dispatch code path is never reached in subprocesses.
     if let Some(worker) = worker.as_mut() {
         worker.set_hosted_rpc_owner_cells(hosted_rpc_owner_cells.clone());
     }
@@ -307,7 +285,7 @@ async fn test_thread(
                 .provide_cloneable(dep_id.clone(), wire_bytes.clone())
                 .await;
         }
-        // Phase 1B: ship every Hosted dep's descriptor bytes too.
+        // Ship every Hosted dep's descriptor bytes too.
         for (dep_id, descriptor_bytes) in hosted_descriptor_bytes.iter() {
             worker
                 .provide_hosted_descriptor(dep_id.clone(), descriptor_bytes.clone())
@@ -315,11 +293,10 @@ async fn test_thread(
         }
     }
 
-    // HR1.2: worker subprocess side. Build a stub for every HostedRpc
-    // dep registered in this binary using the IPC-backed transport
-    // sharing the same socket as the main IPC loop. Install the stubs
-    // in the execution tree so dependency materialisation skips the
-    // parent-only owner constructor.
+    // Worker subprocess side: build a stub for every HostedRpc dep registered
+    // in this binary using the IPC-backed transport sharing the same socket as
+    // the main IPC loop. Install the stubs in the execution tree so dependency
+    // materialisation skips the parent-only owner constructor.
     if let Some(connection) = connection_arc.as_ref() {
         if !rpc_factories.is_empty() {
             install_worker_subprocess_hosted_rpc_stubs(
@@ -371,7 +348,7 @@ async fn test_thread(
                             .expect("Failed to write IPC response frame");
                     }
                     IpcCommand::ProvideHostedDescriptor { dep_id, wire_bytes } => {
-                        // Phase 1B worker-side reconstruction: same shape as
+                        // Worker-side reconstruction: same shape as
                         // ProvideCloneable but routed through the registered
                         // HostedDep worker_fn.
                         apply_provided_wire_bytes(
@@ -791,26 +768,25 @@ struct Worker {
     err_lines: Arc<Mutex<VecDeque<CapturedOutput>>>,
     capture_enabled: Arc<Mutex<bool>>,
     connection: Stream,
-    /// HR1.2: parent-held HostedRpc owner cells keyed by fully-qualified
-    /// dep id. Used to dispatch incoming `IpcResponse::HostedRpcCall`
-    /// frames from the worker subprocess back to the right owner.
+    /// Parent-held HostedRpc owner cells keyed by fully-qualified dep id. Used
+    /// to dispatch incoming `IpcResponse::HostedRpcCall` frames from the worker
+    /// subprocess back to the right owner.
     hosted_rpc_owner_cells: Arc<HashMap<String, Arc<HostedRpcOwnerCell>>>,
 }
 
 impl Worker {
-    /// HR1.2: installs the parent-side map of HostedRpc owner cells so
-    /// this worker can route incoming `IpcResponse::HostedRpcCall` frames
-    /// to the right `HostedRpcOwnerCell` while waiting for a worker
-    /// subprocess response.
+    /// Installs the parent-side map of HostedRpc owner cells so this worker can
+    /// route incoming `IpcResponse::HostedRpcCall` frames to the right
+    /// `HostedRpcOwnerCell` while waiting for a worker subprocess response.
     fn set_hosted_rpc_owner_cells(&mut self, cells: Arc<HashMap<String, Arc<HostedRpcOwnerCell>>>) {
         self.hosted_rpc_owner_cells = cells;
     }
 
-    /// HR1.2: parent-side dispatcher for a single
-    /// `IpcResponse::HostedRpcCall`. Looks up the owner cell by
-    /// fully-qualified dep id, runs the dispatch on the parent's stored
-    /// owner, and writes the matching `IpcCommand::HostedRpcReply` back
-    /// to the worker subprocess. Mirrors `sync::Worker::handle_hosted_rpc_call`.
+    /// Parent-side dispatcher for a single `IpcResponse::HostedRpcCall`. Looks
+    /// up the owner cell by fully-qualified dep id, runs the dispatch on the
+    /// parent's stored owner, and writes the matching
+    /// `IpcCommand::HostedRpcReply` back to the worker subprocess. Mirrors
+    /// `sync::Worker::handle_hosted_rpc_call`.
     async fn handle_hosted_rpc_call(
         &mut self,
         dump_on_ipc_failure: &DumpOnFailure,
@@ -939,10 +915,10 @@ impl Worker {
                     method_idx,
                     args_bytes,
                 } => {
-                    // HR1.2: a worker subprocess can issue a HostedRpc call
-                    // from inside an in-progress test, even while the parent
-                    // is mid-`ProvideCloneable` for a different dep. Dispatch
-                    // it so the protocol doesn't desync.
+                    // A worker subprocess can issue a HostedRpc call from
+                    // inside an in-progress test, even while the parent is
+                    // mid-`ProvideCloneable` for a different dep. Dispatch it
+                    // so the protocol doesn't desync.
                     self.handle_hosted_rpc_call(
                         &dump_on_ipc_failure,
                         request_id,
@@ -991,8 +967,8 @@ impl Worker {
                     method_idx,
                     args_bytes,
                 } => {
-                    // HR1.2: see provide_cloneable arm. Dispatch the call
-                    // inline so the IPC stream stays in sync.
+                    // See provide_cloneable arm. Dispatch the call inline so
+                    // the IPC stream stays in sync.
                     self.handle_hosted_rpc_call(
                         &dump_on_ipc_failure,
                         request_id,
@@ -1158,11 +1134,11 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
     }
 }
 
-/// HR1.2: parent-side `--nocapture` / no-spawn-workers helper. Builds
-/// one stub per HostedRpc dep using an [`InProcessHostedRpcTransport`]
-/// that points at the parent-held owner cells, and stashes it in the
-/// execution tree so dependency materialisation skips the owner-only
-/// constructor. Mirrors `sync::install_local_hosted_rpc_stubs`.
+/// Parent-side `--nocapture` / no-spawn-workers helper. Builds one stub per
+/// HostedRpc dep using an [`InProcessHostedRpcTransport`] that points at the
+/// parent-held owner cells, and stashes it in the execution tree so dependency
+/// materialisation skips the owner-only constructor. Mirrors
+/// `sync::install_local_hosted_rpc_stubs`.
 fn install_local_hosted_rpc_stubs(
     execution: &mut TestSuiteExecution,
     rpc_factories: &HashMap<String, RpcFactory>,
@@ -1187,11 +1163,10 @@ fn install_local_hosted_rpc_stubs(
     }
 }
 
-/// HR1.2: worker subprocess helper. Builds one stub per registered
-/// HostedRpc dep backed by [`IpcHostedRpcTransport`], and installs it
-/// in the execution tree. Mirrors
-/// `sync::install_worker_subprocess_hosted_rpc_stubs` but runs on the
-/// tokio `Arc<Mutex<Stream>>` connection.
+/// Worker subprocess helper. Builds one stub per registered HostedRpc dep backed
+/// by [`IpcHostedRpcTransport`], and installs it in the execution tree. Mirrors
+/// `sync::install_worker_subprocess_hosted_rpc_stubs` but runs on the tokio
+/// `Arc<Mutex<Stream>>` connection.
 async fn install_worker_subprocess_hosted_rpc_stubs(
     execution: &Arc<Mutex<TestSuiteExecution>>,
     rpc_factories: &HashMap<String, RpcFactory>,
@@ -1210,7 +1185,7 @@ async fn install_worker_subprocess_hosted_rpc_stubs(
     }
 }
 
-/// HR1.2: worker subprocess `HostedRpcTransport` for the tokio runner.
+/// Worker subprocess `HostedRpcTransport` for the tokio runner.
 /// Mirrors `sync::IpcHostedRpcTransport` but bridges a sync trait method
 /// to the async tokio IPC primitives via
 /// `tokio::task::block_in_place` + `Handle::current().block_on(...)`.
@@ -1221,7 +1196,7 @@ async fn install_worker_subprocess_hosted_rpc_stubs(
 /// serialise across all in-flight stubs by acquiring the mutex for the
 /// full request-then-reply round trip.
 ///
-/// This relies on the MVP temporal invariant documented on
+/// This relies on the temporal invariant documented on
 /// [`crate::internal::HostedRpcChannel::call`]: stubs are only invoked
 /// from inside a running test body, never from `build_stub`, and never
 /// from detached background work that outlives the test. Under those

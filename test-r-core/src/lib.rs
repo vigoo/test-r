@@ -35,19 +35,18 @@ pub use worker::worker_index;
 pub use desert_rust;
 
 // =====================================================================
-// HR3.2.0 Step 3 — Hosted descriptor codec / worker reconstructor
-// helpers.
+// Hosted descriptor codec / worker reconstructor helpers.
 //
 // These two functions are the single place the descriptor-based Hosted
 // dep wiring is built. The `tokio` cargo feature on `test-r-core`
 // selects which variant of each function compiles, so that:
 //
 // - Under the **tokio** runtime, Hosted deps always use the *async*
-//   path (`AsyncHostedDep::descriptor` / `from_descriptor`). Thanks to
-//   the blanket `impl<T: HostedDep> AsyncHostedDep for T` from Step 1,
-//   every sync `HostedDep` automatically reaches the async path with
-//   no user-visible cost (the bridged `from_descriptor` just wraps the
-//   sync impl in `std::future::ready(...)`).
+//   path (`AsyncHostedDep::descriptor` / `from_descriptor`). Thanks to the
+//   blanket `impl<T: HostedDep> AsyncHostedDep for T`, every sync `HostedDep`
+//   automatically reaches the async path with no user-visible cost (the
+//   bridged `from_descriptor` just wraps the sync impl in
+//   `std::future::ready(...)`).
 // - Under the **sync** runtime, Hosted deps always use the *sync* path
 //   (`HostedDep::descriptor` / `from_descriptor`). This intentionally
 //   keeps sync builds free of any block-poll machinery: a Hosted dep
@@ -178,7 +177,7 @@ where
 }
 
 // =====================================================================
-// HR3.2.0 Step 4 — `worker = both(T)` helpers.
+// `worker = both(T)` helpers.
 //
 // `#[test_dep(scope = Hosted, worker = both(Trait))]` is lowered by the
 // macro into two `RegisteredDependency` entries (one Hosted, one
@@ -187,10 +186,9 @@ where
 // the shared logic:
 //
 // - `__test_r_make_hosted_both_shared::<T>(owner)` builds the cell
-//   used by the macro's weak cache. Cfg-selected on `tokio` so the
-//   descriptor call uses `AsyncHostedDep::descriptor` under tokio and
-//   `HostedDep::descriptor` under sync, mirroring the Step 3
-//   single-view helpers.
+//   used by the macro's weak cache. Cfg-selected on `tokio` so the descriptor
+//   call uses `AsyncHostedDep::descriptor` under tokio and
+//   `HostedDep::descriptor` under sync, mirroring the single-view helpers.
 // - `__test_r_make_hosted_both_codec()` produces the Hosted-view
 //   codec; both bytes (`to_wire`) and payload (`from_wire_bytes`)
 //   shapes match the existing single-view Hosted codec so the
@@ -260,9 +258,10 @@ pub fn __test_r_make_hosted_both_codec() -> internal::CloneableCodec {
 /// the shared cell and reuses the user's
 /// [`internal::HostedRpcDep::build_stub`] for the worker stub.
 #[doc(hidden)]
-pub fn __test_r_make_hosted_both_rpc_factory<T>() -> internal::RpcFactory
+pub fn __test_r_make_hosted_both_rpc_factory<T, Stub>() -> internal::RpcFactory
 where
-    T: internal::HostedRpcDep,
+    T: internal::HostedRpcDep<Stub = Stub>,
+    Stub: Send + Sync + 'static,
 {
     use std::any::Any;
     use std::sync::Arc;
@@ -274,7 +273,7 @@ where
             shared.rpc_cell()
         }),
         build_stub: Arc::new(|channel: internal::HostedRpcChannel| {
-            let stub = <T as internal::HostedRpcDep>::build_stub(channel);
+            let stub: Stub = <T as internal::HostedRpcDep>::build_stub(channel);
             let boxed: Arc<dyn Any + Send + Sync> = Arc::new(stub);
             boxed
         }),
@@ -283,7 +282,7 @@ where
 
 #[cfg(test)]
 mod hosted_helper_tests {
-    //! HR3.2.0 Step 3: exercise the new feature-gated
+    //! Exercise the feature-gated
     //! [`__test_r_make_hosted_codec`] /
     //! [`__test_r_make_hosted_worker_reconstructor`] helpers end to
     //! end against a tiny `HostedDep` fixture.
@@ -297,9 +296,8 @@ mod hosted_helper_tests {
     use std::sync::Arc;
 
     /// Minimal sync `HostedDep` fixture. Under the `tokio` feature
-    /// the blanket bridge from Step 1 also makes it
-    /// `AsyncHostedDep`, so the same fixture is usable against both
-    /// helper variants.
+    /// the blanket bridge also makes it `AsyncHostedDep`, so the same fixture
+    /// is usable against both helper variants.
     #[derive(Debug, PartialEq, Eq)]
     struct Fixture {
         bytes: Vec<u8>,
@@ -334,8 +332,7 @@ mod hosted_helper_tests {
     }
 
     /// Under the tokio runtime, the worker reconstructor helper must
-    /// return [`internal::WorkerReconstructor::Async`] — that's the
-    /// whole point of HR3.2.0 Step 3.
+    /// return [`internal::WorkerReconstructor::Async`].
     #[cfg(feature = "tokio")]
     #[test]
     fn make_hosted_worker_reconstructor_is_async_under_tokio() {
@@ -409,7 +406,7 @@ mod hosted_helper_tests {
     }
 
     // -----------------------------------------------------------------
-    // HR3.2.0 Step 4 — `worker = both(T)` helper tests.
+    // `worker = both(T)` helper tests.
     //
     // The macro lowering for `#[test_dep(scope = Hosted, worker =
     // both(Trait))]` is exercised end-to-end by the
@@ -426,9 +423,9 @@ mod hosted_helper_tests {
     //   builds the worker-side stub via `HostedRpcDep::build_stub`.
     // -----------------------------------------------------------------
 
-    /// Minimal `HostedDep + HostedRpcDep` fixture for the Step 4
-    /// helper tests. The id allocator stands in for any tiny control
-    /// surface; the bytes field doubles as the descriptor.
+    /// Minimal `HostedDep + HostedRpcDep` fixture for helper tests. The id
+    /// allocator stands in for any tiny control surface; the bytes field doubles
+    /// as the descriptor.
     #[derive(Debug)]
     struct BothFixture {
         bytes: Vec<u8>,
@@ -523,13 +520,13 @@ mod hosted_helper_tests {
         assert_eq!(*recovered_bytes, vec![1, 2, 3, 4]);
     }
 
-    /// `__test_r_make_hosted_both_rpc_factory::<T>().owner_into_cell`
+    /// `__test_r_make_hosted_both_rpc_factory::<T, Stub>().owner_into_cell`
     /// reaches into the shared cell, hands back the inner
     /// `Arc<HostedRpcOwnerCell>`, and a dispatched call hits the
     /// real owner (proven by the counter incrementing).
     #[test]
     fn make_hosted_both_rpc_factory_extracts_owner_cell() {
-        let factory = __test_r_make_hosted_both_rpc_factory::<BothFixture>();
+        let factory = __test_r_make_hosted_both_rpc_factory::<BothFixture, BothStub>();
         let shared: Arc<internal::HostedBothShared> = Arc::new(__test_r_make_hosted_both_shared::<
             BothFixture,
         >(BothFixture::new(vec![])));
@@ -549,7 +546,7 @@ mod hosted_helper_tests {
         assert_eq!(reply, 1u64.to_be_bytes().to_vec());
     }
 
-    /// `__test_r_make_hosted_both_rpc_factory::<T>().build_stub`
+    /// `__test_r_make_hosted_both_rpc_factory::<T, Stub>().build_stub`
     /// constructs a worker-side `Stub` via the user's
     /// `HostedRpcDep::build_stub` and boxes it as `Arc<dyn Any>` so
     /// the runtime can route it through the standard dep view.
@@ -573,7 +570,7 @@ mod hosted_helper_tests {
             }
         }
 
-        let factory = __test_r_make_hosted_both_rpc_factory::<BothFixture>();
+        let factory = __test_r_make_hosted_both_rpc_factory::<BothFixture, BothStub>();
         let transport: Arc<dyn HostedRpcTransport> = Arc::new(DummyTransport);
         let channel = HostedRpcChannel::new("test::both_fixture".to_string(), transport);
 

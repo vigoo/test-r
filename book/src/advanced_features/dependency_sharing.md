@@ -6,7 +6,7 @@ test-r supports per-dependency **sharing strategies** that let individual deps o
 
 | Strategy     | One instance per…                       | Constructor runs in… | Parallel under capture? |
 |--------------|-----------------------------------------|----------------------|-------------------------|
-| `Shared`     | suite                                   | parent               | No (default, today)     |
+| `Shared`     | suite                                   | parent               | No (default)            |
 | `PerWorker`  | worker process                          | each worker          | Yes                     |
 | `Cloneable`  | suite (parent) + per worker copy        | parent               | Yes                     |
 | `Hosted`     | suite (parent owns) + per worker handle | parent               | Yes                     |
@@ -18,7 +18,7 @@ The default remains `Shared`, so any existing `#[test_dep]` keeps working unchan
 worker side sees: `worker = descriptor` (the default — a reconstructed
 handle), `worker = rpc(Trait)` (a method-routing stub), or
 `worker = both(Trait)` (both views on a single owner). The latter two are
-the HR3.2.0 sugar for what would otherwise be a separate `HostedRpc`
+the worker-view shorthand for what would otherwise be a separate `HostedRpc`
 registration or a manually-coordinated pair of registrations; see the
 [Hosted](#hosted) and [HostedRpc](#hostedrpc) sections for details.
 
@@ -115,12 +115,17 @@ fn uses_payload(payload: &PrecomputedPayload) {
 
 The wire encoding is entirely up to the implementor — there is no `serde` requirement. Cloneable wire payloads larger than 64 KiB are supported (the IPC framing uses a `u32` length prefix).
 
-### Cloneable restrictions
+### Cloneable constructor dependencies
 
-To keep the runtime change small in this phase, `Cloneable` deps are subject to two restrictions:
+`Cloneable` constructors may take other `#[test_dep]` parameters. Those
+constructor dependencies are resolved in the parent when test-r creates the
+wire bytes. Worker subprocesses only receive the wire payload and call
+`CloneableDep::from_wire(bytes)`, so the reconstructed worker value is treated
+as a dependency-free leaf.
 
-1. The constructor must not take other `#[test_dep]` parameters. Build any prerequisite state inside the constructor instead. (The tokio variant supports `async fn` constructors — they are awaited on the parent.)
-2. The `CloneableDep::from_wire` reconstruction runs with no other worker-local context. If you need a worker-local prerequisite (e.g. a per-worker engine to deserialise into), use `PerWorker` for that prerequisite and let your higher-level code combine the two.
+If reconstruction needs worker-local state (for example, a per-worker engine to
+interpret the bytes), keep that state in a separate `PerWorker` dependency and
+combine the two in your test or in a higher-level helper.
 
 ## `Hosted`
 
@@ -194,9 +199,12 @@ fn worker_can_reach_owner(service: &LiveService) {
 
 The wire encoding is entirely up to the implementor, exactly like `Cloneable`. Descriptors are usually small — an address, a port, a credentials bundle.
 
-### Hosted restrictions
+### Hosted constructor dependencies
 
-- The constructor must not take other `#[test_dep]` parameters. Owner-side dependency wiring is reserved for a future phase.
+- The constructor may take other `#[test_dep]` parameters. Those dependencies
+  are resolved only in the parent while constructing the owner. Workers receive
+  descriptor bytes and call `HostedDep::from_descriptor(bytes)`, so the
+  reconstructed worker handle is a dependency-free leaf.
 - With `worker = descriptor` (the default), the owner type and the
   worker handle type share the same Rust type (`Self`). The
   implementor is responsible for keeping owner-only fields (sockets,
@@ -225,13 +233,13 @@ capturing relative to the default Hosted strategy.
 - `worker = descriptor` is the implicit default. The historical
   `#[test_dep(scope = Hosted)]` syntax stays equivalent to
   `#[test_dep(scope = Hosted, worker = descriptor)]`.
-- `worker = rpc(Trait)` is the HR3.2.0 sugar for what used to be a
+- `worker = rpc(Trait)` is shorthand for what used to be a
   separate `#[test_dep(scope = HostedRpc, stub = <StubType>)]`
   registration. See the
   [`#[hosted_rpc]` attribute macro section](#hostedrpc-attribute-macro-eliminating-the-boilerplate)
   for the trait-side machinery; the only difference at the registration
   site is which scope you use.
-- `worker = both(Trait)` is the HR3.2.0 way to share a singleton that
+- `worker = both(Trait)` shares a singleton that
   needs to expose **both** a bulk-data descriptor handle (typically a
   connection address used by a gRPC client) **and** a small RPC control
   surface (kill / flush / snapshot) from a single owner. Tests can
@@ -333,8 +341,7 @@ method call, ships it over the runtime's IPC channel to the parent, and
 unwraps the reply.
 
 > **Preferred registration syntax — `scope = Hosted` with
-> `worker = rpc(Trait)`.** Since the HR3.2.0 worker-view picker was
-> added, the recommended way to register an RPC-shaped Hosted dep
+> `worker = rpc(Trait)`.** The recommended way to register an RPC-shaped Hosted dep
 > backed by a trait is
 > `#[test_dep(scope = Hosted, worker = rpc(<Trait>))]`. That syntax
 > uses the same runtime mechanism documented in this section but
@@ -360,13 +367,11 @@ Use this when:
 - a few hundred call-per-test of overhead per RPC are acceptable
   (every call is one synchronous round-trip on the existing IPC socket).
 
-### MVP scope
+### Supported scope
 
-- Both runners are supported. The sync runner shipped in Phase 1C and
-  the tokio runner shipped in Phase HR1.2; tests in both runners see
-  the same `Stub` value and call into the same parent-held owner via
-  the IPC transport (or `InProcessHostedRpcTransport` in the
-  `--nocapture` / no-spawn-workers path).
+- Both runners are supported. Tests in both runners see the same `Stub` value
+  and call into the same parent-held owner via the IPC transport (or
+  `InProcessHostedRpcTransport` in the `--nocapture` / no-spawn-workers path).
 - The user implements the owner type, the worker-visible stub type, and
   one method-dispatch function on the owner. The runtime wires those
   together over IPC. For trait-shaped owners, the
@@ -506,7 +511,7 @@ fn ids_are_monotonic(c: &CounterStub) {
 }
 ```
 
-`scope = Hosted, worker = rpc(Counter)` is the preferred HR3.2.0
+`scope = Hosted, worker = rpc(Counter)` is the preferred
 registration form for trait-shaped owners. The macro derives the
 worker-visible stub type from the trait name (`Counter` → `CounterStub`)
 so you do not need to pass it explicitly. The equivalent legacy form
@@ -542,7 +547,7 @@ Wire-format details:
   framing stays symmetric on the dispatch side.
 - The return value is encoded directly. The unit return type uses `()`.
 
-MVP restrictions enforced at macro time (the macro emits a
+Restrictions enforced at macro time (the macro emits a
 `compile_error!` if violated):
 
 - `#[hosted_rpc]` does not take any attribute arguments
@@ -563,7 +568,7 @@ MVP restrictions enforced at macro time (the macro emits a
 - `impl Trait` is not allowed in argument or return position.
 - `#[cfg(...)]` / `#[cfg_attr(...)]` are not allowed on the trait or
   its methods (the generated sibling items and dispatch arms are not
-  cfg-propagated in the MVP).
+  cfg-propagated.
 
 All arg and return types must implement `desert_rust::BinarySerializer`
 and `desert_rust::BinaryDeserializer`. Common standard-library types
@@ -603,12 +608,12 @@ and only infrastructure failures panic.
 
 ### HostedRpc restrictions
 
-- The owner constructor must be **synchronous** in the MVP, on both the
-  sync and tokio runners (no `async fn` constructors).
 - The stub trait methods are synchronous on both runners. Async stub
   methods are deferred.
-- The constructor must not take other `#[test_dep]` parameters (mirrors
-  `Hosted`).
+- The constructor may take other `#[test_dep]` parameters. Those dependencies
+  are resolved only in the parent while constructing the owner. Workers receive
+  an RPC channel and call `HostedRpcDep::build_stub(channel)`, so the
+  reconstructed stub is a dependency-free leaf.
 - The constructor must return the **owner type**; tests must parameterise
   on the **stub type** named via `stub = StubType`.
 - One in-flight RPC at a time per worker subprocess. Pipelined or
@@ -621,7 +626,7 @@ and only infrastructure failures panic.
 
 ### MVP temporal invariant — when stub calls are safe
 
-The Phase 1C transport intentionally reuses the same IPC socket the
+The HostedRpc transport intentionally reuses the same IPC socket the
 harness uses for `RunTest` / `ProvideCloneable` /
 `ProvideHostedDescriptor` traffic. Stubs share that socket with the
 worker's main IPC command loop, and they take a process-local mutex
@@ -658,9 +663,8 @@ Concretely:
 
 If you need any of the unsupported shapes, treat that as a signal to
 either restructure your test (run the work inside the test body, wait
-for the background thread to finish before returning) or to wait for a
-post-MVP Phase HR1.x with a dedicated worker-side reader and a waiter
-table.
+for the background thread to finish before returning) or use a future
+transport design with a dedicated worker-side reader and a waiter table.
 
 ### When to prefer `Hosted` over `HostedRpc`
 
@@ -677,4 +681,4 @@ The parallel/single-thread decision is made once, after the dep graph is known:
 - If capturing is **on** and the suite has at least one **`Shared`** dep, the runner falls back to one thread.
 - If capturing is **on** and all deps in scope are `PerWorker`, `Cloneable`, `Hosted`, and/or `HostedRpc`, the runner stays parallel.
 
-A suite that mixes `Shared` and any of the parallel-safe scopes will still fall back: `Shared` is the strictest scope in scope-mixing today. Migrate the remaining `Shared` deps to a more permissive scope to recover parallelism.
+A suite that mixes `Shared` and any of the parallel-safe scopes will still fall back: `Shared` is the strictest scope in scope-mixing. Migrate the remaining `Shared` deps to a more permissive scope to recover parallelism.

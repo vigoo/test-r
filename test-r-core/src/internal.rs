@@ -387,9 +387,9 @@ pub enum DependencyConstructor {
 /// etc. The bytes are treated as opaque by the runner.
 ///
 /// The simple `Self`-returning `from_wire` covers Cloneable deps that need no
-/// other worker-local context. Cases that need additional deps on the worker
-/// (e.g. a precompiled wasm component bound to a per-worker `wasmtime::Engine`)
-/// are reserved for the richer `worker = ...` API in Phase 1B.
+/// other worker-local context. If reconstruction needs worker-local state (for
+/// example, a per-worker engine), model that state as a separate dependency and
+/// combine the two from the test or a higher-level helper.
 pub trait CloneableDep: Sized + Send + Sync + 'static {
     /// Serialise this value into wire bytes for transmission to workers.
     fn to_wire(&self) -> Vec<u8>;
@@ -413,9 +413,10 @@ pub trait CloneableDep: Sized + Send + Sync + 'static {
 /// connects to the live owner held by the parent (e.g. opens a TCP
 /// connection to the address carried in the descriptor).
 ///
-/// For Phase 1B the owner and worker handle share the same type `Self`. The
-/// implementation is responsible for stashing owner-only state (sockets,
-/// background threads, etc.) in fields that the worker side won't touch.
+/// For descriptor-based Hosted deps, the owner and worker handle share the same
+/// type `Self`. The implementation is responsible for stashing owner-only
+/// state (sockets, background threads, etc.) in fields that the worker side
+/// won't touch.
 pub trait HostedDep: Sized + Send + Sync + 'static {
     /// Owner-side: produce the descriptor bytes that workers will use to
     /// reconstruct a connected handle.
@@ -431,10 +432,9 @@ pub trait HostedDep: Sized + Send + Sync + 'static {
 /// clients, doing async filesystem work, calling
 /// `Provided*::new(...).await` constructors).
 ///
-/// Since HR3.2.0 Step 3, no opt-in flag is required: the helper
-/// functions emitted by `#[test_dep(scope = Hosted)]` auto-select the
-/// async path under the `tokio` runtime, so simply implementing
-/// `AsyncHostedDep` is enough.
+/// No opt-in flag is required: the helper functions emitted by
+/// `#[test_dep(scope = Hosted)]` auto-select the async path under the `tokio`
+/// runtime, so simply implementing `AsyncHostedDep` is enough.
 ///
 /// ```ignore
 /// #[test_dep(scope = Hosted)]
@@ -455,10 +455,8 @@ pub trait HostedDep: Sized + Send + Sync + 'static {
 /// `impl AsyncHostedDep` directly. Under the sync runtime, the same
 /// helpers stay on `HostedDep`: a `scope = Hosted` registration that
 /// uses an async-only `AsyncHostedDep` type therefore fails to
-/// compile in sync builds rather than panicking at register time as
-/// it did before HR3.2.0 Step 3. (Writing the impl on its own still
-/// compiles fine; only the `#[test_dep(scope = Hosted)]` registration
-/// fails.)
+/// compile in sync builds. (Writing the impl on its own still compiles fine;
+/// only the `#[test_dep(scope = Hosted)]` registration fails.)
 ///
 /// `descriptor()` stays synchronous and is called on the parent owner
 /// value, exactly as in [`HostedDep`]; the only difference is that
@@ -480,18 +478,17 @@ pub trait AsyncHostedDep: Sized + Send + Sync + 'static {
     fn from_descriptor(bytes: &[u8]) -> impl std::future::Future<Output = Self> + Send;
 }
 
-/// HR3.2.0 — blanket bridge: every [`HostedDep`] is automatically also an
+/// Blanket bridge: every [`HostedDep`] is automatically also an
 /// [`AsyncHostedDep`]. The bridged `from_descriptor` returns
-/// [`std::future::ready`], so the bridge itself adds only an
-/// immediately-ready future and the runtime can await all Hosted
-/// reconstruction uniformly.
+/// [`std::future::ready`], so the bridge itself adds only an immediately-ready
+/// future and the runtime can await all Hosted reconstruction uniformly.
 ///
 /// This lets the test-r runtime drive **every** Hosted descriptor
-/// reconstruction through one async path under the `tokio` runtime,
-/// regardless of whether the dep's own implementation is sync (today's
-/// `impl HostedDep for ...`) or async (today's `impl AsyncHostedDep for
-/// ...`). The `async_worker` macro flag becomes unnecessary — the
-/// implementor picks sync vs async purely at the trait-impl call site.
+/// reconstruction through one async path under the `tokio` runtime, regardless
+/// of whether the dep's own implementation is sync (`impl HostedDep for ...`)
+/// or async (`impl AsyncHostedDep for ...`). The `async_worker` macro flag is
+/// unnecessary — the implementor picks sync vs async purely at the trait-impl
+/// call site.
 ///
 /// **Cost:** the bridge itself is negligible (`ready(x).await` is an
 /// immediately-ready future); when the runtime later routes every
@@ -530,9 +527,8 @@ mod hosted_dep_blanket_bridge_tests {
     // returned by the blanket-bridged `from_descriptor`.
     use std::future::Future;
 
-    /// Test fixture: a Hosted dep that only implements the sync
-    /// `HostedDep` trait. The HR3.2.0 blanket bridge must also expose
-    /// it through the async API.
+    /// Test fixture: a Hosted dep that only implements the sync `HostedDep`
+    /// trait. The blanket bridge must also expose it through the async API.
     #[derive(Debug, PartialEq, Eq)]
     struct SyncOnlyDep {
         bytes: Vec<u8>,
@@ -625,8 +621,8 @@ mod hosted_dep_blanket_bridge_tests {
     }
 }
 
-/// Phase 1C: User-facing trait that opts a dependency value into the
-/// `HostedRpc` sharing strategy. Like [`HostedDep`], the owner lives in the
+/// User-facing trait that opts a dependency value into the `HostedRpc` sharing
+/// strategy. Like [`HostedDep`], the owner lives in the
 /// **parent test runner process** for the entire suite; unlike `Hosted`,
 /// workers do NOT see the owner type — they see a separate `Stub` type
 /// that calls back into the parent over the existing IPC socket through a
@@ -641,11 +637,10 @@ mod hosted_dep_blanket_bridge_tests {
 ///   Wraps the supplied [`HostedRpcChannel`] into a `Self::Stub` that
 ///   serialises calls and forwards them to the parent's dispatcher.
 ///
-/// For Phase 1C all calls to a HostedRpc dep are **serialised** on the
-/// parent side (owner is held behind a single `Mutex`). Even logical
-/// `&self` methods do not run concurrently. This is the right trade-off
-/// for an MVP and matches how most singleton service handles already
-/// behave internally.
+/// Calls to a HostedRpc dep are **serialised** on the parent side (owner is held
+/// behind a single `Mutex`). Even logical `&self` methods do not run
+/// concurrently, matching how most singleton service handles already behave
+/// internally.
 pub trait HostedRpcDep: Send + Sync + 'static {
     /// The worker-side handle type that tests parameterise on. Typically
     /// a small struct that holds a [`HostedRpcChannel`] and implements
@@ -653,19 +648,18 @@ pub trait HostedRpcDep: Send + Sync + 'static {
     type Stub: Send + Sync + 'static;
 
     /// Owner-side: handle one method call. `method_idx` is a stable per-method
-    /// index assigned by the implementor (usually generated by a future
-    /// `#[hosted_rpc]` macro; for the manual MVP path, the implementor
-    /// picks the indices). `args` is the worker-supplied serialized
-    /// payload. Return `Ok(bytes)` on success or `Err(message)` on failure
-    /// — the message is surfaced to the calling worker as
-    /// [`HostedRpcError::Dispatch`].
+    /// index assigned by the implementor (usually generated by the
+    /// `#[hosted_rpc]` macro; for a manual stub, the implementor picks the
+    /// indices). `args` is the worker-supplied serialized payload. Return
+    /// `Ok(bytes)` on success or `Err(message)` on failure — the message is
+    /// surfaced to the calling worker as [`HostedRpcError::Dispatch`].
     fn dispatch(&mut self, method_idx: u32, args: &[u8]) -> Result<Vec<u8>, String>;
 
     /// Worker-side: build a `Self::Stub` over the channel that connects
     /// back to the parent's owner. Called once per worker subprocess at
     /// startup, before any test body runs.
     ///
-    /// **MVP contract — `build_stub` must be cheap and side-effect free.**
+    /// **Contract — `build_stub` must be cheap and side-effect free.**
     /// The runtime constructs one stub per registered HostedRpc dep at
     /// worker startup, *before* the worker has even received its first
     /// [`crate::ipc::IpcCommand::RunTest`]. In particular this means:
@@ -751,7 +745,7 @@ impl HostedRpcOwnerCell {
     }
 }
 
-/// HR3.2.0 Step 4 support type for `#[test_dep(scope = Hosted, worker = both(T))]`.
+/// Support type for `#[test_dep(scope = Hosted, worker = both(T))]`.
 ///
 /// One macro-emitted `worker = both(T)` registration is lowered into
 /// **two** `RegisteredDependency` entries that both point at the same
@@ -860,8 +854,8 @@ impl HostedRpcChannel {
     /// already-serialized bytes; the stub method body owns the choice of
     /// codec.
     ///
-    /// **MVP temporal invariant — only call this while a test body is
-    /// actually running.** The Phase 1C transport assumes one
+    /// **Temporal invariant — only call this while a test body is actually
+    /// running.** The transport assumes one
     /// HostedRpc request/reply pair per worker subprocess is in flight
     /// at a time *and* that the worker's main IPC command loop is idle
     /// (it only reads `Provide*` / `RunTest` between tests). Specifically:
@@ -967,11 +961,11 @@ pub enum DepScope {
     /// gRPC server clients, env-based runtimes) are not duplicated per
     /// worker.
     Hosted,
-    /// Phase 1C: like [`Self::Hosted`], but the owner stays in the parent
-    /// AND workers talk back to it via the runtime's built-in RPC layer
-    /// instead of reaching out via their own transport. The dep
-    /// implementor provides a [`HostedRpcDep`] impl on the owner type with
-    /// a stub type, a method dispatch function, and a stub builder.
+    /// Like [`Self::Hosted`], but the owner stays in the parent AND workers
+    /// talk back to it via the runtime's built-in RPC layer instead of reaching
+    /// out via their own transport. The dep implementor provides a
+    /// [`HostedRpcDep`] impl on the owner type with a stub type, a method
+    /// dispatch function, and a stub builder.
     HostedRpc,
 }
 
@@ -1066,11 +1060,10 @@ pub struct RegisteredDependency {
     /// those bytes in the worker before they are passed to the registered
     /// worker reconstructor.
     pub hosted_codec: Option<CloneableCodec>,
-    /// Phase 1C: factories for `HostedRpc` deps (`None` otherwise). The
-    /// parent uses [`RpcFactory::owner_into_cell`] to extract the
-    /// `HostedRpcOwnerCell` returned by the constructor; the worker uses
-    /// [`RpcFactory::build_stub`] to construct its `Stub` from a fresh
-    /// [`HostedRpcChannel`].
+    /// Factories for `HostedRpc` deps (`None` otherwise). The parent uses
+    /// [`RpcFactory::owner_into_cell`] to extract the `HostedRpcOwnerCell`
+    /// returned by the constructor; the worker uses [`RpcFactory::build_stub`]
+    /// to construct its `Stub` from a fresh [`HostedRpcChannel`].
     pub rpc_factory: Option<RpcFactory>,
     /// Planner-only sibling dep names that must be retained together
     /// with this dep during pruning. Unlike `dependencies`, companions

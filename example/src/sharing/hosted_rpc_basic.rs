@@ -244,17 +244,14 @@ mod tests {
         assert!(id > 0, "post-large-payload id must be positive, got {id}");
     }
 
-    /// HR1.0 regression: two back-to-back RPCs from the same test body
-    /// must not desync the IPC framing — the second `next()` after the
-    /// first must succeed and must return a distinct id. Under the MVP
-    /// the worker-side `IpcHostedRpcTransport` holds the connection
-    /// mutex for the full request/response round-trip, so two calls
-    /// from the same thread run sequentially; this test pins that the
-    /// `request_id` framing in `IpcResponse::HostedRpcCall` /
-    /// `IpcCommand::HostedRpcReply` keeps the protocol in sync across
-    /// the boundary between two consecutive stub calls. Truly concurrent
-    /// in-flight calls on the same worker IPC connection are deferred
-    /// to a future reader-task / waiter-table design (see NOTES.md).
+    /// Regression: two back-to-back RPCs from the same test body must not
+    /// desync the IPC framing — the second `next()` after the first must
+    /// succeed and must return a distinct id. The worker-side
+    /// `IpcHostedRpcTransport` holds the connection mutex for the full
+    /// request/response round-trip, so two calls from the same thread run
+    /// sequentially; this test pins that the `request_id` framing in
+    /// `IpcResponse::HostedRpcCall` / `IpcCommand::HostedRpcReply` keeps the
+    /// protocol in sync across the boundary between two consecutive stub calls.
     #[test]
     fn hosted_rpc_two_back_to_back_calls_do_not_desync_protocol(ids: &LastUniqueIdStub) {
         let a = ids.next().expect("a");

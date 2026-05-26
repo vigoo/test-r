@@ -1,12 +1,9 @@
 //! Regression fixture: `#[test_dep(scope = Hosted, worker = both(Trait))]`
 //! with an **async** owner constructor (tokio runner).
 //!
-//! The Step 4 `worker = both(...)` lowering originally rejected async
-//! owner constructors with a hard macro-time error so the initial MVP
-//! could ignore the async-cache shape entirely. HR3.2 needs this to
-//! work — the golem-side migration of `EnvBasedTestDependencies` (whose
-//! `::new(...)` is `async fn`) to `worker = both(RedisControl)`
-//! depends on it.
+//! This pins support for async owner constructors on `worker = both(...)`.
+//! The golem-side migration of `EnvBasedTestDependencies` (whose `::new(...)`
+//! is `async fn`) to `worker = both(RedisControl)` depends on this shape.
 //!
 //! This file exercises that the macro now accepts an `async fn`
 //! constructor for `worker = both(Trait)` and the runtime resolves
@@ -105,8 +102,7 @@ mod tests {
     }
 
     // The key bit this file exists to test: `async fn` constructor +
-    // `worker = both(Trait)`. Pre-HR3.2 the macro rejected this combination
-    // at compile time.
+    // `worker = both(Trait)`.
     #[test_dep(scope = Hosted, worker = both(AsyncBuiltControl))]
     pub async fn async_built_owner() -> AsyncBuiltOwner {
         AsyncBuiltOwner::new_async().await
