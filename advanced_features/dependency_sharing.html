@@ -1,0 +1,890 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Dependency sharing strategies - test-r</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-0392ca55.css">
+        <link rel="stylesheet" href="../css/chrome-fc474251.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-6d3d8e86.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-16c0bd11.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">test-r</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="dependency-sharing-strategies"><a class="header" href="#dependency-sharing-strategies">Dependency sharing strategies</a></h1>
+<p>By default, every <code>#[test_dep]</code> is created once per test binary run and shared by all tests in that suite. This is convenient, but it interacts poorly with output capturing: because the materialised value lives inside the parent test runner process, capturing forces a single-threaded fallback when at least one such dep exists.</p>
+<p>test-r supports per-dependency <strong>sharing strategies</strong> that let individual deps opt into safer-to-parallelise lifetimes:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Strategy</th><th>One instance per…</th><th>Constructor runs in…</th><th>Parallel under capture?</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Shared</code></td><td>suite</td><td>parent</td><td>No (default)</td></tr>
+<tr><td><code>PerWorker</code></td><td>worker process</td><td>each worker</td><td>Yes</td></tr>
+<tr><td><code>Cloneable</code></td><td>suite (parent) + per worker copy</td><td>parent</td><td>Yes</td></tr>
+<tr><td><code>Hosted</code></td><td>suite (parent owns) + per worker handle</td><td>parent</td><td>Yes</td></tr>
+<tr><td><code>HostedRpc</code></td><td>suite (parent owns) + per worker stub</td><td>parent</td><td>Yes</td></tr>
+</tbody>
+</table>
+</div>
+<p>The default remains <code>Shared</code>, so any existing <code>#[test_dep]</code> keeps working unchanged.</p>
+<p><code>Hosted</code> ships with a <strong>worker-view picker</strong> that selects what shape the
+worker side sees: <code>worker = descriptor</code> (the default — a reconstructed
+handle), <code>worker = rpc(Trait)</code> (a method-routing stub), or
+<code>worker = both(Trait)</code> (both views on a single owner). The latter two are
+the worker-view shorthand for what would otherwise be a separate <code>HostedRpc</code>
+registration or a manually-coordinated pair of registrations; see the
+<a href="#hosted">Hosted</a> and <a href="#hostedrpc">HostedRpc</a> sections for details.</p>
+<h2 id="choosing-a-strategy"><a class="header" href="#choosing-a-strategy">Choosing a strategy</a></h2>
+<ul>
+<li>Use <strong><code>Shared</code></strong> when the dep owns process-local state that genuinely cannot be duplicated (single global resource) AND a small descriptor cannot represent it for workers.</li>
+<li>Use <strong><code>PerWorker</code></strong> when re-running the constructor on each worker is cheap and tests are happy with their own private instance (temp dirs, caches, in-memory stores).</li>
+<li>Use <strong><code>Cloneable</code></strong> when the constructor is expensive (compilation, parsing a large schema, fetching once over the network) but the resulting value can be cheaply round-tripped through a byte buffer. The parent runs the constructor exactly once and ships the wire form to every worker, where each worker reconstructs a local copy.</li>
+<li>Use <strong><code>Hosted</code></strong> when the dep owns a long-lived singleton service (TCP listener, Docker container, env-based test environment, gRPC server) that must NOT be duplicated across worker processes, but workers need a small handle (an address, a port, a credentials bundle) to reach it.</li>
+<li>Use <strong><code>HostedRpc</code></strong> (or equivalently, <strong><code>Hosted</code> with <code>worker = rpc(Trait)</code></strong>) when the dep is a singleton that exposes a small, in-process Rust API (e.g. “give me the next unique id”), and you do not want to set up a real network protocol just to share it with worker subprocesses. The runtime provides the IPC channel; you provide the owner type, a trait (or hand-written stub), and a method dispatcher.</li>
+<li>Use <strong><code>Hosted</code> with <code>worker = both(Trait)</code></strong> when the same owner needs to serve <strong>both</strong> a bulk-data descriptor handle (typically a connection address used by a gRPC client) and a small RPC control surface (kill / flush / snapshot). One owner, two worker-side views, no duplication.</li>
+</ul>
+<h2 id="perworker"><a class="header" href="#perworker"><code>PerWorker</code></a></h2>
+<p>Annotate the constructor with <code>scope = PerWorker</code>:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::{test, test_dep};
+
+pub struct WorkerScratchDir(pub tempfile::TempDir);
+
+#[test_dep(scope = PerWorker)]
+fn create_scratch_dir() -&gt; WorkerScratchDir {
+    WorkerScratchDir(tempfile::tempdir().expect("scratch dir"))
+}
+
+#[test]
+fn writes_a_file(scratch: &amp;WorkerScratchDir) {
+    let path = scratch.0.path().join("hello.txt");
+    std::fs::write(&amp;path, b"hi").unwrap();
+    assert!(path.exists());
+}
+<span class="boring">}</span></code></pre>
+<p>When the runner spawns worker children for output capturing, each worker materialises <code>WorkerScratchDir</code> independently. Tests scheduled on the same worker share the same instance; tests scheduled on different workers see independent instances.</p>
+<h3 id="observing-the-worker-index"><a class="header" href="#observing-the-worker-index">Observing the worker index</a></h3>
+<p><code>PerWorker</code> constructors (and the tests they feed) can read the zero-based index the parent assigned to the current worker via <code>test_r::worker_index()</code>. Use it to partition a global namespace so that workers cannot collide without coordination.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::sync::atomic::AtomicU16;
+use test_r::test_dep;
+
+pub struct LastUniqueId {
+    pub id: AtomicU16,
+}
+
+#[test_dep(scope = PerWorker)]
+fn last_unique_id() -&gt; LastUniqueId {
+    // Reserve the high 8 bits for the worker index, leaving 8 bits per
+    // worker for the local sequence.
+    let seed = (test_r::worker_index() as u16 &amp; 0xFF) &lt;&lt; 8;
+    LastUniqueId { id: AtomicU16::new(seed) }
+}
+<span class="boring">}</span></code></pre>
+<p>When the runner does not spawn workers — e.g. under <code>--nocapture</code>, when no test in the schedule requires capture, or when a <code>Shared</code> dep forces the single-thread fallback — <code>worker_index()</code> returns <code>0</code>. This is the same value the top-level parent observes for itself.</p>
+<h2 id="cloneable"><a class="header" href="#cloneable"><code>Cloneable</code></a></h2>
+<p>Implement the <code>CloneableDep</code> trait for the dependency type, then annotate the constructor with <code>scope = Cloneable</code>:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::core::CloneableDep;
+use test_r::{test, test_dep};
+
+pub struct PrecomputedPayload {
+    pub bytes: Vec&lt;u8&gt;,
+}
+
+impl CloneableDep for PrecomputedPayload {
+    fn to_wire(&amp;self) -&gt; Vec&lt;u8&gt; {
+        self.bytes.clone()
+    }
+
+    fn from_wire(bytes: &amp;[u8]) -&gt; Self {
+        Self { bytes: bytes.to_vec() }
+    }
+}
+
+#[test_dep(scope = Cloneable)]
+fn create_payload() -&gt; PrecomputedPayload {
+    // Runs exactly once, in the parent process.
+    PrecomputedPayload { bytes: expensive_build() }
+}
+
+#[test]
+fn uses_payload(payload: &amp;PrecomputedPayload) {
+    assert_eq!(payload.bytes.len(), 1024 * 1024);
+}
+<span class="boring">fn expensive_build() -&gt; Vec&lt;u8&gt; { vec![0; 1024 * 1024] }
+</span><span class="boring">}</span></code></pre>
+<p>The wire encoding is entirely up to the implementor — there is no <code>serde</code> requirement. Cloneable wire payloads larger than 64 KiB are supported (the IPC framing uses a <code>u32</code> length prefix).</p>
+<h3 id="cloneable-constructor-dependencies"><a class="header" href="#cloneable-constructor-dependencies">Cloneable constructor dependencies</a></h3>
+<p><code>Cloneable</code> constructors may take other <code>#[test_dep]</code> parameters. Those
+constructor dependencies are resolved in the parent when test-r creates the
+wire bytes. Worker subprocesses only receive the wire payload and call
+<code>CloneableDep::from_wire(bytes)</code>, so the reconstructed worker value is treated
+as a dependency-free leaf.</p>
+<p>If reconstruction needs worker-local state (for example, a per-worker engine to
+interpret the bytes), keep that state in a separate <code>PerWorker</code> dependency and
+combine the two in your test or in a higher-level helper.</p>
+<h2 id="hosted"><a class="header" href="#hosted"><code>Hosted</code></a></h2>
+<p><code>scope = Hosted</code> keeps the owner alive in the parent for the whole
+suite and lets each worker subprocess obtain its own view of that
+single owner. The view shape is chosen at the registration site by the
+optional <code>worker = …</code> argument; see the
+<a href="#worker-view-descriptor-rpctrait-bothtrait">Worker view subsection</a>
+for the full picker. The default — and the only one this top-of-section
+example uses — is <code>worker = descriptor</code>: implement the
+<a href="https://docs.rs/test-r/latest/test_r/core/trait.HostedDep.html"><code>HostedDep</code></a>
+trait for the dependency type, then annotate the constructor with
+<code>scope = Hosted</code>:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::net::{SocketAddr, TcpListener};
+use std::sync::Arc;
+use test_r::core::HostedDep;
+use test_r::{test, test_dep};
+
+pub struct LiveService {
+    addr: SocketAddr,
+    /// Owner-only: the parent holds the live listener for the whole suite.
+    /// Workers never populate this.
+    _listener: Option&lt;Arc&lt;TcpListener&gt;&gt;,
+}
+
+impl LiveService {
+    fn bind() -&gt; Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().unwrap();
+        // ... spawn an accept loop, etc.
+        Self { addr, _listener: Some(Arc::new(listener)) }
+    }
+}
+
+impl HostedDep for LiveService {
+    fn descriptor(&amp;self) -&gt; Vec&lt;u8&gt; {
+        // Ship just enough information for workers to reach the live owner.
+        self.addr.to_string().into_bytes()
+    }
+
+    fn from_descriptor(bytes: &amp;[u8]) -&gt; Self {
+        let s = std::str::from_utf8(bytes).expect("utf-8");
+        let addr: SocketAddr = s.parse().expect("addr");
+        Self { addr, _listener: None /* workers don't own the listener */ }
+    }
+}
+
+#[test_dep(scope = Hosted)]
+fn live_service() -&gt; LiveService {
+    // Runs exactly once, in the parent process. Stays alive for the
+    // entire suite — workers reach it via the descriptor.
+    LiveService::bind()
+}
+
+#[test]
+fn worker_can_reach_owner(service: &amp;LiveService) {
+    // service.addr points at the listener held by the parent.
+    // ...
+}
+<span class="boring">}</span></code></pre>
+<h3 id="how-hosted-works"><a class="header" href="#how-hosted-works">How Hosted works</a></h3>
+<ol>
+<li>The parent test runner calls the owner constructor <strong>once</strong> when it first builds the execution plan.</li>
+<li>The parent calls <code>HostedDep::descriptor()</code> on the owner and ships the bytes to every worker via IPC (<code>ProvideHostedDescriptor</code>).</li>
+<li>Each worker calls <code>HostedDep::from_descriptor(bytes)</code> to materialise a local handle that knows how to reach the parent-held owner.</li>
+<li>The parent keeps the owner alive (in <code>_hosted_owners</code>) for the entire suite, so workers can rely on it being reachable as long as any test is still running.</li>
+<li>When the suite finishes, the parent drops the owner — typically triggering whatever cleanup the owner’s <code>Drop</code> implementation needs (closing the listener, stopping a container, etc.).</li>
+</ol>
+<p>The wire encoding is entirely up to the implementor, exactly like <code>Cloneable</code>. Descriptors are usually small — an address, a port, a credentials bundle.</p>
+<h3 id="hosted-constructor-dependencies"><a class="header" href="#hosted-constructor-dependencies">Hosted constructor dependencies</a></h3>
+<ul>
+<li>The constructor may take other <code>#[test_dep]</code> parameters. Those dependencies
+are resolved only in the parent while constructing the owner. Workers receive
+descriptor bytes and call <code>HostedDep::from_descriptor(bytes)</code>, so the
+reconstructed worker handle is a dependency-free leaf.</li>
+<li>With <code>worker = descriptor</code> (the default), the owner type and the
+worker handle type share the same Rust type (<code>Self</code>). The
+implementor is responsible for keeping owner-only fields (sockets,
+accept loops, container handles) in <code>Option</code>s or <code>Arc</code>s that workers
+don’t populate. The <code>worker = rpc(Trait)</code> and <code>worker = both(Trait)</code>
+views generate a separate <code>&lt;Trait&gt;Stub</code> for the RPC side, so this
+invariant only applies to the descriptor view.</li>
+</ul>
+<h3 id="worker-view-descriptor-rpctrait-bothtrait"><a class="header" href="#worker-view-descriptor-rpctrait-bothtrait">Worker view: <code>descriptor</code>, <code>rpc(Trait)</code>, <code>both(Trait)</code></a></h3>
+<p><code>scope = Hosted</code> accepts an optional <code>worker = …</code> argument on
+<code>#[test_dep]</code> that chooses <strong>what shape the worker subprocess sees</strong>
+for the same parent-held owner:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>worker = …</code></th><th>Worker-visible value</th><th>Owner trait(s) required</th></tr>
+</thead>
+<tbody>
+<tr><td><code>descriptor</code> (default)</td><td><code>HostedDep::from_descriptor(parent_descriptor_bytes)</code> — a reconstructed handle (typically holding an address).</td><td><a href="https://docs.rs/test-r/latest/test_r/core/trait.HostedDep.html"><code>HostedDep</code></a> (or <a href="https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedDep.html"><code>AsyncHostedDep</code></a>).</td></tr>
+<tr><td><code>rpc(Trait)</code></td><td>An auto-generated <code>&lt;Trait&gt;Stub</code> whose methods route each call back to the parent over the runtime’s IPC channel.</td><td><a href="https://docs.rs/test-r/latest/test_r/core/trait.HostedRpcDep.html"><code>HostedRpcDep</code></a> implemented for the owner; trait declared with <a href="#hostedrpc-attribute-macro-eliminating-the-boilerplate"><code>#[hosted_rpc]</code></a>.</td></tr>
+<tr><td><code>both(Trait)</code></td><td><strong>Both</strong> a descriptor-shaped handle and a <code>&lt;Trait&gt;Stub</code>, backed by the same single owner instance.</td><td>Descriptor side: <a href="https://docs.rs/test-r/latest/test_r/core/trait.HostedDep.html"><code>HostedDep</code></a> <strong>or</strong> <a href="https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedDep.html"><code>AsyncHostedDep</code></a>. RPC side: <a href="https://docs.rs/test-r/latest/test_r/core/trait.HostedRpcDep.html"><code>HostedRpcDep</code></a>. Both impls are on the same owner type.</td></tr>
+</tbody>
+</table>
+</div>
+<p>In all three cases the parent constructs the owner exactly once and
+keeps it alive for the whole suite. Workers obtain their view through
+the existing IPC channel; nothing changes about parallelism or output
+capturing relative to the default Hosted strategy.</p>
+<ul>
+<li><code>worker = descriptor</code> is the implicit default. The historical
+<code>#[test_dep(scope = Hosted)]</code> syntax stays equivalent to
+<code>#[test_dep(scope = Hosted, worker = descriptor)]</code>.</li>
+<li><code>worker = rpc(Trait)</code> is shorthand for what used to be a
+separate <code>#[test_dep(scope = HostedRpc, stub = &lt;StubType&gt;)]</code>
+registration. See the
+<a href="#hostedrpc-attribute-macro-eliminating-the-boilerplate"><code>#[hosted_rpc]</code> attribute macro section</a>
+for the trait-side machinery; the only difference at the registration
+site is which scope you use.</li>
+<li><code>worker = both(Trait)</code> shares a singleton that
+needs to expose <strong>both</strong> a bulk-data descriptor handle (typically a
+connection address used by a gRPC client) <strong>and</strong> a small RPC control
+surface (kill / flush / snapshot) from a single owner. Tests can
+parameterise on either the descriptor type, the auto-generated
+<code>&lt;Trait&gt;Stub</code>, or both; no duplicate owner is constructed.</li>
+</ul>
+<p><code>async_worker</code> is no longer needed on any of these forms — the runtime
+picks the sync vs async worker-side reconstructor automatically based
+on the active runtime (sync vs <code>tokio</code>) and the dep’s
+<code>HostedDep</code> / <code>AsyncHostedDep</code> implementation. The flag still parses
+for source compatibility but emits a <code>#[deprecated]</code> warning at the
+registration site.</p>
+<h3 id="async-worker-side-reconstruction-asynchosteddep"><a class="header" href="#async-worker-side-reconstruction-asynchosteddep">Async worker-side reconstruction (<code>AsyncHostedDep</code>)</a></h3>
+<p>The default <code>HostedDep::from_descriptor</code> is synchronous. When worker-side
+reconstruction needs to <code>.await</code> — opening async network clients,
+calling async constructors of downstream services such as
+<code>ProvidedWorkerService::new(...).await</code> — implement
+<a href="https://docs.rs/test-r/latest/test_r/core/trait.AsyncHostedDep.html"><code>AsyncHostedDep</code></a>
+instead. Under the <code>tokio</code> runtime feature the runtime automatically
+drives every Hosted reconstruction through the async path, so no
+extra <code>#[test_dep]</code> flag is required:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::core::AsyncHostedDep;
+use test_r::{test, test_dep};
+
+impl AsyncHostedDep for LiveAsyncService {
+    fn descriptor(&amp;self) -&gt; Vec&lt;u8&gt; {
+        self.addr.to_string().into_bytes()
+    }
+
+    async fn from_descriptor(bytes: &amp;[u8]) -&gt; Self {
+        let s = std::str::from_utf8(bytes).expect("utf-8");
+        let addr: SocketAddr = s.parse().expect("addr");
+        // Async work only legal because `from_descriptor` is async on
+        // `AsyncHostedDep`. The sync `HostedDep` flavour could not do this.
+        let stream = TcpStream::connect(addr).await.expect("connect");
+        Self { addr, prewarmed_client: Some(stream) }
+    }
+}
+
+#[test_dep(scope = Hosted)]
+async fn live_async_service() -&gt; LiveAsyncService {
+    LiveAsyncService::new().await
+}
+<span class="boring">}</span></code></pre>
+<p>Semantics are otherwise identical to plain <code>HostedDep</code>:</p>
+<ul>
+<li>The parent still constructs the owner exactly once and ships
+<code>descriptor()</code> bytes to every worker.</li>
+<li>Each worker runs the async <code>from_descriptor</code> inside a
+<code>WorkerReconstructor::Async</code> closure on its tokio runtime.</li>
+<li>The blanket <code>impl&lt;T: HostedDep&gt; AsyncHostedDep for T</code> makes a sync
+<code>HostedDep</code> implementation usable through the async path too, so
+switching the consumer crate to the <code>tokio</code> feature does not require
+rewriting existing sync implementations.</li>
+</ul>
+<blockquote>
+<p><strong>Note — <code>async_worker</code> is deprecated.</strong> The
+<code>#[test_dep(scope = Hosted, async_worker)]</code> attribute flag from
+earlier releases is no longer needed: the macro now selects the
+worker-side reconstruction path purely from the active runtime
+(sync vs <code>tokio</code>) and the dep’s <code>HostedDep</code> / <code>AsyncHostedDep</code>
+implementation. The flag still parses for source compatibility but
+emits a compile-time <code>#[deprecated]</code> warning at the registration site.</p>
+</blockquote>
+<p>The
+<a href="https://github.com/vigoo/test-r/blob/main/example-tokio/src/sharing/hosted_async_worker.rs"><code>hosted_async_worker</code> example</a>
+demonstrates the full pattern, including a regression test that confirms
+the worker-side reconstructor actually runs only in worker subprocesses.</p>
+<h3 id="mode-consistent-semantics-across---nocapture-and-worker-mode"><a class="header" href="#mode-consistent-semantics-across---nocapture-and-worker-mode">Mode-consistent semantics across <code>--nocapture</code> and worker mode</a></h3>
+<p>The test functions always see the <strong>worker-side handle</strong> produced by
+<code>HostedDep::from_descriptor</code>, never the raw owner value, regardless of which
+execution mode the runner ended up in:</p>
+<ul>
+<li>With output capturing on (the default), every test runs inside an IPC
+worker subprocess and sees <code>from_descriptor(parent_descriptor_bytes)</code>.</li>
+<li>With <code>--nocapture</code> (or single-process mode), the runner still creates the
+owner exactly once in the parent, calls <code>descriptor()</code> on it, and then
+locally applies <code>from_descriptor</code> so the in-process tests see exactly the
+same kind of handle.</li>
+</ul>
+<p>This means you can write <code>HostedDep::from_descriptor</code> as the single source
+of truth for what a test-visible handle looks like, and you don’t need to
+distinguish between “parent test run” and “worker test run” in your test
+code.</p>
+<h2 id="hostedrpc"><a class="header" href="#hostedrpc"><code>HostedRpc</code></a></h2>
+<p><code>HostedRpc</code> is the close sibling of <code>Hosted</code> for singletons whose
+test-visible API is a small set of method calls rather than a network
+endpoint. The owner lives in the top-level parent for the entire suite
+and workers see a <strong>stub</strong> — a tiny Rust struct that serialises each
+method call, ships it over the runtime’s IPC channel to the parent, and
+unwraps the reply.</p>
+<blockquote>
+<p><strong>Preferred registration syntax — <code>scope = Hosted</code> with
+<code>worker = rpc(Trait)</code>.</strong> The recommended way to register an RPC-shaped Hosted dep
+backed by a trait is
+<code>#[test_dep(scope = Hosted, worker = rpc(&lt;Trait&gt;))]</code>. That syntax
+uses the same runtime mechanism documented in this section but
+drops the explicit <code>stub = &lt;StubType&gt;</code> argument: the macro derives
+the worker-visible stub type from the trait name and writes the
+registration entry for you. Use it together with the
+<a href="#hostedrpc-attribute-macro-eliminating-the-boilerplate"><code>#[hosted_rpc]</code></a>
+attribute macro on a normal Rust trait.</p>
+<p>The legacy <code>#[test_dep(scope = HostedRpc, stub = &lt;StubType&gt;)]</code>
+form remains supported and continues to be the right choice when
+there is no Rust trait surface — for example when you ship a
+hand-written stub with custom method indices, custom argument
+framing, or no trait declaration at all. The two
+<a href="https://github.com/vigoo/test-r/blob/main/example/src/sharing/hosted_rpc_basic.rs"><code>hosted_rpc_basic</code></a>
+examples are intentionally kept on the legacy form for that reason.</p>
+</blockquote>
+<p>Use this when:</p>
+<ul>
+<li>the dep is a singleton (an id allocator, a leadership coordinator, a
+globally-shared counter, …),</li>
+<li>you don’t want to invent and embed a real network protocol for tests,</li>
+<li>a few hundred call-per-test of overhead per RPC are acceptable
+(every call is one synchronous round-trip on the existing IPC socket).</li>
+</ul>
+<h3 id="supported-scope"><a class="header" href="#supported-scope">Supported scope</a></h3>
+<ul>
+<li>Both runners are supported. Tests in both runners see the same <code>Stub</code> value
+and call into the same parent-held owner via the IPC transport (or
+<code>InProcessHostedRpcTransport</code> in the <code>--nocapture</code> / no-spawn-workers path).</li>
+<li>The user implements the owner type, the worker-visible stub type, and
+one method-dispatch function on the owner. The runtime wires those
+together over IPC. For trait-shaped owners, the
+<a href="#hostedrpc-attribute-macro-eliminating-the-boilerplate"><code>#[hosted_rpc]</code> attribute macro</a>
+generates the stub struct, the per-method <code>desert_rust</code> encode/decode
+shims and the dispatch arms for you.</li>
+<li>One in-flight call at a time per worker subprocess. Each <code>stub.foo()</code>
+takes the IPC connection lock, writes the request frame, reads exactly
+one reply frame, and returns. No multiplexer or out-of-order replies.</li>
+<li>The stub methods are <strong>synchronous</strong> even under the tokio runner: the
+tokio transport bridges the sync trait method to the async IPC
+primitives via <code>tokio::task::block_in_place</code> +
+<code>Handle::current().block_on(...)</code>. Native async stub methods are
+deferred.</li>
+</ul>
+<h3 id="hostedrpcdep-the-trait"><a class="header" href="#hostedrpcdep-the-trait"><code>HostedRpcDep</code> (the trait)</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::core::{HostedRpcChannel, HostedRpcDep, HostedRpcError};
+
+pub struct LastUniqueIdOwner { counter: std::sync::Mutex&lt;u64&gt; }
+
+const METHOD_NEXT: u32 = 1;
+
+impl HostedRpcDep for LastUniqueIdOwner {
+    /// The worker-visible handle tests parameterise on.
+    type Stub = LastUniqueIdStub;
+
+    /// Owner-side dispatcher. `method_idx` is a stable, user-chosen
+    /// index per method (you pick the numbering). `args` is the raw
+    /// serialised payload; the choice of codec is yours.
+    fn dispatch(&amp;mut self, method_idx: u32, _args: &amp;[u8]) -&gt; Result&lt;Vec&lt;u8&gt;, String&gt; {
+        match method_idx {
+            METHOD_NEXT =&gt; {
+                let mut guard = self.counter.lock().map_err(|e| e.to_string())?;
+                *guard += 1;
+                Ok(guard.to_be_bytes().to_vec())
+            }
+            other =&gt; Err(format!("unknown method_idx {other}")),
+        }
+    }
+
+    /// Worker-side stub builder. The runtime hands you a fresh
+    /// `HostedRpcChannel` tagged with this dep's fully-qualified id
+    /// once per worker; you wrap it in your stub.
+    fn build_stub(channel: HostedRpcChannel) -&gt; Self::Stub {
+        LastUniqueIdStub { channel }
+    }
+}
+
+pub struct LastUniqueIdStub { channel: HostedRpcChannel }
+
+impl LastUniqueIdStub {
+    pub fn next(&amp;self) -&gt; Result&lt;u64, HostedRpcError&gt; {
+        let bytes = self.channel.call(METHOD_NEXT, Vec::new())?;
+        let arr: [u8; 8] = bytes.as_slice().try_into()
+            .map_err(|e| HostedRpcError::Transport(format!("{e}")))?;
+        Ok(u64::from_be_bytes(arr))
+    }
+}
+
+#[test_dep(scope = HostedRpc, stub = LastUniqueIdStub)]
+fn unique_id_owner() -&gt; LastUniqueIdOwner {
+    LastUniqueIdOwner { counter: std::sync::Mutex::new(0) }
+}
+
+#[test]
+fn ids_are_unique(ids: &amp;LastUniqueIdStub) {
+    let a = ids.next().unwrap();
+    let b = ids.next().unwrap();
+    assert!(a &lt; b);
+}
+<span class="boring">}</span></code></pre>
+<p>The <code>stub = StubType</code> attribute is required. The constructor returns the
+<strong>owner type</strong>, the test parameter is the <strong>stub type</strong>; the macro
+registers the dep under the stub’s type name so test parameter resolution
+finds it.</p>
+<h3 id="hosted_rpc-attribute-macro-eliminating-the-boilerplate"><a class="header" href="#hosted_rpc-attribute-macro-eliminating-the-boilerplate"><code>#[hosted_rpc]</code> attribute macro: eliminating the boilerplate</a></h3>
+<p>Writing the <code>LastUniqueIdStub</code> struct, the per-method argument
+serialisation and the <code>match method_idx { ... }</code> arm in
+<code>HostedRpcDep::dispatch</code> is mechanical work. The <code>#[hosted_rpc]</code>
+attribute macro generates all of it from a user trait declaration.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use test_r::core::{HostedRpcChannel, HostedRpcDep};
+use test_r::{hosted_rpc, test, test_dep};
+
+#[hosted_rpc]
+pub trait Counter {
+    fn next(&amp;self) -&gt; u64;
+    fn reserve(&amp;self, count: u32) -&gt; u64;
+    fn echo(&amp;self, msg: String) -&gt; String;
+}
+
+pub struct CounterOwner { counter: std::sync::Mutex&lt;u64&gt; }
+
+impl Counter for CounterOwner {
+    fn next(&amp;self) -&gt; u64 {
+        let mut g = self.counter.lock().unwrap();
+        *g += 1; *g
+    }
+    fn reserve(&amp;self, count: u32) -&gt; u64 {
+        let mut g = self.counter.lock().unwrap();
+        let first = *g + 1; *g += count as u64; first
+    }
+    fn echo(&amp;self, msg: String) -&gt; String { msg }
+}
+
+impl HostedRpcDep for CounterOwner {
+    type Stub = CounterStub;
+    fn dispatch(&amp;mut self, method_idx: u32, args: &amp;[u8]) -&gt; Result&lt;Vec&lt;u8&gt;, String&gt; {
+        // Generated by `#[hosted_rpc]`. Routes the wire `method_idx` to
+        // the matching method on `self`, decoding args / encoding the
+        // reply with `desert_rust`.
+        CounterDispatch::dispatch_counter(self, method_idx, args)
+    }
+    fn build_stub(channel: HostedRpcChannel) -&gt; Self::Stub {
+        // Generated by `#[hosted_rpc]`. Wraps the `HostedRpcChannel` in
+        // the worker-side stub that implements `Counter`.
+        CounterStub::new(channel)
+    }
+}
+
+#[test_dep(scope = Hosted, worker = rpc(Counter))]
+fn counter_owner() -&gt; CounterOwner {
+    CounterOwner { counter: std::sync::Mutex::new(0) }
+}
+
+#[test]
+fn ids_are_monotonic(c: &amp;CounterStub) {
+    let a = c.next();
+    let b = c.next();
+    assert!(a &lt; b);
+}
+<span class="boring">}</span></code></pre>
+<p><code>scope = Hosted, worker = rpc(Counter)</code> is the preferred
+registration form for trait-shaped owners. The macro derives the
+worker-visible stub type from the trait name (<code>Counter</code> → <code>CounterStub</code>)
+so you do not need to pass it explicitly. The equivalent legacy form
+<code>#[test_dep(scope = HostedRpc, stub = CounterStub)]</code> still works and
+remains the right choice for hand-written stubs that are not backed by
+a trait at all (see the <a href="#hostedrpcdep-the-trait"><code>HostedRpcDep</code></a>
+example above).</p>
+<p>What the macro emits next to the trait declaration:</p>
+<ul>
+<li>A struct <code>&lt;Trait&gt;Stub { channel: HostedRpcChannel }</code> with a
+<code>pub fn new(channel) -&gt; Self</code> constructor and an <code>impl &lt;Trait&gt; for &lt;Trait&gt;Stub</code> that implements every trait method by encoding the args
+as a tuple of the parameter types (1-arg methods send the bare value;
+0-arg methods send <code>()</code>; 2+-arg methods send a regular tuple), shipping
+them through <code>HostedRpcChannel::call(method_idx, ...)</code> and decoding the
+return value. Encoding uses <code>desert_rust</code>.</li>
+<li>A trait <code>&lt;Trait&gt;Dispatch</code> with a single method
+<code>dispatch_&lt;snake_case_trait_name&gt;(&amp;mut self, method_idx: u32, args: &amp;[u8]) -&gt; Result&lt;Vec&lt;u8&gt;, String&gt;</code>, <strong>blanket-implemented for every
+<code>T: &lt;Trait&gt;</code></strong>, that contains the per-method match arms wiring incoming
+RPCs back to the owner’s <code>&lt;Trait&gt;</code> impl. The owner’s
+<code>HostedRpcDep::dispatch</code> becomes a one-line delegation.</li>
+</ul>
+<p>Wire-format details:</p>
+<ul>
+<li>Method indices are assigned by source order in the trait, starting at
+<code>0</code>, and shipped on the wire as <code>u32</code>. Reordering the methods is a
+breaking change.</li>
+<li>Args are encoded with <code>desert_rust::serialize_to_byte_vec</code> as a tuple
+of the parameter types after stripping <code>self</code>. The zero-arg case uses
+<code>()</code>; the single-arg case uses the bare <code>T</code> (NOT a 1-tuple) so the
+framing stays symmetric on the dispatch side.</li>
+<li>The return value is encoded directly. The unit return type uses <code>()</code>.</li>
+</ul>
+<p>Restrictions enforced at macro time (the macro emits a
+<code>compile_error!</code> if violated):</p>
+<ul>
+<li><code>#[hosted_rpc]</code> does not take any attribute arguments
+(<code>#[hosted_rpc(...)]</code>).</li>
+<li>The trait must be non-generic, must not be <code>unsafe trait</code>, must not
+have supertraits, and must only declare methods (no associated
+<code>type</code> / <code>const</code> items).</li>
+<li>Methods must be non-generic, synchronous (no <code>async fn</code>), must not
+be <code>unsafe fn</code>, must use the default Rust ABI (no <code>extern "..."</code>),
+must not be variadic, must not have a default body, and the first
+argument must be <strong><code>&amp;self</code></strong> (no by-value <code>self</code>, no explicit
+<code>self: T</code> type, and <strong>no <code>&amp;mut self</code></strong> either — test-r injects test
+deps as <code>&amp;Stub</code> immutable references, so <code>&amp;mut self</code> stub methods
+would compile but be uncallable from a normal
+<code>#[test] fn (s: &amp;MyStub)</code> parameter).</li>
+<li>Argument types must use plain identifier patterns (no <code>_</code>, no
+destructuring like <code>(a, b): (u32, u32)</code>).</li>
+<li><code>impl Trait</code> is not allowed in argument or return position.</li>
+<li><code>#[cfg(...)]</code> / <code>#[cfg_attr(...)]</code> are not allowed on the trait or
+its methods (the generated sibling items and dispatch arms are not
+cfg-propagated.</li>
+</ul>
+<p>All arg and return types must implement <code>desert_rust::BinarySerializer</code>
+and <code>desert_rust::BinaryDeserializer</code>. Common standard-library types
+(<code>u8</code>/<code>u16</code>/<code>u32</code>/<code>u64</code>/<code>i*</code>, <code>bool</code>, <code>String</code>, <code>Vec&lt;T&gt;</code>, <code>Option&lt;T&gt;</code>,
+<code>HashMap&lt;K, V&gt;</code> and N-ary tuples for <code>N &gt;= 2</code>) already do.</p>
+<p>Transport, codec and dispatch failures (IPC errors, owner panics,
+encode/decode errors) <strong>panic in the generated stub</strong> with an
+<code>expect(...)</code> message of the form <code>hosted_rpc(&lt;Trait&gt;::&lt;method&gt;): ...</code>.
+User-level errors are still encoded normally: if a trait method
+returns <code>Result&lt;T, E&gt;</code>, the <code>Result</code> itself is shipped over the wire
+and only infrastructure failures panic.</p>
+<h3 id="how-hostedrpc-works"><a class="header" href="#how-hostedrpc-works">How HostedRpc works</a></h3>
+<ol>
+<li>The parent test runner calls the owner constructor <strong>once</strong> when it
+first builds the execution plan, wraps the result in an internal
+<code>HostedRpcOwnerCell</code>, and keeps it alive for the whole suite.</li>
+<li>Each worker subprocess builds a stub via <code>build_stub(channel)</code> using
+an IPC-backed <code>HostedRpcChannel</code> keyed to the dep’s fully-qualified id.</li>
+<li>When a test calls <code>stub.foo(args)</code>, the stub sends an <code>IpcResponse::HostedRpcCall</code>
+frame on the shared IPC socket and blocks for the matching
+<code>IpcCommand::HostedRpcReply</code>.</li>
+<li>The parent’s worker dispatch loop intercepts incoming <code>HostedRpcCall</code>
+frames, looks up the right <code>HostedRpcOwnerCell</code> by dep id, runs the
+owner’s <code>dispatch(method_idx, &amp;args)</code> behind a <code>Mutex</code>, and writes
+the reply back.</li>
+<li>Owner panics are caught by <code>HostedRpcOwnerCell::dispatch</code> and surfaced
+to the calling worker as <code>HostedRpcError::Dispatch("hosted rpc owner panicked: …")</code>.
+The mutex is poisoned after a panic; subsequent calls then return a
+stable <code>"hosted rpc owner poisoned"</code> error so a single bad call
+doesn’t bring down the rest of the suite.</li>
+<li>In <code>--nocapture</code> / single-process mode, the runtime swaps the
+IPC-backed transport for <code>InProcessHostedRpcTransport</code>, which calls
+the owner cell directly — tests see the same stub regardless of
+execution mode.</li>
+</ol>
+<h3 id="hostedrpc-restrictions"><a class="header" href="#hostedrpc-restrictions">HostedRpc restrictions</a></h3>
+<ul>
+<li>The stub trait methods are synchronous on both runners. Async stub
+methods are deferred.</li>
+<li>The constructor may take other <code>#[test_dep]</code> parameters. Those dependencies
+are resolved only in the parent while constructing the owner. Workers receive
+an RPC channel and call <code>HostedRpcDep::build_stub(channel)</code>, so the
+reconstructed stub is a dependency-free leaf.</li>
+<li>The constructor must return the <strong>owner type</strong>; tests must parameterise
+on the <strong>stub type</strong> named via <code>stub = StubType</code>.</li>
+<li>One in-flight RPC at a time per worker subprocess. Pipelined or
+concurrent calls are not supported in the MVP.</li>
+<li>The tokio HostedRpc transport relies on the runner being driven by a
+multi-thread tokio runtime so <code>tokio::task::block_in_place</code> /
+<code>Handle::current().block_on(...)</code> can re-enter the IPC I/O from the
+sync stub trait method. The built-in test-r tokio runner satisfies
+this; a custom runner on a <code>current_thread</code> runtime is not supported.</li>
+</ul>
+<h3 id="mvp-temporal-invariant--when-stub-calls-are-safe"><a class="header" href="#mvp-temporal-invariant--when-stub-calls-are-safe">MVP temporal invariant — when stub calls are safe</a></h3>
+<p>The HostedRpc transport intentionally reuses the same IPC socket the
+harness uses for <code>RunTest</code> / <code>ProvideCloneable</code> /
+<code>ProvideHostedDescriptor</code> traffic. Stubs share that socket with the
+worker’s main IPC command loop, and they take a process-local mutex
+around one full request/response. The IPC framing only stays in sync
+because of two assumptions:</p>
+<ol>
+<li>
+<p><strong>Stubs are only invoked from inside the test body.</strong> Tests in the
+worker subprocess only run between <code>RunTest</code> (parent → worker) and
+<code>TestFinished</code> (worker → parent). During that window the worker’s
+main command loop is idle (it doesn’t read from the socket), so the
+stub’s request/reply round-trip is the only traffic in flight.</p>
+</li>
+<li>
+<p><strong><code>HostedRpcDep::build_stub</code> is cheap and side-effect free.</strong> It runs
+once per worker subprocess at startup, <em>before</em> the worker has
+received its first <code>RunTest</code>. If <code>build_stub</code> itself called
+<code>channel.call(...)</code>, the parent could legally send a <code>RunTest</code> while
+the stub was blocked waiting for a reply, and the transport would
+read that <code>RunTest</code> as if it were a <code>HostedRpcReply</code>.</p>
+</li>
+</ol>
+<p>Concretely:</p>
+<ul>
+<li>✅ Calling <code>stub.foo(...)</code> from inside a <code>#[test]</code> function body, or
+from any helper the test body awaits or blocks on, is safe.</li>
+<li>❌ Calling <code>channel.call(...)</code> from <code>HostedRpcDep::build_stub</code> is not
+supported and will desync the IPC framing.</li>
+<li>❌ Calling <code>stub.foo(...)</code> from a detached background thread that
+outlives the test body is not supported — once the test returns, the
+worker’s next IPC traffic is <code>TestFinished</code> followed by either
+<code>RunTest</code> or <code>Provide*</code> from the parent, not a <code>HostedRpcReply</code>.</li>
+<li>❌ Calling <code>stub.foo(...)</code> from <code>Drop</code> / destructor-style cleanup, or
+from any teardown hook that may fire after the test body has
+returned, is not supported for the same reason — the rule is
+“inside the test body, every time”.</li>
+</ul>
+<p>If you need any of the unsupported shapes, treat that as a signal to
+either restructure your test (run the work inside the test body, wait
+for the background thread to finish before returning) or use a future
+transport design with a dedicated worker-side reader and a waiter table.</p>
+<h3 id="when-to-prefer-hosted-over-hostedrpc"><a class="header" href="#when-to-prefer-hosted-over-hostedrpc">When to prefer <code>Hosted</code> over <code>HostedRpc</code></a></h3>
+<p>If your dep already exposes a network endpoint (TCP listener, gRPC
+server, Docker container with a published port), use <code>Hosted</code> and ship
+the address as the descriptor. <code>HostedRpc</code> is the right choice when no
+such endpoint exists and you don’t want to invent one.</p>
+<h2 id="when-does-the-single-thread-fallback-still-kick-in"><a class="header" href="#when-does-the-single-thread-fallback-still-kick-in">When does the single-thread fallback still kick in?</a></h2>
+<p>The parallel/single-thread decision is made once, after the dep graph is known:</p>
+<ul>
+<li>If output capturing is <strong>off</strong> (<code>--nocapture</code>), the runner never falls back.</li>
+<li>If capturing is <strong>on</strong> and the suite has at least one <strong><code>Shared</code></strong> dep, the runner falls back to one thread.</li>
+<li>If capturing is <strong>on</strong> and all deps in scope are <code>PerWorker</code>, <code>Cloneable</code>, <code>Hosted</code>, and/or <code>HostedRpc</code>, the runner stays parallel.</li>
+</ul>
+<p>A suite that mixes <code>Shared</code> and any of the parallel-safe scopes will still fall back: <code>Shared</code> is the strictest scope in scope-mixing. Migrate the remaining <code>Shared</code> deps to a more permissive scope to recover parallelism.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../advanced_features/dependency_injection.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../advanced_features/tags.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../advanced_features/dependency_injection.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../advanced_features/tags.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-c22b7243.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>
