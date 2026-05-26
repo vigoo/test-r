@@ -28,8 +28,10 @@ pub(crate) enum Scope {
     Hosted,
     /// Owner held in parent; workers call back over IPC via a generated or
     /// manually-written stub. Requires the dep return type to implement
-    /// `HostedRpcDep` and a `stub = StubType` attribute that names the
-    /// worker-visible handle type tests parameterise on.
+    /// `HostedRpcDep` (sync owners) or — under the `tokio` feature —
+    /// `AsyncHostedRpcDep` (async owners), and a `stub = StubType`
+    /// attribute that names the worker-visible handle type tests
+    /// parameterise on.
     HostedRpc,
 }
 
@@ -534,27 +536,15 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
     // constructor returns the owner, wraps it in a HostedRpcOwnerCell, and the
     // factory tells the runtime how to (a) downcast the owner Arc back to a
     // cell and (b) build a worker-side stub from a channel.
+    //
+    // Routed through `__test_r_make_hosted_rpc_factory::<T, Stub>()` so the
+    // `build_stub` bound picks `AsyncHostedRpcDep` under the tokio feature and
+    // back-compat `HostedRpcDep` otherwise — auto-bridging sync owners and
+    // accepting async owners transparently.
     let rpc_factory_expr = if matches!(scope, Scope::HostedRpc) {
         let stub_ty = stub_type_path.as_ref().expect("stub type checked above");
         quote! {
-            Some(test_r::core::RpcFactory {
-                owner_into_cell: std::sync::Arc::new(
-                    |__any: std::sync::Arc<dyn std::any::Any + Send + Sync>| {
-                        __any
-                            .downcast::<test_r::core::HostedRpcOwnerCell>()
-                            .expect("HostedRpc owner downcast to HostedRpcOwnerCell failed")
-                    },
-                ),
-                build_stub: std::sync::Arc::new(
-                    |__channel: test_r::core::HostedRpcChannel| {
-                        let __stub: #stub_ty =
-                            <#dep_ty as test_r::core::HostedRpcDep>::build_stub(__channel);
-                        let __boxed: std::sync::Arc<dyn std::any::Any + Send + Sync> =
-                            std::sync::Arc::new(__stub);
-                        __boxed
-                    },
-                ),
-            })
+            Some(test_r::core::__test_r_make_hosted_rpc_factory::<#dep_ty, #stub_ty>())
         }
     } else {
         quote! { None }
@@ -577,11 +567,16 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
     // For HostedRpc the constructor returns the owner type, but the runtime
     // stores a HostedRpcOwnerCell. Emit the wrapping in the constructor
     // closure itself so the downcast in `owner_into_cell` always succeeds.
+    //
+    // Routed through `__test_r_make_hosted_rpc_cell` so the choice between a
+    // sync cell (legacy `HostedRpcDep`) and an async cell (`AsyncHostedRpcDep`
+    // under the tokio feature) lives in one feature-gated helper instead of
+    // being duplicated here.
     let ctor_call_sync = if matches!(scope, Scope::HostedRpc) {
         quote! {
             {
                 let __owner = #ctor_name(#(#dep_getters),*);
-                let __cell = test_r::core::HostedRpcOwnerCell::from_owner(__owner);
+                let __cell = test_r::core::__test_r_make_hosted_rpc_cell(__owner);
                 let __arc: std::sync::Arc<dyn std::any::Any + Send + Sync> =
                     std::sync::Arc::new(__cell);
                 __arc
@@ -595,7 +590,7 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {
             {
                 let __owner = #ctor_name(#(#dep_getters),*).await;
-                let __cell = test_r::core::HostedRpcOwnerCell::from_owner(__owner);
+                let __cell = test_r::core::__test_r_make_hosted_rpc_cell(__owner);
                 let __arc: std::sync::Arc<dyn std::any::Any + Send + Sync> =
                     std::sync::Arc::new(__cell);
                 __arc

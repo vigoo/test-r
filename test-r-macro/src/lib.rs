@@ -129,17 +129,26 @@ pub fn sequential_suite(input: TokenStream) -> TokenStream {
     suite::sequential_suite(input)
 }
 
-/// HR1.1: trait-driven boilerplate eliminator for `HostedRpcDep`.
+/// HR1.1: trait-driven boilerplate eliminator for `HostedRpcDep` /
+/// `AsyncHostedRpcDep`.
 ///
 /// Apply to a user trait declaration to emit a `<Trait>Stub` worker-side
 /// struct that implements the trait by routing each call through a
 /// [`test_r::core::HostedRpcChannel`], plus a `<Trait>Dispatch` helper
 /// trait blanket-implemented for every `T: Trait` so the owner-side
-/// `HostedRpcDep::dispatch` impl can delegate to a generated
-/// method-table dispatcher instead of writing the per-method match arms
-/// by hand. See the rustdoc on the macro module for the precise wire
-/// format and the restrictions (no generics, no associated types, no
-/// async fns in the MVP).
+/// dispatch impl can delegate to a generated method-table dispatcher
+/// instead of writing the per-method match arms by hand.
+///
+/// Async-mode is auto-detected: if every method in the trait is declared
+/// `async fn`, the macro generates async stub methods and an async
+/// dispatch helper, and the owner is expected to implement
+/// [`test_r::core::AsyncHostedRpcDep`] instead of
+/// [`test_r::core::HostedRpcDep`]. Mixing sync and `async fn` methods in
+/// the same `#[hosted_rpc]` trait is a compile error. There is no
+/// `#[hosted_rpc(async)]` flag.
+///
+/// See the rustdoc on the macro module for the precise wire format and
+/// the remaining restrictions (no generics, no associated types).
 #[proc_macro_attribute]
 pub fn hosted_rpc(attr: TokenStream, item: TokenStream) -> TokenStream {
     hosted_rpc::hosted_rpc(attr, item)

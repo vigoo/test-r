@@ -796,7 +796,12 @@ impl Worker {
         args_bytes: Vec<u8>,
     ) {
         let body = match self.hosted_rpc_owner_cells.get(&dep_id) {
-            Some(cell) => match cell.dispatch(method_idx, &args_bytes) {
+            // Use the async dispatch entry point so an owner that implements
+            // `AsyncHostedRpcDep` directly can `.await` inside its dispatcher
+            // without blocking the tokio runtime. Sync owners reach this
+            // entry point through the blanket bridge and their dispatched
+            // future resolves immediately.
+            Some(cell) => match cell.dispatch_async(method_idx, &args_bytes).await {
                 Ok(result_bytes) => HostedRpcReplyBody::Ok { result_bytes },
                 Err(message) => HostedRpcReplyBody::Err { message },
             },
