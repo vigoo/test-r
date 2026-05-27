@@ -196,6 +196,73 @@ impl WorkerView {
         }
         stub_path
     }
+
+    /// Derive the `<TraitName>Dispatch` helper-trait path from a
+    /// `both(Trait)` trait reference. Mirrors `format_ident!(
+    /// "{}Dispatch", trait_ident)` in `hosted_rpc.rs`.
+    fn dispatch_path_from_trait(trait_path: &Path) -> Path {
+        let mut path = trait_path.clone();
+        if let Some(last) = path.segments.last_mut() {
+            let new_ident = quote::format_ident!("{}Dispatch", last.ident);
+            last.ident = new_ident;
+        }
+        path
+    }
+
+    /// Derive the `dispatch_<snake>_shared` method name from a
+    /// `both(Trait)` trait reference. Mirrors the `dispatch_<snake>`
+    /// + `_shared` naming convention in `hosted_rpc.rs`.
+    fn dispatch_shared_method_ident(trait_path: &Path) -> Ident {
+        let trait_ident = &trait_path
+            .segments
+            .last()
+            .expect("trait path must have at least one segment")
+            .ident;
+        quote::format_ident!(
+            "dispatch_{}_shared",
+            to_snake_case_ident_str(&trait_ident.to_string())
+        )
+    }
+
+    /// Derive the `dispatch_<snake>_shared_future` method name from a
+    /// `both(Trait)` trait reference. Mirrors the `dispatch_<snake>`,
+    /// `_shared`, and `_future` naming convention in `hosted_rpc.rs`.
+    ///
+    /// Used by the tokio branch of the `worker = both(...)` lowering so
+    /// that — regardless of whether the user-authored trait is sync- or
+    /// async-mode — the shared-owner RPC cell closure dispatches through
+    /// a single uniform `Pin<Box<dyn Future + Send + '_>>` surface.
+    fn dispatch_shared_future_method_ident(trait_path: &Path) -> Ident {
+        let trait_ident = &trait_path
+            .segments
+            .last()
+            .expect("trait path must have at least one segment")
+            .ident;
+        quote::format_ident!(
+            "dispatch_{}_shared_future",
+            to_snake_case_ident_str(&trait_ident.to_string())
+        )
+    }
+}
+
+/// Convert a PascalCase / camelCase identifier into snake_case. Kept
+/// in lockstep with the `to_snake_case` helper in `hosted_rpc.rs` so
+/// the `<Trait>Dispatch::dispatch_<snake>_shared` method name the
+/// `both(...)` lowering calls matches the one `#[hosted_rpc]`
+/// generates.
+fn to_snake_case_ident_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for (i, ch) in s.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 impl darling::FromMeta for Scope {
@@ -711,6 +778,34 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `async_worker` is still parsed for source-compatibility but only produces a
 /// `#[deprecated]` warning at the registration site; it has no effect on
 /// codegen.
+///
+/// RPC dispatch path (`worker = both(...)` only):
+///
+/// Unlike `worker = rpc(Trait)`, which routes incoming worker RPC calls
+/// through the user-authored `HostedRpcDep::dispatch` (or
+/// `AsyncHostedRpcDep::dispatch`) body, the `both` lowering routes
+/// dispatch through the `#[hosted_rpc]`-generated
+/// `<Trait>Dispatch::dispatch_<snake>_shared(...)` helper. The shared
+/// helper takes `&self` rather than `&mut self`, which is what lets the
+/// runtime dispatch through a single owner `Arc<T>` shared by the
+/// Hosted-view consumers, the HostedRpc-view stub, and the descriptor
+/// codec without consuming or cloning the owner.
+///
+/// The user's `HostedRpcDep` / `AsyncHostedRpcDep` impl is still
+/// required by `#[test_dep(scope = Hosted, worker = both(Trait))]`
+/// because it carries the associated `Stub` type and the
+/// `build_stub` constructor. The conventional body — a one-line
+/// delegation to `<Trait>Dispatch::dispatch_<snake>(self, ...)` — is
+/// what tests against `worker = rpc(Trait)` already use, and pairs
+/// cleanly with the `both` lowering's choice of `_shared` for runtime
+/// dispatch.
+///
+/// Users who put custom logic (logging, rate limiting, etc.) inside
+/// `HostedRpcDep::dispatch` should be aware that under
+/// `worker = both(Trait)` that custom logic is bypassed. Put such
+/// cross-cutting logic inside the user trait's method bodies (which
+/// run on the owner type itself), or stay with `worker = rpc(Trait)`
+/// if owner sharing with parent-side consumers isn't needed.
 fn expand_hosted_both_dep(args: &TestDepArgs, mut ast: ItemFn, trait_path: &Path) -> TokenStream {
     let ctor_name = ast.sig.ident.clone();
 
@@ -788,6 +883,13 @@ fn expand_hosted_both_dep(args: &TestDepArgs, mut ast: ItemFn, trait_path: &Path
         path: stub_path.clone(),
     };
     let stub_dep_name = type_path_to_string(&stub_type_path, DependencyTag::None);
+    // Path to the `<Trait>Dispatch` helper trait emitted by
+    // `#[hosted_rpc]`. Used so the macro can route shared-owner RPC
+    // dispatch through the trait's `&self`-receiver dispatcher helper
+    // without consuming `T`.
+    let dispatch_trait_path = WorkerView::dispatch_path_from_trait(trait_path);
+    let dispatch_shared_method = WorkerView::dispatch_shared_method_ident(trait_path);
+    let dispatch_shared_future_method = WorkerView::dispatch_shared_future_method_ident(trait_path);
 
     // If the owner type and the derived `<Trait>Stub` would lower to the same
     // dep name (for example because the user accidentally named a type
@@ -835,6 +937,57 @@ fn expand_hosted_both_dep(args: &TestDepArgs, mut ast: ItemFn, trait_path: &Path
     //   freshly built owner and returns the first one. In normal test-r
     //   plans the parent resolves Hosted owners serially, so this is
     //   just defensive.
+    // Cell-construction expression. Routes through one of the
+    // `HostedRpcOwnerCell::from_shared_owner_*` constructors so the
+    // cell dispatches against `&T` borrowed from the same `Arc<T>`
+    // the parent-side getter hands out — no second owner, no
+    // `T: Clone` requirement. The closure delegates each call to the
+    // `#[hosted_rpc]`-generated `<Trait>Dispatch::dispatch_<snake>_shared`
+    // helper.
+    //
+    // Runtime-flavor aware via `test_r::__test_r_select_runtime!`:
+    //
+    // - tokio runtime: build an `Async` cell so calls are awaited;
+    //   the closure pins the helper's returned future.
+    // - sync runtime: build a `Sync` cell whose closure delegates to
+    //   the synchronous helper.
+    //
+    // The selector lives in `test-r` (not in the user crate or the
+    // proc macro) so the choice tracks `test-r`'s own `tokio` cargo
+    // feature, the same toggle that picks the `test-r-core` helper
+    // variant emitted in the surrounding `#acquire_fn`.
+    let build_rpc_cell_expr = quote! {
+        {
+            let __owner_for_cell = __owner_arc.clone();
+            test_r::__test_r_select_runtime! {
+                sync {
+                    std::sync::Arc::new(test_r::core::HostedRpcOwnerCell::from_shared_owner_sync(
+                        __owner_for_cell,
+                        |__owner_ref, __method_idx, __args| {
+                            <#dep_ty as #dispatch_trait_path>::#dispatch_shared_method(
+                                __owner_ref,
+                                __method_idx,
+                                __args,
+                            )
+                        },
+                    ))
+                }
+                tokio {
+                    std::sync::Arc::new(test_r::core::HostedRpcOwnerCell::from_shared_owner_async(
+                        __owner_for_cell,
+                        |__owner_ref, __method_idx, __args| {
+                            <#dep_ty as #dispatch_trait_path>::#dispatch_shared_future_method(
+                                __owner_ref,
+                                __method_idx,
+                                __args,
+                            )
+                        },
+                    ))
+                }
+            }
+        }
+    };
+
     let acquire_fn = if is_async {
         quote! {
             #[cfg(test)]
@@ -855,10 +1008,16 @@ fn expand_hosted_both_dep(args: &TestDepArgs, mut ast: ItemFn, trait_path: &Path
                     }
                 }
                 // Slow path: build the owner *outside* the std mutex so
-                // we never hold a sync lock across `.await`.
-                let __owner: #dep_ty = #ctor_name(#(#dep_getters),*).await;
+                // we never hold a sync lock across `.await`. Wrap it
+                // in an `Arc<T>` so the same instance powers both the
+                // parent-side getter and the RPC dispatch cell.
+                let __owner_arc: Arc<#dep_ty> = Arc::new(#ctor_name(#(#dep_getters),*).await);
+                let __rpc_cell: Arc<test_r::core::HostedRpcOwnerCell> = #build_rpc_cell_expr;
                 let __shared = Arc::new(
-                    test_r::core::__test_r_make_hosted_both_shared::<#dep_ty>(__owner),
+                    test_r::core::__test_r_make_hosted_both_shared::<#dep_ty>(
+                        __owner_arc,
+                        __rpc_cell,
+                    ),
                 );
                 let mut guard = cache
                     .lock()
@@ -890,9 +1049,13 @@ fn expand_hosted_both_dep(args: &TestDepArgs, mut ast: ItemFn, trait_path: &Path
                 if let Some(strong) = guard.upgrade() {
                     return strong;
                 }
-                let __owner: #dep_ty = #ctor_name(#(#dep_getters),*);
+                let __owner_arc: Arc<#dep_ty> = Arc::new(#ctor_name(#(#dep_getters),*));
+                let __rpc_cell: Arc<test_r::core::HostedRpcOwnerCell> = #build_rpc_cell_expr;
                 let __shared = Arc::new(
-                    test_r::core::__test_r_make_hosted_both_shared::<#dep_ty>(__owner),
+                    test_r::core::__test_r_make_hosted_both_shared::<#dep_ty>(
+                        __owner_arc,
+                        __rpc_cell,
+                    ),
                 );
                 *guard = Arc::downgrade(&__shared);
                 __shared
@@ -1008,16 +1171,44 @@ fn expand_hosted_both_dep(args: &TestDepArgs, mut ast: ItemFn, trait_path: &Path
         }
 
         // Owner-view getter: tests parameterise on `&#dep_ty` and
-        // resolve through this getter to the reconstructed owner.
+        // resolve through this getter to the owner instance.
+        //
+        // Two storage shapes can sit under `#owner_dep_name`:
+        //
+        // - **Parent collection path** (downstream parent-side dep
+        //   constructors that take `&#dep_ty`): the dep map holds the
+        //   `Arc<HostedBothShared>` value the acquire helper produced.
+        //   Pull the typed `Arc<#dep_ty>` out via
+        //   [`HostedBothShared::owner_arc`].
+        // - **Worker / no-spawn-workers path**: the Hosted worker
+        //   reconstructor (`__test_r_make_hosted_worker_reconstructor::<T>`)
+        //   has already replaced the entry with an `Arc<#dep_ty>` it
+        //   built from descriptor bytes. The direct downcast wins.
+        //
+        // Try the direct `Arc<#dep_ty>` shape first so the
+        // worker-side path stays a single downcast; fall back to
+        // unwrapping `HostedBothShared` otherwise. Either path yields
+        // the same `Arc<#dep_ty>` consumers expect.
         #[cfg(test)]
         fn #owner_getter_ident<'a>(
             dependency_view: &'a impl test_r::core::DependencyView,
         ) -> std::sync::Arc<#dep_ty> {
-            dependency_view
+            let __any = dependency_view
                 .get(#owner_dep_name)
-                .expect("Dependency not found")
-                .downcast::<#dep_ty>()
-                .expect("Dependency type mismatch")
+                .expect("Dependency not found");
+            // `Arc::downcast` returns the original `Arc<dyn Any + ...>` in
+            // its `Err` arm, so the fallback path doesn't need a clone
+            // of `__any`. One downcast attempt per actually-present
+            // storage shape, no extra allocation.
+            match __any.downcast::<#dep_ty>() {
+                Ok(__owner) => __owner,
+                Err(__any) => {
+                    let __shared = __any
+                        .downcast::<test_r::core::HostedBothShared>()
+                        .expect("Dependency type mismatch");
+                    __shared.owner_arc::<#dep_ty>()
+                }
+            }
         }
 
         // Stub-view getter: tests parameterise on `&#stub_ty` and

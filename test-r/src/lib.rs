@@ -243,3 +243,48 @@ pub mod core {
 }
 
 pub use ::ctor;
+
+/// **Hidden macro-support helper.** Runtime-flavor selector for code
+/// emitted by `#[test_r::test_dep]` (specifically the
+/// `worker = both(Trait)` lowering) that needs to pick a different
+/// expression depending on whether the `test-r` crate was compiled
+/// with its `tokio` feature.
+///
+/// The proc macro itself cannot read the user crate's cargo features,
+/// so we route the runtime-flavor choice through this `macro_rules!`
+/// definition in `test-r`. Because `#[cfg(feature = "tokio")]` on a
+/// `macro_rules!` evaluates at the *defining* crate's compile time,
+/// the variant of the macro that gets exported reflects whether
+/// `test-r/tokio` was enabled — exactly the same toggle that decides
+/// which `test-r-core` helper variants are linked.
+///
+/// The expected invocation shape is:
+///
+/// ```ignore
+/// test_r::__test_r_select_runtime! {
+///     sync { /* tokens used when the sync runtime is active */ }
+///     tokio { /* tokens used when the tokio runtime is active */ }
+/// }
+/// ```
+///
+/// Each branch is a brace-delimited token group; the macro expands to
+/// the contents of the matching branch with no extra braces.
+#[cfg(feature = "tokio")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __test_r_select_runtime {
+    ( sync { $($_sync:tt)* } tokio { $($tokio:tt)* } ) => {
+        $($tokio)*
+    };
+}
+
+/// Sync-runtime variant of [`__test_r_select_runtime`]; see that
+/// macro's doc-comment.
+#[cfg(not(feature = "tokio"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __test_r_select_runtime {
+    ( sync { $($sync:tt)* } tokio { $($_tokio:tt)* } ) => {
+        $($sync)*
+    };
+}

@@ -10,6 +10,7 @@
 pub mod cloneable_basic;
 pub mod hosted_basic;
 pub mod hosted_both_basic;
+pub mod hosted_both_parent_consumer;
 pub mod hosted_rpc_basic;
 pub mod hosted_rpc_macro;
 pub mod per_worker_basic;
