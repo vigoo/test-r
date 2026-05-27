@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.7](https://github.com/vigoo/test-r/compare/cargo-test-r-v2.2.6...cargo-test-r-v2.2.7) - 2026-05-27
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [2.2.6](https://github.com/vigoo/test-r/compare/cargo-test-r-v2.2.5...cargo-test-r-v2.2.6) - 2026-05-26
 
 ### Other
