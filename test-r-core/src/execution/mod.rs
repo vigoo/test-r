@@ -56,6 +56,22 @@ pub struct ParentSharedDependencies {
     pub hosted_descriptor_bytes: Vec<DepWireBytes>,
     pub hosted_owners: Vec<HostedOwner>,
     pub hosted_rpc_owner_cells: Vec<(String, Arc<HostedRpcOwnerCell>)>,
+    /// Parent-constructed values for `Shared`/`PerWorker` deps that were
+    /// only built in the parent because some `Cloneable`/`Hosted`/`HostedRpc`
+    /// dep transitively required them as constructor inputs. Keyed by
+    /// fully-qualified dep id.
+    ///
+    /// In **no-spawn-workers** mode (e.g. `--nocapture`) the runner installs
+    /// these directly into the execution tree via
+    /// [`TestSuiteExecution::provide_materialized_shared_value`] so the
+    /// in-process test thread's `materialize_deps_*` skips re-running the
+    /// constructor — preventing one-shot constructors (e.g.
+    /// `tracing::set_global_default`) from firing twice in the same process.
+    ///
+    /// In **spawn-workers** mode this list is unused: each worker process
+    /// re-runs its own `Shared`/`PerWorker` constructors fresh, matching the
+    /// "one instance per process" semantics those scopes promise.
+    pub parent_constructed_shared_values: Vec<(String, Arc<dyn Any + Send + Sync>)>,
 }
 
 impl ParentSharedDependencies {
@@ -66,8 +82,27 @@ impl ParentSharedDependencies {
             hosted_descriptor_bytes: Vec::new(),
             hosted_owners: Vec::new(),
             hosted_rpc_owner_cells: Vec::new(),
+            parent_constructed_shared_values: Vec::new(),
         }
     }
+}
+
+/// Plan describing which dependencies a subtree needs to construct *on the
+/// parent side* during [`TestSuiteExecution::collect_parent_shared_dependencies_sync`]
+/// / `..._async`. Only deps whose own scope is `Cloneable`/`Hosted`/`HostedRpc`,
+/// and the deps those transitively consume as constructor inputs, are listed
+/// here. Pure `Shared`/`PerWorker` deps with no such consumer are *not*
+/// constructed in the parent — their constructors run only in the worker
+/// (or in-process test thread) where their value is actually used. This
+/// prevents constructors with global side-effects (e.g. `tracing`'s
+/// `set_global_default`) from running twice.
+struct ParentConstructionPlan {
+    /// Names of deps **defined at this subtree node** that the parent must
+    /// construct.
+    needed_here: HashSet<String>,
+    /// One entry per [`TestSuiteExecution::inner`] child, in the same order,
+    /// so recursion can route the right plan into each child node.
+    children: Vec<ParentConstructionPlan>,
 }
 
 pub(crate) struct TestSuiteExecution {
@@ -252,20 +287,38 @@ impl TestSuiteExecution {
     pub fn collect_parent_shared_dependencies_sync(&self) -> ParentSharedDependencies {
         let mut out = ParentSharedDependencies::new();
         let parent_map = HashMap::new();
-        self.collect_parent_shared_dependencies_into_sync(&parent_map, &mut out);
+        let (plan, _needed_from_parent) = self.compute_parent_construction_plan();
+        self.collect_parent_shared_dependencies_into_sync(&parent_map, &plan, &mut out);
         out
     }
 
     fn collect_parent_shared_dependencies_into_sync(
         &self,
         parent_map: &HashMap<String, Arc<dyn Any + Send + Sync>>,
+        plan: &ParentConstructionPlan,
         out: &mut ParentSharedDependencies,
     ) -> HashMap<String, Arc<dyn Any + Send + Sync>> {
         let mut dependency_map = parent_map.clone();
         let sorted_dependencies = self.sorted_dependencies();
+        // Tracks which deps **at this suite level** have already been
+        // constructed. We must NOT consult `dependency_map` for this purpose
+        // because it carries deps from ancestor levels too, and that would
+        // silently skip a child dep that legitimately shadows a same-named
+        // parent dep (different module path, distinct qualified id).
+        let mut constructed_here: HashSet<String> = HashSet::new();
 
         for dep in sorted_dependencies {
-            if dependency_map.contains_key(&dep.name) {
+            // Skip deps that the parent doesn't need to materialise. This
+            // avoids running constructors for plain `Shared`/`PerWorker` deps
+            // whose values are only ever consumed in the worker / in-process
+            // test thread (where `materialize_deps_*` will construct them).
+            if !plan.needed_here.contains(&dep.name) {
+                continue;
+            }
+            // Defensive: if the same local dep name is registered twice at
+            // this level, only construct the first one (matches the
+            // historical behaviour of the no-op `contains_key` skip).
+            if !constructed_here.insert(dep.name.clone()) {
                 continue;
             }
 
@@ -299,14 +352,27 @@ impl TestSuiteExecution {
                     let cell = (factory.owner_into_cell)(value.clone());
                     out.hosted_rpc_owner_cells.push((dep.qualified_id(), cell));
                 }
-                DepScope::Shared | DepScope::PerWorker => {}
+                DepScope::Shared | DepScope::PerWorker => {
+                    // Constructed only because some Cloneable/Hosted/HostedRpc
+                    // dep transitively depends on this one. Capture the value
+                    // so the no-spawn-workers path can pre-populate it and
+                    // avoid running the constructor a second time inside the
+                    // in-process test thread's `materialize_deps_*`.
+                    out.parent_constructed_shared_values
+                        .push((dep.qualified_id(), value.clone()));
+                }
             }
 
             dependency_map.insert(dep.name.clone(), value);
         }
 
-        for inner in &self.inner {
-            inner.collect_parent_shared_dependencies_into_sync(&dependency_map, out);
+        debug_assert_eq!(
+            self.inner.len(),
+            plan.children.len(),
+            "ParentConstructionPlan child count must mirror execution tree shape"
+        );
+        for (inner, child_plan) in self.inner.iter().zip(plan.children.iter()) {
+            inner.collect_parent_shared_dependencies_into_sync(&dependency_map, child_plan, out);
         }
 
         dependency_map
@@ -364,7 +430,8 @@ impl TestSuiteExecution {
     pub async fn collect_parent_shared_dependencies_async(&self) -> ParentSharedDependencies {
         let mut out = ParentSharedDependencies::new();
         let parent_map = HashMap::new();
-        self.collect_parent_shared_dependencies_into_async(&parent_map, &mut out)
+        let (plan, _needed_from_parent) = self.compute_parent_construction_plan();
+        self.collect_parent_shared_dependencies_into_async(&parent_map, &plan, &mut out)
             .await;
         out
     }
@@ -373,14 +440,25 @@ impl TestSuiteExecution {
     fn collect_parent_shared_dependencies_into_async<'a>(
         &'a self,
         parent_map: &'a HashMap<String, Arc<dyn Any + Send + Sync>>,
+        plan: &'a ParentConstructionPlan,
         out: &'a mut ParentSharedDependencies,
     ) -> ParentSharedDependenciesFuture<'a> {
         Box::pin(async move {
             let mut dependency_map = parent_map.clone();
             let sorted_dependencies = self.sorted_dependencies();
+            // See sync counterpart: track local-level constructed names so
+            // we don't break shadowing by consulting `dependency_map` which
+            // includes parent-level entries.
+            let mut constructed_here: HashSet<String> = HashSet::new();
 
             for dep in sorted_dependencies {
-                if dependency_map.contains_key(&dep.name) {
+                // See sync counterpart: skip deps the parent does not need
+                // to materialise to avoid running side-effecting constructors
+                // for plain `Shared`/`PerWorker` deps.
+                if !plan.needed_here.contains(&dep.name) {
+                    continue;
+                }
+                if !constructed_here.insert(dep.name.clone()) {
                     continue;
                 }
 
@@ -420,15 +498,26 @@ impl TestSuiteExecution {
                         let cell = (factory.owner_into_cell)(value.clone());
                         out.hosted_rpc_owner_cells.push((dep.qualified_id(), cell));
                     }
-                    DepScope::Shared | DepScope::PerWorker => {}
+                    DepScope::Shared | DepScope::PerWorker => {
+                        // See sync counterpart: capture parent-constructed
+                        // values so the no-spawn-workers path can pre-install
+                        // them and avoid a duplicate constructor run.
+                        out.parent_constructed_shared_values
+                            .push((dep.qualified_id(), value.clone()));
+                    }
                 }
 
                 dependency_map.insert(dep.name.clone(), value);
             }
 
-            for inner in &self.inner {
+            debug_assert_eq!(
+                self.inner.len(),
+                plan.children.len(),
+                "ParentConstructionPlan child count must mirror execution tree shape"
+            );
+            for (inner, child_plan) in self.inner.iter().zip(plan.children.iter()) {
                 inner
-                    .collect_parent_shared_dependencies_into_async(&dependency_map, out)
+                    .collect_parent_shared_dependencies_into_async(&dependency_map, child_plan, out)
                     .await;
             }
             dependency_map
@@ -504,6 +593,42 @@ impl TestSuiteExecution {
         }
         for inner in &mut self.inner {
             applied |= inner.provide_cloneable_value_internal(dep_id, value.clone());
+        }
+        applied
+    }
+
+    /// Worker-side pre-population for `Shared` / `PerWorker` deps the parent
+    /// already constructed (as transitive inputs of a Cloneable/Hosted/HostedRpc
+    /// dep). Used only by the **no-spawn-workers** code path: the in-process
+    /// test thread reuses the parent's value instead of re-running the
+    /// constructor in `materialize_deps_*`.
+    ///
+    /// Unlike [`Self::provide_cloneable_value`], this does **not** clear the
+    /// dep's own `dependencies` list — for `Shared`/`PerWorker` the value
+    /// was produced by the registered constructor (not a wire-bytes
+    /// round-trip), so its declared inputs remain semantically meaningful
+    /// for the rest of the dep graph. Construction is skipped purely
+    /// because `materialized_dependencies` already contains the value.
+    ///
+    /// Returns `true` if a matching dep was found in any node of the subtree.
+    pub fn provide_materialized_shared_value(
+        &mut self,
+        dep_id: &str,
+        value: Arc<dyn Any + Send + Sync>,
+    ) -> bool {
+        let mut applied = false;
+        if let Some(local_name) = self
+            .dependencies
+            .iter()
+            .find(|d| d.qualified_id() == dep_id)
+            .map(|d| d.name.clone())
+        {
+            self.materialized_dependencies
+                .insert(local_name, value.clone());
+            applied = true;
+        }
+        for inner in &mut self.inner {
+            applied |= inner.provide_materialized_shared_value(dep_id, value.clone());
         }
         applied
     }
@@ -888,6 +1013,71 @@ impl TestSuiteExecution {
         }
         self.materialized_dependencies = deps;
         dependency_map
+    }
+
+    /// Computes, for this subtree, which dependencies must be constructed on
+    /// the parent side during
+    /// [`Self::collect_parent_shared_dependencies_sync`] / `..._async`.
+    ///
+    /// Returns the per-node [`ParentConstructionPlan`] plus the set of dep
+    /// names this subtree needs from its **parent** suite level (i.e., names
+    /// referenced as constructor inputs by parent-materialised deps but not
+    /// defined at this level). The caller uses the latter to know which of
+    /// its own deps must, in turn, be constructed even though their own scope
+    /// would not require it.
+    fn compute_parent_construction_plan(&self) -> (ParentConstructionPlan, HashSet<String>) {
+        // First, recurse so we know what each child needs from us.
+        let mut child_plans = Vec::with_capacity(self.inner.len());
+        let mut seeds: HashSet<String> = HashSet::new();
+        for inner in &self.inner {
+            let (child_plan, child_needs_from_parent) = inner.compute_parent_construction_plan();
+            for name in child_needs_from_parent {
+                seeds.insert(name);
+            }
+            child_plans.push(child_plan);
+        }
+
+        // Add deps at this level whose own scope must be parent-materialised.
+        for dep in &self.dependencies {
+            if matches!(
+                dep.scope,
+                DepScope::Cloneable | DepScope::Hosted | DepScope::HostedRpc
+            ) {
+                seeds.insert(dep.name.clone());
+            }
+        }
+
+        // Transitive closure: any name a seeded dep consumes as constructor
+        // input must also be present. Names not defined at this level
+        // propagate up to the caller as `needed_from_parent`.
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut needed_from_parent: HashSet<String> = HashSet::new();
+        let mut stack: Vec<String> = seeds.into_iter().collect();
+        while let Some(name) = stack.pop() {
+            if !visited.insert(name.clone()) {
+                continue;
+            }
+            if let Some(dep) = self.dependencies.iter().find(|d| d.name == name) {
+                for dep_dep_name in &dep.dependencies {
+                    if !visited.contains(dep_dep_name) {
+                        stack.push(dep_dep_name.clone());
+                    }
+                }
+            } else {
+                needed_from_parent.insert(name);
+            }
+        }
+
+        let own_names: HashSet<String> = self.dependencies.iter().map(|d| d.name.clone()).collect();
+        let needed_here: HashSet<String> = visited.intersection(&own_names).cloned().collect();
+
+        (
+            ParentConstructionPlan {
+                needed_here,
+                children: child_plans,
+            },
+            needed_from_parent,
+        )
     }
 
     fn sorted_dependencies(&self) -> Vec<&RegisteredDependency> {

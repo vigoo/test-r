@@ -1022,6 +1022,204 @@ fn hosted_dep_with_owner_dependencies_constructs_in_parent_context() {
     assert_eq!(owner_counter.load(Ordering::SeqCst), 1);
 }
 
+/// Regression: a sibling `PerWorker` dep (i.e. one that is *not* consumed
+/// by any `Cloneable`/`Hosted`/`HostedRpc` dep) must NOT have its
+/// constructor invoked during parent-side collection — only by the worker
+/// (or in-process test thread) that actually uses it.
+///
+/// This previously broke `init_tracing`-style deps (`set_global_default`,
+/// one-shot global state): in the parent the constructor ran once to fill
+/// the collector's `dependency_map`, then ran again inside the in-process
+/// test's `materialize_deps_*` — panicking the second time.
+#[test]
+fn collect_parent_shared_skips_sibling_perworker_dep_constructor() {
+    let perworker_counter = Arc::new(AtomicUsize::new(0));
+    let hosted_owner_counter = Arc::new(AtomicUsize::new(0));
+
+    let perworker_dep =
+        registered_perworker_counting_dep("perworker_sibling", "", perworker_counter.clone());
+    let hosted_dep =
+        registered_hosted_dep("hosted_sibling", 0xa5a5_a5a5, hosted_owner_counter.clone());
+
+    let test = registered_test(
+        "t1",
+        vec![
+            "perworker_sibling".to_string(),
+            "hosted_sibling".to_string(),
+        ],
+    );
+
+    let (execution, _filtered) = TestSuiteExecution::construct(
+        &Arguments::default(),
+        &[perworker_dep, hosted_dep],
+        &[test],
+        &[],
+    );
+
+    let collected = execution.collect_parent_shared_dependencies_sync();
+
+    assert_eq!(collected.hosted_descriptor_bytes.len(), 1);
+    assert_eq!(hosted_owner_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        perworker_counter.load(Ordering::SeqCst),
+        0,
+        "PerWorker sibling constructor MUST NOT run in the parent"
+    );
+}
+
+/// Regression: `collect_parent_shared_dependencies_sync` must capture the
+/// values of `Shared`/`PerWorker` deps it had to construct as transitive
+/// inputs to a `Cloneable`/`Hosted`/`HostedRpc` dep, so the no-spawn-workers
+/// path can pre-install them and avoid a second constructor run in the
+/// in-process test thread.
+#[test]
+fn parent_constructed_shared_values_captured_for_transitive_inputs() {
+    let perworker_counter = Arc::new(AtomicUsize::new(0));
+    let hosted_owner_counter = Arc::new(AtomicUsize::new(0));
+
+    let perworker_dep =
+        registered_perworker_counting_dep("transitive_perworker", "", perworker_counter.clone());
+    let mut hosted_dep =
+        registered_hosted_dep("hosted_with_dep", 0xfeed_f00d, hosted_owner_counter.clone());
+    hosted_dep.dependencies = vec!["transitive_perworker".to_string()];
+
+    let test = registered_test("t1", vec!["hosted_with_dep".to_string()]);
+
+    let (execution, _filtered) = TestSuiteExecution::construct(
+        &Arguments::default(),
+        &[perworker_dep, hosted_dep],
+        &[test],
+        &[],
+    );
+
+    let collected = execution.collect_parent_shared_dependencies_sync();
+
+    assert_eq!(collected.hosted_descriptor_bytes.len(), 1);
+    assert_eq!(hosted_owner_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        perworker_counter.load(Ordering::SeqCst),
+        1,
+        "PerWorker dep must have been constructed exactly once in the parent \
+         because it is a transitive input of the Hosted dep"
+    );
+    let captured_ids: HashSet<&str> = collected
+        .parent_constructed_shared_values
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect();
+    assert!(
+        captured_ids.contains("tcrate::transitive_perworker"),
+        "parent_constructed_shared_values must include the transitive PerWorker \
+         input so the no-spawn-workers runner can pre-install it; got {captured_ids:?}"
+    );
+}
+
+/// Full no-spawn lifecycle: parent collection + local pre-install +
+/// in-process `materialize_deps_sync` must construct a transitive
+/// `PerWorker` input **exactly once** — the whole point of the advanced
+/// path fix.
+#[test]
+fn no_spawn_lifecycle_runs_transitive_perworker_constructor_exactly_once() {
+    let perworker_counter = Arc::new(AtomicUsize::new(0));
+    let hosted_owner_counter = Arc::new(AtomicUsize::new(0));
+
+    let perworker_dep =
+        registered_perworker_counting_dep("transitive_perworker", "", perworker_counter.clone());
+    let mut hosted_dep =
+        registered_hosted_dep("hosted_with_dep", 0xfeed_f00d, hosted_owner_counter.clone());
+    hosted_dep.dependencies = vec!["transitive_perworker".to_string()];
+
+    let test = registered_test(
+        "t1",
+        vec![
+            "hosted_with_dep".to_string(),
+            "transitive_perworker".to_string(),
+        ],
+    );
+
+    let (mut execution, _filtered) = TestSuiteExecution::construct(
+        &Arguments::default(),
+        &[perworker_dep, hosted_dep],
+        &[test],
+        &[],
+    );
+
+    let collected = execution.collect_parent_shared_dependencies_sync();
+    assert_eq!(perworker_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(hosted_owner_counter.load(Ordering::SeqCst), 1);
+
+    for (dep_id, value) in &collected.parent_constructed_shared_values {
+        let applied = execution.provide_materialized_shared_value(dep_id, value.clone());
+        assert!(applied, "pre-install must find dep {dep_id}");
+    }
+
+    let next = execution.pick_next_sync().expect("test should be picked");
+    drop(next);
+
+    assert_eq!(
+        perworker_counter.load(Ordering::SeqCst),
+        1,
+        "PerWorker constructor must fire EXACTLY ONCE across the full \
+         no-spawn lifecycle (parent collection + in-process materialize)"
+    );
+}
+
+/// Regression: a child-module dep with the same local `name` as a
+/// parent-module dep must still be constructed when its scope requires
+/// parent-side materialisation. Previously
+/// `collect_parent_shared_dependencies_into_*` short-circuited on
+/// `dependency_map.contains_key(&dep.name)`, where `dependency_map`
+/// includes the parent map — silently skipping the child's dep just
+/// because the parent had already constructed a same-named dep.
+#[test]
+fn collect_parent_shared_handles_same_named_dep_shadowing_across_modules() {
+    let parent_counter = Arc::new(AtomicUsize::new(0));
+    let child_counter = Arc::new(AtomicUsize::new(0));
+
+    let parent_dep =
+        registered_hosted_dep_in("shadowed", "parent_mod", 0x1111, parent_counter.clone());
+    let child_dep = registered_hosted_dep_in(
+        "shadowed",
+        "parent_mod::child_mod",
+        0x2222,
+        child_counter.clone(),
+    );
+
+    let parent_test =
+        registered_test_in_module("t_parent", "parent_mod", vec!["shadowed".to_string()]);
+    let child_test = registered_test_in_module(
+        "t_child",
+        "parent_mod::child_mod",
+        vec!["shadowed".to_string()],
+    );
+
+    let (execution, _filtered) = TestSuiteExecution::construct(
+        &Arguments::default(),
+        &[parent_dep, child_dep],
+        &[parent_test, child_test],
+        &[],
+    );
+
+    let collected = execution.collect_parent_shared_dependencies_sync();
+
+    let ids: HashSet<&str> = collected
+        .hosted_descriptor_bytes
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect();
+    assert!(
+        ids.contains("tcrate::parent_mod::shadowed"),
+        "parent's `shadowed` must be parent-materialised, got {ids:?}"
+    );
+    assert!(
+        ids.contains("tcrate::parent_mod::child_mod::shadowed"),
+        "child's `shadowed` must be parent-materialised even though its \
+         local name shadows a parent dep, got {ids:?}"
+    );
+    assert_eq!(parent_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(child_counter.load(Ordering::SeqCst), 1);
+}
+
 /// Tokio path: async owner constructors are awaited on the parent's
 /// collector.
 #[cfg(feature = "tokio")]
