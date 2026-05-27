@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.8](https://github.com/vigoo/test-r/compare/test-r-v3.0.7...test-r-v3.0.8) - 2026-05-27
+
+### Other
+
+- Fixes ([#172](https://github.com/vigoo/test-r/pull/172))
+
 ## [3.0.7](https://github.com/vigoo/test-r/compare/test-r-v3.0.6...test-r-v3.0.7) - 2026-05-26
 
 ### Other
