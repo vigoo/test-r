@@ -922,6 +922,122 @@ impl HostedRpcOwnerCell {
         }
     }
 
+    /// Construct a synchronous `HostedRpcOwnerCell` that dispatches
+    /// against `&T` borrowed from a shared `Arc<T>`, rather than
+    /// consuming `T` outright. Used exclusively by the
+    /// `#[test_dep(scope = Hosted, worker = both(Trait))]` lowering so
+    /// the parent-side dep map can hand the same `Arc<T>` to
+    /// downstream consumers that take `&T` while the RPC view keeps
+    /// dispatching to the same owner instance.
+    ///
+    /// The supplied `dispatch` closure is typically a thin wrapper
+    /// around the `#[hosted_rpc]`-generated
+    /// `dispatch_<snake>_shared(&T, method_idx, args)` helper.
+    ///
+    /// Calls remain serialized by the cell's internal `Mutex`, matching
+    /// the existing [`Self::from_owner`] semantics.
+    pub fn from_shared_owner_sync<T, F>(owner: Arc<T>, dispatch: F) -> Self
+    where
+        T: Send + Sync + 'static,
+        F: Fn(&T, u32, &[u8]) -> Result<Vec<u8>, String> + Send + Sync + 'static,
+    {
+        struct SharedDispatcher<T, F>
+        where
+            T: Send + Sync + 'static,
+            F: Fn(&T, u32, &[u8]) -> Result<Vec<u8>, String> + Send + Sync + 'static,
+        {
+            owner: Arc<T>,
+            dispatch: F,
+        }
+
+        impl<T, F> HostedRpcDispatcher for SharedDispatcher<T, F>
+        where
+            T: Send + Sync + 'static,
+            F: Fn(&T, u32, &[u8]) -> Result<Vec<u8>, String> + Send + Sync + 'static,
+        {
+            fn dispatch(&mut self, method_idx: u32, args: &[u8]) -> Result<Vec<u8>, String> {
+                (self.dispatch)(&self.owner, method_idx, args)
+            }
+        }
+
+        let dispatcher: Box<dyn HostedRpcDispatcher> =
+            Box::new(SharedDispatcher { owner, dispatch });
+        Self {
+            inner: HostedRpcOwnerCellInner::Sync(Mutex::new(dispatcher)),
+        }
+    }
+
+    /// Async counterpart of [`Self::from_shared_owner_sync`] for the
+    /// tokio runtime: dispatch against `&T` via an async closure that
+    /// returns a boxed future. Used by the `worker = both(Trait)`
+    /// lowering when an async owner constructor is in play, or when
+    /// the trait declared `async fn` methods.
+    ///
+    /// Calls remain serialized by the async cell's `tokio::sync::Mutex`,
+    /// matching the existing [`Self::from_async_owner`] semantics.
+    #[cfg(feature = "tokio")]
+    pub fn from_shared_owner_async<T, F>(owner: Arc<T>, dispatch: F) -> Self
+    where
+        T: Send + Sync + 'static,
+        F: for<'a> Fn(
+                &'a T,
+                u32,
+                &'a [u8],
+            )
+                -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        struct SharedAsyncDispatcher<T, F>
+        where
+            T: Send + Sync + 'static,
+            F: for<'a> Fn(
+                    &'a T,
+                    u32,
+                    &'a [u8],
+                )
+                    -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+                + Send
+                + Sync
+                + 'static,
+        {
+            owner: Arc<T>,
+            dispatch: F,
+        }
+
+        impl<T, F> AsyncHostedRpcDispatcher for SharedAsyncDispatcher<T, F>
+        where
+            T: Send + Sync + 'static,
+            F: for<'a> Fn(
+                    &'a T,
+                    u32,
+                    &'a [u8],
+                )
+                    -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+                + Send
+                + Sync
+                + 'static,
+        {
+            fn dispatch<'a>(
+                &'a mut self,
+                method_idx: u32,
+                args: &'a [u8],
+            ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+                (self.dispatch)(&self.owner, method_idx, args)
+            }
+        }
+
+        let dispatcher: Box<dyn AsyncHostedRpcDispatcher> =
+            Box::new(SharedAsyncDispatcher { owner, dispatch });
+        Self {
+            inner: HostedRpcOwnerCellInner::Async(AsyncOwnerCell {
+                poisoned: std::sync::atomic::AtomicBool::new(false),
+                inner: tokio::sync::Mutex::new(dispatcher),
+            }),
+        }
+    }
+
     /// Dispatch one method call synchronously. Catches owner panics and
     /// turns them into `Err("hosted rpc owner panicked: …")` so the
     /// dispatcher loop never dies. The lock is acquired *inside* the
@@ -1114,22 +1230,38 @@ fn panic_payload_to_string(payload: &Box<dyn Any + Send>) -> String {
 ///   called once, on the first construction);
 /// - the **RPC view** asks for the inner [`HostedRpcOwnerCell`], so
 ///   the parent-side dispatcher sees the same owner the descriptor
-///   was derived from.
+///   was derived from;
+/// - the **parent-side owner getter** (used by downstream dep
+///   constructors that take `&Owner`) downcasts to [`HostedBothShared`]
+///   and pulls out [`Self::owner_arc`], a type-erased `Arc<T>` of the
+///   very same owner the cell holds.
 ///
 /// This is intentionally *not* a public end-user type; only the
 /// macro-support helpers in [`crate::__test_r_make_hosted_both_shared`]
 /// and friends construct one.
 pub struct HostedBothShared {
     descriptor_bytes: Vec<u8>,
+    /// Type-erased `Arc<T>` of the owner value. The RPC cell holds
+    /// the same `Arc<T>` (cloned) and dispatches against `&T` via the
+    /// `#[hosted_rpc]`-generated `&self` dispatcher helper, so parent
+    /// consumers and the RPC view observe one and the same owner
+    /// instance.
+    owner: Arc<dyn Any + Send + Sync>,
     rpc_cell: Arc<HostedRpcOwnerCell>,
 }
 
 impl HostedBothShared {
-    /// Wrap a pre-computed descriptor + RPC owner cell for the `both`
-    /// dep variant.
-    pub fn new(descriptor_bytes: Vec<u8>, rpc_cell: Arc<HostedRpcOwnerCell>) -> Self {
+    /// Wrap a pre-computed descriptor + type-erased owner handle + RPC
+    /// owner cell for the `both` dep variant. The macro acquire helper
+    /// is the canonical construction site.
+    pub fn new(
+        descriptor_bytes: Vec<u8>,
+        owner: Arc<dyn Any + Send + Sync>,
+        rpc_cell: Arc<HostedRpcOwnerCell>,
+    ) -> Self {
         Self {
             descriptor_bytes,
+            owner,
             rpc_cell,
         }
     }
@@ -1145,6 +1277,19 @@ impl HostedBothShared {
     /// hands this back to the runtime.
     pub fn rpc_cell(&self) -> Arc<HostedRpcOwnerCell> {
         self.rpc_cell.clone()
+    }
+
+    /// Downcast the type-erased owner handle back to `Arc<T>`. Used by
+    /// the macro-generated owner getter so parent-side consumers that
+    /// take `&T` can reach the singleton owner the RPC cell is holding
+    /// behind a shared dispatcher.
+    pub fn owner_arc<T>(&self) -> Arc<T>
+    where
+        T: Send + Sync + 'static,
+    {
+        Arc::clone(&self.owner)
+            .downcast::<T>()
+            .expect("HostedBothShared owner type mismatch")
     }
 }
 

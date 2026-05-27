@@ -12,6 +12,7 @@
 //! - attribute arguments on `#[hosted_rpc(...)]` itself
 //! - associated types or `const` items on the trait
 //! - generics on the trait or on individual methods
+//! - `where` clauses on the trait or on individual methods
 //! - supertraits
 //! - `unsafe trait` / `unsafe fn` / non-default ABI / `extern fn`
 //! - default-impl methods (they would not appear on the wire)
@@ -109,6 +110,19 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
         )
         .to_compile_error();
     }
+    if let Some(where_clause) = &item_trait.generics.where_clause {
+        // Trait-level `where` clauses are rejected for symmetry with
+        // the generics/supertraits rejection: the async-mode trait
+        // rewrite in `rewrite_trait_async_methods_to_impl_future_send`
+        // does not faithfully preserve every `where`-clause shape, and
+        // generic/supertrait constraints are already MVP-out-of-scope
+        // so a `where` clause has nothing meaningful to bind anyway.
+        return syn::Error::new_spanned(
+            where_clause,
+            "`#[hosted_rpc]` traits must not have a `where` clause in the MVP",
+        )
+        .to_compile_error();
+    }
     if let Some(attr) = item_trait.attrs.iter().find(|a| is_cfg_attr(a)) {
         return syn::Error::new_spanned(
             attr,
@@ -163,6 +177,17 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
             return syn::Error::new_spanned(
                 g,
                 "`#[hosted_rpc]` methods must be non-generic in the MVP",
+            )
+            .to_compile_error();
+        }
+        if let Some(where_clause) = &m.sig.generics.where_clause {
+            // Same rationale as the trait-level `where` rejection above:
+            // the async-mode trait rewrite does not faithfully preserve
+            // every `where`-clause shape, and non-generic methods have
+            // nothing meaningful to bind anyway.
+            return syn::Error::new_spanned(
+                where_clause,
+                "`#[hosted_rpc]` methods must not have a `where` clause in the MVP",
             )
             .to_compile_error();
         }
@@ -290,6 +315,27 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
     let dispatch_ident = format_ident!("{}Dispatch", trait_ident);
     let dispatch_method_ident =
         format_ident!("dispatch_{}", to_snake_case(&trait_ident.to_string()));
+    // `&self`-receiver variant of the dispatcher helper used by the
+    // `#[test_dep(scope = Hosted, worker = both(Trait))]` lowering.
+    // The shared-owner RPC cell built for `worker = both(...)` only
+    // sees the owner through an `Arc<T>`, so the dispatcher it routes
+    // through must take `&self` rather than `&mut self`. Trait methods
+    // are already required to take `&self`, so this is just an
+    // additive surface alongside `dispatch_<snake>`.
+    let dispatch_shared_method_ident = format_ident!("{}_shared", dispatch_method_ident);
+    // Always-future-returning helper used by the tokio branch of the
+    // `worker = both(...)` lowering. The tokio runtime builds the
+    // shared-owner RPC cell via
+    // `HostedRpcOwnerCell::from_shared_owner_async`, which requires the
+    // per-call closure to return a `Pin<Box<dyn Future<...> + Send + 'a>>`.
+    // For async-mode traits the inner `_shared` helper already returns
+    // an `async fn` future; for sync-mode traits it returns `Result<...>`
+    // directly. This unconditionally-future-returning helper bridges
+    // both shapes by box-pinning the value (sync) or the future (async),
+    // so the tokio macro lowering can use a single uniform call site
+    // regardless of the user-authored trait's async-ness.
+    let dispatch_shared_future_method_ident =
+        format_ident!("{}_future", dispatch_shared_method_ident);
 
     // For each method generate: stub impl arm, dispatch arm.
     //
@@ -431,7 +477,23 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
     // parameterise their tests on `&MyStub` from the same module.
     let stub_vis: &Visibility = trait_vis;
 
-    let trait_decl = &item_trait;
+    // In async-mode rewrite each `async fn method(...)` declaration in
+    // the user-facing trait to `fn method(...) -> impl Future<Output = R>
+    // + Send + '_`. The desugaring is necessary so the trait-level
+    // RPITIT futures statically promise `Send`, which the parent's
+    // tokio runtime requires when dispatching through
+    // `HostedRpcOwnerCell::from_shared_owner_async` (and which
+    // `AsyncHostedRpcDep::dispatch` already requires anyway). User
+    // impls written with `async fn` keep compiling: rustc accepts an
+    // `async fn` body as the implementation of a trait method declared
+    // as `fn -> impl Future + Send + '_`, provided the produced future
+    // is actually `Send`. In sync-mode (no `async fn` in the trait) the
+    // declaration is forwarded unchanged.
+    let trait_decl_tokens: TokenStream2 = if async_mode {
+        rewrite_trait_async_methods_to_impl_future_send(&item_trait)
+    } else {
+        item_trait.to_token_stream()
+    };
 
     let dispatch_unknown_method_text = format!("{}: unknown method_idx {{}}", trait_ident);
 
@@ -458,14 +520,110 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
     // In sync-mode no extra bounds are needed — the helper's
     // `dispatch_<snake>` is a plain `fn`.
     let dispatch_asyncness = if async_mode { quote!(async) } else { quote!() };
+    // In async-mode the delegating `dispatch_<snake>(&mut self, …)`
+    // body must `.await` the shared `&self` helper to satisfy the
+    // returned `Future<Output = Result<…>>`. In sync-mode the helper
+    // call is a plain expression with no await.
+    let dispatch_await_token = if async_mode { quote!(.await) } else { quote!() };
     let blanket_bound = if async_mode {
         quote!(#trait_ident + ::core::marker::Send + ::core::marker::Sync + ?Sized)
     } else {
         quote!(#trait_ident + ?Sized)
     };
 
+    // Trait declaration + blanket-impl shape for `dispatch_<snake>_shared`.
+    //
+    // In async-mode we declare `_shared` with an explicit
+    // `-> impl Future<Output = Result<...>> + Send + 'a` return type
+    // rather than `async fn`. Doing so pins `Send` into the trait
+    // signature so the always-future-returning sibling
+    // `dispatch_<snake>_shared_future` can `Box::pin` the inner call
+    // and obtain a `Pin<Box<dyn Future + Send + 'a>>` without relying
+    // on RPITIT Send-leakage from each implementor. In sync-mode the
+    // declaration stays a plain synchronous `fn` returning
+    // `Result<...>` so callers (the sync runtime's `from_shared_owner_sync`
+    // cell, and the legacy delegating `dispatch_<snake>(&mut self, ...)`
+    // body) keep their existing zero-overhead shape.
+    let dispatch_shared_trait_decl = if async_mode {
+        quote! {
+            fn #dispatch_shared_method_ident<'__sf>(
+                &'__sf self,
+                method_idx: u32,
+                args: &'__sf [u8],
+            ) -> impl ::core::future::Future<
+                Output = ::std::result::Result<::std::vec::Vec<u8>, ::std::string::String>,
+            > + ::core::marker::Send + '__sf;
+        }
+    } else {
+        quote! {
+            fn #dispatch_shared_method_ident(
+                &self,
+                method_idx: u32,
+                args: &[u8],
+            ) -> ::std::result::Result<::std::vec::Vec<u8>, ::std::string::String>;
+        }
+    };
+    let dispatch_shared_blanket_impl = if async_mode {
+        quote! {
+            fn #dispatch_shared_method_ident<'__sf>(
+                &'__sf self,
+                method_idx: u32,
+                args: &'__sf [u8],
+            ) -> impl ::core::future::Future<
+                Output = ::std::result::Result<::std::vec::Vec<u8>, ::std::string::String>,
+            > + ::core::marker::Send + '__sf {
+                async move {
+                    match method_idx {
+                        #(#dispatch_arms)*
+                        other => ::std::result::Result::Err(
+                            ::std::format!(#dispatch_unknown_method_text, other),
+                        ),
+                    }
+                }
+            }
+        }
+    } else {
+        quote! {
+            fn #dispatch_shared_method_ident(
+                &self,
+                method_idx: u32,
+                args: &[u8],
+            ) -> ::std::result::Result<::std::vec::Vec<u8>, ::std::string::String> {
+                match method_idx {
+                    #(#dispatch_arms)*
+                    other => ::std::result::Result::Err(
+                        ::std::format!(#dispatch_unknown_method_text, other),
+                    ),
+                }
+            }
+        }
+    };
+
+    // Body of the `dispatch_<snake>_shared_future` blanket-impl. In
+    // sync-mode `_shared` returns `Result<...>` directly, so we capture
+    // it and wrap in an `async move` block that yields the value. In
+    // async-mode `_shared` already returns `impl Future + Send`, so a
+    // bare `Box::pin` is sufficient — the inner future's `Send`-ness
+    // (and lifetime `'a`) flow straight through the boxing coercion.
+    let dispatch_shared_future_body = if async_mode {
+        quote! {
+            ::std::boxed::Box::pin(
+                <Self as #dispatch_ident>::#dispatch_shared_method_ident(
+                    self, method_idx, args,
+                ),
+            )
+        }
+    } else {
+        quote! {
+            let __result = <Self as #dispatch_ident>::#dispatch_shared_method_ident(
+                self, method_idx, args,
+            );
+            ::std::boxed::Box::pin(async move { __result })
+        }
+    };
+
     quote! {
-        #trait_decl
+        #trait_decl_tokens
 
         /// Worker-side stub generated by `#[hosted_rpc]`. Holds a
         /// [`::test_r::core::HostedRpcChannel`] and implements the
@@ -511,12 +669,42 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
         /// generated dispatch arms `.await` each owner-side method call
         /// so the user's `async fn next(&self) -> u64` runs to completion
         /// before its result is encoded for the worker.
+        ///
+        /// The `_shared` variant takes `&self` instead of `&mut self`
+        /// and is used by the `#[test_dep(scope = Hosted, worker =
+        /// both(Trait))]` lowering, where the parent-side `Arc<T>`
+        /// owner is shared with downstream consumers that need
+        /// `&Owner`. Trait methods are required to take `&self`, so
+        /// the two helpers share the same per-method dispatch body.
         #trait_vis trait #dispatch_ident {
             #dispatch_asyncness fn #dispatch_method_ident(
                 &mut self,
                 method_idx: u32,
                 args: &[u8],
             ) -> ::std::result::Result<::std::vec::Vec<u8>, ::std::string::String>;
+
+            #dispatch_shared_trait_decl
+
+            /// Always-future-returning sibling of `dispatch_<snake>_shared`
+            /// generated for the tokio runtime's `worker = both(Trait)`
+            /// lowering. Returns a boxed `Send` future so the runtime
+            /// shared-owner RPC cell can dispatch through `&self`
+            /// uniformly regardless of whether the user-authored trait
+            /// is sync- or async-mode.
+            fn #dispatch_shared_future_method_ident<'__sf>(
+                &'__sf self,
+                method_idx: u32,
+                args: &'__sf [u8],
+            ) -> ::core::pin::Pin<::std::boxed::Box<
+                dyn ::core::future::Future<
+                        Output = ::std::result::Result<
+                            ::std::vec::Vec<u8>,
+                            ::std::string::String,
+                        >,
+                    >
+                    + ::core::marker::Send
+                    + '__sf,
+            >>;
         }
 
         impl<__T: #blanket_bound> #dispatch_ident for __T {
@@ -525,13 +713,94 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
                 method_idx: u32,
                 args: &[u8],
             ) -> ::std::result::Result<::std::vec::Vec<u8>, ::std::string::String> {
-                match method_idx {
-                    #(#dispatch_arms)*
-                    other => ::std::result::Result::Err(
-                        ::std::format!(#dispatch_unknown_method_text, other),
-                    ),
-                }
+                <Self as #dispatch_ident>::#dispatch_shared_method_ident(self, method_idx, args)#dispatch_await_token
             }
+
+            #dispatch_shared_blanket_impl
+
+            fn #dispatch_shared_future_method_ident<'__sf>(
+                &'__sf self,
+                method_idx: u32,
+                args: &'__sf [u8],
+            ) -> ::core::pin::Pin<::std::boxed::Box<
+                dyn ::core::future::Future<
+                        Output = ::std::result::Result<
+                            ::std::vec::Vec<u8>,
+                            ::std::string::String,
+                        >,
+                    >
+                    + ::core::marker::Send
+                    + '__sf,
+            >> {
+                #dispatch_shared_future_body
+            }
+        }
+    }
+}
+
+/// Rebuild the user-facing trait declaration in async-mode with each
+/// `async fn method(...) -> R` rewritten as
+/// `fn method(...) -> impl ::core::future::Future<Output = R> + ::core::marker::Send + '_`.
+///
+/// The explicit `+ Send + '_` on the return type lifts the trait-level
+/// RPITIT future to a statically-`Send` shape, which is what the parent
+/// runtime's `HostedRpcOwnerCell::from_shared_owner_async`-backed
+/// dispatch closure and the existing `AsyncHostedRpcDep::dispatch`
+/// surface both require. User impls written with `async fn` keep
+/// working — rustc accepts an `async fn` body as the implementation of
+/// a trait method declared as `fn -> impl Future + Send + '_`, as long
+/// as the produced future is actually `Send`.
+///
+/// Sync trait items (associated `fn` declarations, etc.) and trait-
+/// level attributes/visibility are preserved verbatim. Non-`async fn`
+/// items are forwarded unchanged; this function only touches `async fn`
+/// methods.
+///
+/// The MVP-rejection pass in [`expand`] already rejects trait/method
+/// generics, supertraits, and `where` clauses, so this function does
+/// not need to re-quote any of those.
+fn rewrite_trait_async_methods_to_impl_future_send(item_trait: &ItemTrait) -> TokenStream2 {
+    let attrs = &item_trait.attrs;
+    let vis = &item_trait.vis;
+    let trait_token = &item_trait.trait_token;
+    let trait_ident = &item_trait.ident;
+
+    let mut item_tokens: Vec<TokenStream2> = Vec::with_capacity(item_trait.items.len());
+    for item in &item_trait.items {
+        match item {
+            TraitItem::Fn(m) if m.sig.asyncness.is_some() => {
+                let method_attrs = &m.attrs;
+                let sig = &m.sig;
+                // Strip `async`, keep everything else, and replace the
+                // return type with `impl Future<Output = R> + Send + '_`.
+                let constness = &sig.constness;
+                let unsafety = &sig.unsafety;
+                let abi = &sig.abi;
+                let fn_token = &sig.fn_token;
+                let ident = &sig.ident;
+                let inputs = &sig.inputs;
+                let variadic = &sig.variadic;
+                let ret_ty: TokenStream2 = match &sig.output {
+                    ReturnType::Default => quote!(()),
+                    ReturnType::Type(_, t) => t.to_token_stream(),
+                };
+                item_tokens.push(quote! {
+                    #(#method_attrs)*
+                    #constness #unsafety #abi #fn_token #ident (#inputs #variadic)
+                        -> impl ::core::future::Future<Output = #ret_ty>
+                            + ::core::marker::Send
+                            + '_
+                    ;
+                });
+            }
+            other => item_tokens.push(other.to_token_stream()),
+        }
+    }
+
+    quote! {
+        #(#attrs)*
+        #vis #trait_token #trait_ident {
+            #(#item_tokens)*
         }
     }
 }
@@ -640,6 +909,50 @@ mod tests {
         assert!(
             s.contains("compile_error"),
             "expected a compile_error! for generic methods, got: {s}"
+        );
+    }
+
+    #[test]
+    fn rejects_trait_where_clause() {
+        // Trait-level `where` clauses are rejected so the async-mode
+        // trait rewrite in `rewrite_trait_async_methods_to_impl_future_send`
+        // does not have to faithfully preserve every `where`-clause
+        // shape (and because non-generic traits have nothing
+        // meaningful to bind anyway).
+        let s = expand_to_string(parse_quote! {
+            trait Foo
+            where
+                Self: Sized,
+            {
+                fn one(&self);
+            }
+        });
+        assert!(
+            s.contains("compile_error"),
+            "expected a compile_error! for trait-level `where` clauses, got: {s}"
+        );
+        assert!(
+            s.contains("where"),
+            "expected the rejection to mention `where` clauses, got: {s}"
+        );
+    }
+
+    #[test]
+    fn rejects_method_where_clause() {
+        let s = expand_to_string(parse_quote! {
+            trait Foo {
+                fn one(&self)
+                where
+                    Self: Sized;
+            }
+        });
+        assert!(
+            s.contains("compile_error"),
+            "expected a compile_error! for method-level `where` clauses, got: {s}"
+        );
+        assert!(
+            s.contains("where"),
+            "expected the rejection to mention `where` clauses, got: {s}"
         );
     }
 

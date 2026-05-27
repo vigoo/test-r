@@ -185,10 +185,15 @@ where
 // [`internal::HostedBothShared`]. The three helpers below centralize
 // the shared logic:
 //
-// - `__test_r_make_hosted_both_shared::<T>(owner)` builds the cell
-//   used by the macro's weak cache. Cfg-selected on `tokio` so the descriptor
-//   call uses `AsyncHostedDep::descriptor` under tokio and
-//   `HostedDep::descriptor` under sync, mirroring the single-view helpers.
+// - `__test_r_make_hosted_both_shared::<T>(owner_arc, rpc_cell)` builds
+//   the cell used by the macro's weak cache from an already-`Arc`'d
+//   owner plus a prebuilt RPC cell. The macro acquire helper
+//   constructs the `Arc<T>` once and shares it between this cell, the
+//   RPC dispatch cell, and the parent-side owner getter — no second
+//   owner instance, no `T: Clone` requirement. Cfg-selected on `tokio`
+//   so the descriptor call uses `AsyncHostedDep::descriptor` under
+//   tokio and `HostedDep::descriptor` under sync, mirroring the
+//   single-view helpers.
 // - `__test_r_make_hosted_both_codec()` produces the Hosted-view
 //   codec; both bytes (`to_wire`) and payload (`from_wire_bytes`)
 //   shapes match the existing single-view Hosted codec so the
@@ -200,21 +205,27 @@ where
 // =====================================================================
 
 /// **Hidden macro-support helper.** Build the shared owner cell for
-/// a `worker = both(T)` dep. Tokio variant: descriptor is computed
-/// via [`internal::AsyncHostedDep::descriptor`] and the RPC cell is
-/// constructed via [`internal::HostedRpcOwnerCell::from_async_owner`]
-/// so both sync and async HostedRpc owners flow through the same
-/// async dispatch path.
+/// a `worker = both(T)` dep from an already-`Arc`'d owner plus a
+/// pre-built RPC cell. The macro acquire helper constructs `Arc<T>`
+/// once and clones it into both this helper and the RPC cell so the
+/// parent-side getter, the descriptor view, and the RPC dispatcher
+/// observe exactly one owner instance.
+///
+/// Tokio variant: descriptor is computed via
+/// [`internal::AsyncHostedDep::descriptor`].
 #[doc(hidden)]
 #[cfg(feature = "tokio")]
-pub fn __test_r_make_hosted_both_shared<T>(owner: T) -> internal::HostedBothShared
+pub fn __test_r_make_hosted_both_shared<T>(
+    owner: std::sync::Arc<T>,
+    rpc_cell: std::sync::Arc<internal::HostedRpcOwnerCell>,
+) -> internal::HostedBothShared
 where
-    T: internal::AsyncHostedDep + internal::AsyncHostedRpcDep,
+    T: internal::AsyncHostedDep,
 {
     use std::sync::Arc;
-    let descriptor_bytes = <T as internal::AsyncHostedDep>::descriptor(&owner);
-    let rpc_cell = Arc::new(internal::HostedRpcOwnerCell::from_async_owner(owner));
-    internal::HostedBothShared::new(descriptor_bytes, rpc_cell)
+    let descriptor_bytes = <T as internal::AsyncHostedDep>::descriptor(&*owner);
+    let owner_any: Arc<dyn std::any::Any + Send + Sync> = owner;
+    internal::HostedBothShared::new(descriptor_bytes, owner_any, rpc_cell)
 }
 
 /// **Hidden macro-support helper.** Sync-runtime variant of
@@ -222,14 +233,17 @@ where
 /// [`internal::HostedDep::descriptor`].
 #[doc(hidden)]
 #[cfg(not(feature = "tokio"))]
-pub fn __test_r_make_hosted_both_shared<T>(owner: T) -> internal::HostedBothShared
+pub fn __test_r_make_hosted_both_shared<T>(
+    owner: std::sync::Arc<T>,
+    rpc_cell: std::sync::Arc<internal::HostedRpcOwnerCell>,
+) -> internal::HostedBothShared
 where
-    T: internal::HostedDep + internal::HostedRpcDep,
+    T: internal::HostedDep,
 {
     use std::sync::Arc;
-    let descriptor_bytes = <T as internal::HostedDep>::descriptor(&owner);
-    let rpc_cell = Arc::new(internal::HostedRpcOwnerCell::from_owner(owner));
-    internal::HostedBothShared::new(descriptor_bytes, rpc_cell)
+    let descriptor_bytes = <T as internal::HostedDep>::descriptor(&*owner);
+    let owner_any: Arc<dyn std::any::Any + Send + Sync> = owner;
+    internal::HostedBothShared::new(descriptor_bytes, owner_any, rpc_cell)
 }
 
 /// **Hidden macro-support helper.** Wrap a HostedRpc owner value into a
@@ -521,9 +535,11 @@ mod hosted_helper_tests {
     // `sharing::hosted_both_basic` example fixtures. These unit tests
     // pin the three pieces of cargo-feature-aware glue in this file:
     //
-    // - `__test_r_make_hosted_both_shared::<T>(owner)` builds the
-    //   shared cell that the macro's weak cache hands back to both
-    //   the Hosted and HostedRpc registrations.
+    // - `__test_r_make_hosted_both_shared::<T>(owner_arc, rpc_cell)`
+    //   builds the shared cell that the macro's weak cache hands back
+    //   to both the Hosted and HostedRpc registrations, from an
+    //   already-`Arc`'d owner and the prebuilt
+    //   [`internal::HostedRpcOwnerCell`] the macro produces.
     // - `__test_r_make_hosted_both_codec()` serializes the cached
     //   descriptor bytes for the Hosted view.
     // - `__test_r_make_hosted_both_rpc_factory::<T>()` extracts the
@@ -568,14 +584,21 @@ mod hosted_helper_tests {
 
     impl internal::HostedRpcDep for BothFixture {
         type Stub = BothStub;
-        fn dispatch(&mut self, method_idx: u32, _args: &[u8]) -> Result<Vec<u8>, String> {
-            // Single method: bump the counter and return its value.
-            if method_idx == 1 {
-                let mut g = self.counter.lock().map_err(|e| e.to_string())?;
-                *g += 1;
-                Ok(g.to_be_bytes().to_vec())
-            } else {
-                Err(format!("BothFixture: unknown method_idx {method_idx}"))
+        fn dispatch(&mut self, method_idx: u32, args: &[u8]) -> Result<Vec<u8>, String> {
+            // Delegate to the shared `&self` dispatcher so the same
+            // implementation services both the legacy `from_owner`
+            // path (which expects `&mut self`) and the new
+            // `from_shared_owner_*` path (which expects `&self`).
+            // Mirrors the shape of what `#[hosted_rpc]`'s
+            // blanket-implemented dispatcher will look like once we
+            // add the shared variant.
+            #[cfg(feature = "tokio")]
+            {
+                futures::executor::block_on(Self::dispatch_shared(self, method_idx, args))
+            }
+            #[cfg(not(feature = "tokio"))]
+            {
+                Self::dispatch_shared(self, method_idx, args)
             }
         }
         fn build_stub(channel: internal::HostedRpcChannel) -> Self::Stub {
@@ -583,14 +606,90 @@ mod hosted_helper_tests {
         }
     }
 
-    /// `__test_r_make_hosted_both_shared(owner)` captures the
-    /// owner's descriptor bytes once and wraps the owner in a
-    /// `HostedRpcOwnerCell`. The descriptor must match the owner's
-    /// `HostedDep::descriptor()` output exactly.
+    impl BothFixture {
+        /// `&self`-receiver dispatcher used by the shared-owner cell
+        /// (`from_shared_owner_sync` / `from_shared_owner_async`). The
+        /// sync runtime returns a plain `Result`; the tokio runtime
+        /// wraps it in an `async fn` so the same body satisfies the
+        /// `Pin<Box<dyn Future + Send + 'a>>` closure shape.
+        #[cfg(not(feature = "tokio"))]
+        fn dispatch_shared(this: &Self, method_idx: u32, _args: &[u8]) -> Result<Vec<u8>, String> {
+            if method_idx == 1 {
+                let mut g = this.counter.lock().map_err(|e| e.to_string())?;
+                *g += 1;
+                Ok(g.to_be_bytes().to_vec())
+            } else {
+                Err(format!("BothFixture: unknown method_idx {method_idx}"))
+            }
+        }
+
+        /// Tokio variant of [`Self::dispatch_shared`]. Returning an
+        /// `async fn` lets the boxed-future closure used by
+        /// [`internal::HostedRpcOwnerCell::from_shared_owner_async`]
+        /// hold the resulting future for the duration of the call.
+        #[cfg(feature = "tokio")]
+        async fn dispatch_shared(
+            this: &Self,
+            method_idx: u32,
+            _args: &[u8],
+        ) -> Result<Vec<u8>, String> {
+            if method_idx == 1 {
+                let mut g = this.counter.lock().map_err(|e| e.to_string())?;
+                *g += 1;
+                Ok(g.to_be_bytes().to_vec())
+            } else {
+                Err(format!("BothFixture: unknown method_idx {method_idx}"))
+            }
+        }
+    }
+
+    /// Build a `HostedBothShared` cell for tests in the shape the new
+    /// macro acquire helper produces: one `Arc<T>` owner shared
+    /// between the cell and the descriptor view, with a closure-based
+    /// shared-owner cell so dispatch routes against `&T`. Used by the
+    /// helper tests below so they don't have to repeat the closure
+    /// glue, and so the parent-side `owner_arc::<T>()` accessor sees
+    /// the exact same `Arc<T>` the cell holds.
+    fn build_both_shared_for_test(
+        owner: BothFixture,
+    ) -> (Arc<BothFixture>, internal::HostedBothShared) {
+        let owner_arc = Arc::new(owner);
+        let cell_arc = build_both_rpc_cell_for_test(owner_arc.clone());
+        let shared = __test_r_make_hosted_both_shared::<BothFixture>(owner_arc.clone(), cell_arc);
+        (owner_arc, shared)
+    }
+
+    /// Build the shared `Arc<HostedRpcOwnerCell>` for the test
+    /// fixture. The closure delegates to the fixture's
+    /// `dispatch_shared` (a tiny `&self` dispatcher that mirrors what
+    /// `#[hosted_rpc]` will generate via `dispatch_<snake>_shared`).
+    /// Cargo-feature-aware so the same construction works under sync
+    /// and tokio runtimes.
+    fn build_both_rpc_cell_for_test(owner: Arc<BothFixture>) -> Arc<internal::HostedRpcOwnerCell> {
+        #[cfg(feature = "tokio")]
+        {
+            Arc::new(internal::HostedRpcOwnerCell::from_shared_owner_async(
+                owner,
+                |o, idx, args| Box::pin(BothFixture::dispatch_shared(o, idx, args)),
+            ))
+        }
+        #[cfg(not(feature = "tokio"))]
+        {
+            Arc::new(internal::HostedRpcOwnerCell::from_shared_owner_sync(
+                owner,
+                |o, idx, args| BothFixture::dispatch_shared(o, idx, args),
+            ))
+        }
+    }
+
+    /// `__test_r_make_hosted_both_shared(owner_arc, rpc_cell)` captures
+    /// the owner's descriptor bytes once and stitches together the
+    /// shared `Arc<T>` with the prebuilt `HostedRpcOwnerCell`. The
+    /// captured descriptor must match the owner's `HostedDep::descriptor()`
+    /// (or `AsyncHostedDep::descriptor()` under tokio) output exactly.
     #[test]
     fn make_hosted_both_shared_captures_descriptor_bytes() {
-        let owner = BothFixture::new(vec![10, 20, 30]);
-        let shared = __test_r_make_hosted_both_shared::<BothFixture>(owner);
+        let (_owner, shared) = build_both_shared_for_test(BothFixture::new(vec![10, 20, 30]));
         assert_eq!(shared.descriptor_bytes(), &[10, 20, 30]);
         // The owner cell must be live: a dispatch call must succeed
         // (the closure runs the method without panicking and returns
@@ -600,6 +699,32 @@ mod hosted_helper_tests {
         let reply =
             dispatch_cell_for_test(&shared.rpc_cell(), 1, &[]).expect("dispatch must succeed");
         assert_eq!(reply, 1u64.to_be_bytes().to_vec());
+    }
+
+    /// The owner the cell dispatches against must be the exact same
+    /// `Arc<T>` the parent-side getter would return. This pins the
+    /// regression fix for the bug where `worker = both(...)` made the
+    /// parent dep map hold an `Arc<HostedBothShared>` while the
+    /// generated owner getter expected `Arc<T>` and panicked.
+    #[test]
+    fn make_hosted_both_shared_exposes_owner_arc() {
+        let (owner_arc, shared) = build_both_shared_for_test(BothFixture::new(vec![42]));
+        let recovered = shared.owner_arc::<BothFixture>();
+        assert!(
+            Arc::ptr_eq(&owner_arc, &recovered),
+            "owner_arc::<T>() must return the very same Arc the cell holds"
+        );
+        // A round trip through the cell observes the same owner via
+        // the shared counter that owner_arc points at.
+        let _ = dispatch_cell_for_test(&shared.rpc_cell(), 1, &[]).expect("dispatch must succeed");
+        let observed = *recovered
+            .counter
+            .lock()
+            .expect("BothFixture counter must not be poisoned");
+        assert_eq!(
+            observed, 1,
+            "the cell must mutate the same owner the parent getter would hand out, observed {observed}"
+        );
     }
 
     /// Helper: dispatch on a `HostedRpcOwnerCell` whose async/sync
@@ -634,10 +759,8 @@ mod hosted_helper_tests {
     #[test]
     fn make_hosted_both_codec_serializes_descriptor_bytes() {
         let codec = __test_r_make_hosted_both_codec();
-        let shared: Arc<internal::HostedBothShared> =
-            Arc::new(__test_r_make_hosted_both_shared::<BothFixture>(
-                BothFixture::new(vec![1, 2, 3, 4]),
-            ));
+        let (_owner, shared) = build_both_shared_for_test(BothFixture::new(vec![1, 2, 3, 4]));
+        let shared = Arc::new(shared);
         let arc_any: Arc<dyn Any + Send + Sync> = shared;
 
         let wire_bytes = (codec.to_wire)(arc_any);
@@ -661,9 +784,8 @@ mod hosted_helper_tests {
     #[test]
     fn make_hosted_both_rpc_factory_extracts_owner_cell() {
         let factory = __test_r_make_hosted_both_rpc_factory::<BothFixture, BothStub>();
-        let shared: Arc<internal::HostedBothShared> = Arc::new(__test_r_make_hosted_both_shared::<
-            BothFixture,
-        >(BothFixture::new(vec![])));
+        let (_owner, shared) = build_both_shared_for_test(BothFixture::new(vec![]));
+        let shared = Arc::new(shared);
         let arc_any: Arc<dyn Any + Send + Sync> = shared.clone();
 
         let cell = (factory.owner_into_cell)(arc_any);
