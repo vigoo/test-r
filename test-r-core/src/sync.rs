@@ -84,6 +84,7 @@ pub fn test_runner() -> ExitCode {
                     hosted_descriptor_bytes: Vec::new(),
                     hosted_owners: Vec::new(),
                     hosted_rpc_owner_cells: Vec::new(),
+                    parent_constructed_shared_values: Vec::new(),
                 }
             };
             let cloneable_wire_bytes = parent_shared.cloneable_wire_bytes;
@@ -92,6 +93,7 @@ pub fn test_runner() -> ExitCode {
             let _hosted_owners = parent_shared.hosted_owners;
             let hosted_rpc_owner_cells: HashMap<String, Arc<HostedRpcOwnerCell>> =
                 parent_shared.hosted_rpc_owner_cells.into_iter().collect();
+            let parent_constructed_shared_values = parent_shared.parent_constructed_shared_values;
             // Build a Cloneable/Hosted codec/worker lookup table now, before
             // `test_thread` workers are spawned, so the test_thread workers
             // do not need to lock the global REGISTERED_DEPENDENCY_CONSTRUCTORS
@@ -142,6 +144,23 @@ pub fn test_runner() -> ExitCode {
                     &mut execution,
                     &rpc_factories,
                     &hosted_rpc_owner_cells,
+                );
+            }
+            // Mode-consistent `Shared`/`PerWorker` semantics for the
+            // no-spawn-workers path: any such dep that the parent had to
+            // construct as a transitive input to a Cloneable/Hosted/HostedRpc
+            // owner is pre-installed into the execution tree, so the
+            // in-process test thread's `materialize_deps_sync` reuses the
+            // parent value instead of running the constructor a second time
+            // in the same process. (In spawn-workers mode this list is
+            // unused: each worker process re-runs its own constructors.)
+            if is_top_level_parent
+                && !args.spawn_workers
+                && !parent_constructed_shared_values.is_empty()
+            {
+                apply_parent_constructed_shared_values_locally(
+                    &mut execution,
+                    &parent_constructed_shared_values,
                 );
             }
             if args.spawn_workers {
@@ -485,6 +504,24 @@ fn apply_cloneable_values_locally(
         assert!(
             applied,
             "Cloneable dep '{dep_id}' could not be pre-populated locally"
+        );
+    }
+}
+
+/// No-spawn-workers helper for `Shared`/`PerWorker` deps whose constructor
+/// already ran in the parent's collection context (as a transitive input
+/// to a Cloneable/Hosted/HostedRpc dep). Installs each value at the node
+/// where the dep is registered so the in-process test thread skips
+/// constructor re-execution.
+fn apply_parent_constructed_shared_values_locally(
+    execution: &mut TestSuiteExecution,
+    values: &[(String, Arc<dyn Any + Send + Sync>)],
+) {
+    for (dep_id, value) in values {
+        let applied = execution.provide_materialized_shared_value(dep_id, value.clone());
+        assert!(
+            applied,
+            "Shared/PerWorker dep '{dep_id}' could not be pre-populated locally"
         );
     }
 }

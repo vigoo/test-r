@@ -102,6 +102,7 @@ async fn async_test_runner() -> ExitCode {
                     hosted_descriptor_bytes: Vec::new(),
                     hosted_owners: Vec::new(),
                     hosted_rpc_owner_cells: Vec::new(),
+                    parent_constructed_shared_values: Vec::new(),
                 }
             };
             let cloneable_wire_bytes = parent_shared.cloneable_wire_bytes;
@@ -110,6 +111,7 @@ async fn async_test_runner() -> ExitCode {
             let _hosted_owners = parent_shared.hosted_owners;
             let hosted_rpc_owner_cells: HashMap<String, Arc<HostedRpcOwnerCell>> =
                 parent_shared.hosted_rpc_owner_cells.into_iter().collect();
+            let parent_constructed_shared_values = parent_shared.parent_constructed_shared_values;
             // Pre-built RpcFactory lookup keyed by qualified id, so worker
             // subprocesses can build stubs without re-locking the global
             // REGISTERED_DEPENDENCY_CONSTRUCTORS.
@@ -185,6 +187,21 @@ async fn async_test_runner() -> ExitCode {
                     &mut execution,
                     &rpc_factories,
                     &hosted_rpc_owner_cells,
+                );
+            }
+            // Mirror of `sync::apply_parent_constructed_shared_values_locally`:
+            // in no-spawn-workers mode, install any `Shared`/`PerWorker` dep
+            // values the parent had to construct as transitive inputs to a
+            // Cloneable/Hosted/HostedRpc dep. The in-process test thread's
+            // `materialize_deps` then reuses them instead of re-running the
+            // constructor in the same process.
+            if is_top_level_parent
+                && !args.spawn_workers
+                && !parent_constructed_shared_values.is_empty()
+            {
+                apply_parent_constructed_shared_values_locally(
+                    &mut execution,
+                    &parent_constructed_shared_values,
                 );
             }
             if args.spawn_workers {
@@ -524,6 +541,24 @@ fn apply_cloneable_values_locally(
         assert!(
             applied,
             "Cloneable dep '{dep_id}' could not be pre-populated locally"
+        );
+    }
+}
+
+/// Tokio counterpart to `sync::apply_parent_constructed_shared_values_locally`.
+/// In no-spawn-workers mode, installs `Shared`/`PerWorker` dep values that
+/// the parent had to construct as transitive inputs to a
+/// Cloneable/Hosted/HostedRpc dep, so the in-process test thread reuses
+/// them instead of re-running the constructor in the same process.
+fn apply_parent_constructed_shared_values_locally(
+    execution: &mut TestSuiteExecution,
+    values: &[(String, Arc<dyn Any + Send + Sync>)],
+) {
+    for (dep_id, value) in values {
+        let applied = execution.provide_materialized_shared_value(dep_id, value.clone());
+        assert!(
+            applied,
+            "Shared/PerWorker dep '{dep_id}' could not be pre-populated locally"
         );
     }
 }
