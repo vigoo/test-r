@@ -26,6 +26,25 @@ The following options control this behavior:
 
 Note that this global setting of output capturing can be overwritten on a per-test basis using the `#[always_capture]` and `#[never_capture]` attributes, as explained in the [per-test configuration chapter](/advanced_features/per_test_configuration.md). 
 
+### Host-side output capture
+
+Some test dependencies — most notably `#[test_dep(scope = HostedRpc, …)]` owners (see [Dependency sharing strategies](/advanced_features/dependency_sharing.md)) — run **in the parent test runner process**, not in the worker subprocesses that own a given test. Anything those owners write to standard output or standard error (including from background threads they spawn, or from inside `dispatch`) used to be invisible per-test: it landed on the runner's own stdout/stderr, which is either swallowed by `cargo test` or, worse, interleaved into the structured `--format=json` / `junit` / `ctrf` streams.
+
+When output capturing is on (the default), `test-r` now also captures the parent's own stdout/stderr in the background and attributes each line to the test(s) that were running when the line was produced — a best-effort, window-overlap based attribution. These records show up alongside the test's own captured output, prefixed with `[host] ` so the provenance is visible. In `--format=pretty`, the prefix is also rendered in a dimmed colour.
+
+```text
+---- mycrate::my_module::tests::my_test stdout/err ----
+my own println from inside the test
+[host] HOST_DISPATCH_HIT
+[host] HOST_BG_THREAD_TICK
+```
+
+This feature is automatic, currently Unix-only, and disabled in `--nocapture` mode (where everything just goes to the terminal anyway). If a line cannot be attributed to any test (e.g. it was produced before the suite started or in a gap between tests) it is silently dropped.
+
+When tests run in parallel and their windows overlap, a single host-side line may legitimately be attributed to several tests at once.
+
+Host-side attribution happens once at suite end, so the host lines only appear in formatters that render per-test output **after** the suite finishes: `pretty`, `junit` and `ctrf`. The `json` formatter is a streaming format that emits a `test` event for each test as soon as it finishes — well before suite-end attribution — so its per-test `stdout` field does not include host-side lines. The `terse` formatter never reports per-test output regardless of `--show-output`, so host lines do not appear there either.
+
 <div class="warning">
 When attaching a debugger, always pass the `--nocapture` flag to the test runner to disable output capturing, which guarantees that all the tests are executed in the single root process the debugger is attached to.
 </div>

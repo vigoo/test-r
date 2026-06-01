@@ -1,6 +1,7 @@
+use crate::host_capture::{terminal_stderr_is_terminal, TerminalStderr};
 use crate::internal::{RegisteredTest, TestResult};
 use anstyle::{AnsiColor, Style};
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 use std::sync::Mutex;
 
 /// Lightweight progress reporter that writes per-test "Running"/"Finished"
@@ -49,10 +50,12 @@ impl StderrProgress {
     }
 
     fn write_line(line: &str) {
-        // Only emit ANSI escapes when stderr is a TTY; otherwise plain text.
-        let stderr = std::io::stderr();
-        let mut stderr = stderr.lock();
-        if std::io::stderr().is_terminal() {
+        // Only emit ANSI escapes when the real (pre-redirect) stderr was
+        // a TTY; otherwise plain text. `TerminalStderr` routes around
+        // the host-capture pipe when one is installed so the formatter
+        // still reaches the user's terminal.
+        let mut stderr = TerminalStderr;
+        if terminal_stderr_is_terminal() {
             let _ = writeln!(stderr, "{line}");
         } else {
             let _ = writeln!(stderr, "{}", strip_ansi(line));

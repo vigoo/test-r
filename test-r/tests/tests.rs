@@ -500,6 +500,67 @@ mod nocapture_no_spawn_workers_tests {
     /// prints a unique marker every time its Cloneable constructor runs.
     /// We invoke that fixture under `--nocapture` and grep-count the marker
     /// on stdout: it must appear exactly once.
+    /// End-to-end regression for the parent-side host-capture path
+    /// (see `test-r-core/src/host_capture.rs`). The fixture in
+    /// `example/src/sharing/host_capture_demo.rs` defines a
+    /// `HostedRpc` dep whose owner:
+    ///   * spawns a background thread that `println!`s
+    ///     `HOST_BG_THREAD_TICK` every 20ms, and
+    ///   * `println!`s `HOST_DISPATCH_HIT` from inside `dispatch`.
+    ///
+    /// Both lines originate in the **parent** process (not in any
+    /// worker subprocess), so before host capture they were either
+    /// silently dropped by `cargo test`'s outer capture or, worse,
+    /// corrupting the structured `--format=json`/`junit` output.
+    ///
+    /// We run the fixture with `--show-output` (pretty mode) so the
+    /// per-test captured output is printed. The host-capture pipeline
+    /// must:
+    ///   1. collect lines emitted in the parent during the test's
+    ///      window;
+    ///   2. surface them tagged `[host]` inside the test's
+    ///      `---- … stdout/err ----` block.
+    ///
+    /// Both markers must appear at least once.
+    #[test]
+    #[serial]
+    fn host_capture_surfaces_parent_side_output_under_pretty_format() {
+        let cwd = std::env::current_dir().unwrap();
+        let root = cwd.parent().unwrap().join("example");
+
+        let process = std::process::Command::new("cargo")
+            .arg("test")
+            .arg("sharing::host_capture_demo::tests::host_capture_demo_emits_both_markers")
+            .arg("--")
+            .arg("--exact")
+            .arg("--show-output")
+            .current_dir(&root)
+            .output()
+            .unwrap();
+
+        let stdout = String::from_utf8_lossy(&process.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&process.stderr).into_owned();
+
+        assert_eq!(
+            process.status.code(),
+            Some(0),
+            "fixture test must pass; stderr:\n{stderr}\nstdout:\n{stdout}"
+        );
+
+        let combined = format!("{stdout}{stderr}");
+        assert!(
+            combined.contains("[host] HOST_DISPATCH_HIT"),
+            "host-capture must surface the dispatcher print as `[host] HOST_DISPATCH_HIT` \
+             under the test's captured output block.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            combined.contains("[host] HOST_BG_THREAD_TICK"),
+            "host-capture must surface the background-thread print as \
+             `[host] HOST_BG_THREAD_TICK` under the test's captured output block.\n\
+             stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    }
+
     #[test]
     #[serial]
     fn cloneable_constructor_runs_once_under_nocapture() {

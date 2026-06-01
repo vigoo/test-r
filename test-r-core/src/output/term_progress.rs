@@ -1,5 +1,6 @@
+use crate::host_capture::{terminal_stderr_is_terminal, TerminalStderr};
 use std::fmt;
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 
 /// Tracks whether any supported terminal is detected for OSC 9;4 progress reporting.
 ///
@@ -53,7 +54,7 @@ impl TermProgress {
         } else {
             ProgressState::Value(pct)
         };
-        let _ = write!(std::io::stderr(), "{state}");
+        let _ = write!(TerminalStderr, "{state}");
     }
 
     pub fn mark_failure(&mut self) {
@@ -64,7 +65,7 @@ impl TermProgress {
         if !self.enabled {
             return;
         }
-        let _ = write!(std::io::stderr(), "{}", ProgressState::Remove);
+        let _ = write!(TerminalStderr, "{}", ProgressState::Remove);
     }
 }
 
@@ -76,7 +77,7 @@ impl Drop for TermProgress {
 
 /// Detect terminals known to support OSC 9;4 progress sequences.
 fn supports_osc_9_4() -> bool {
-    if !std::io::stderr().is_terminal() {
+    if !terminal_stderr_is_terminal() {
         return false;
     }
 

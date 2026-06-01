@@ -1,4 +1,5 @@
 use crate::args::{ColorSetting, TimeThreshold};
+use crate::host_capture::{TerminalStderr, TerminalStdout};
 use crate::internal::{RegisteredTest, ReportTimeControl, SuiteResult, TestResult};
 use crate::output::term_progress::TermProgress;
 use crate::output::{LogFile, TestRunnerOutput};
@@ -15,6 +16,7 @@ pub(crate) struct Pretty {
     pub style_bench: Style,
     style_progress: Style,
     style_stderr: Style,
+    style_host: Style,
     style_critical_time: Style,
     style_warn_time: Style,
     lock: Mutex<PrettyImpl>,
@@ -57,6 +59,9 @@ impl Pretty {
                 .bold()
                 .fg_color(Some(AnsiColor::BrightWhite.into())),
             style_stderr: Style::new().fg_color(Some(AnsiColor::Yellow.into())),
+            style_host: Style::new()
+                .dimmed()
+                .fg_color(Some(AnsiColor::BrightBlue.into())),
             style_critical_time: Style::new().fg_color(Some(AnsiColor::Red.into())),
             style_warn_time: Style::new().fg_color(Some(AnsiColor::Yellow.into())),
             lock: Mutex::new(PrettyImpl {
@@ -107,6 +112,24 @@ impl Pretty {
                                 self.style_stderr.render(),
                                 line,
                                 self.style_stderr.render_reset(),
+                            )
+                            .unwrap();
+                        }
+                        crate::internal::CapturedOutput::Host { line, .. } => {
+                            // `[host]` prefix marks lines that the
+                            // overlap-attribution path picked up from
+                            // the parent process's redirected
+                            // stdout/stderr pipe (HostedRpc owners,
+                            // their background threads, etc.). They
+                            // are intermixed with the per-test stdout
+                            // by timestamp; the prefix and the dimmed
+                            // colour both help distinguish provenance.
+                            writeln!(
+                                out,
+                                "{}[host] {}{}",
+                                self.style_host.render(),
+                                line,
+                                self.style_host.render_reset(),
                             )
                             .unwrap();
                         }
@@ -318,9 +341,35 @@ impl Write for PrettyImpl {
         };
         match self.logfile.take() {
             None => {
-                let stdout = std::io::stdout().lock();
-                let mut stdout = anstream::AutoStream::new(stdout, color_setting);
-                stdout.write(buf)
+                // Route the formatter's own output to the real terminal
+                // (around the host-capture pipe if it is installed). See
+                // `crate::host_capture::TerminalStdout`.
+                //
+                // `anstream::AutoStream::new` / `StripStream` require the
+                // inner type to implement the sealed `RawStream` /
+                // `AsLockedWrite` traits, which our ad-hoc
+                // `TerminalStdout` cannot. Replicate the AutoStream
+                // semantics manually using
+                // (a) the cached `terminal_stdout_is_terminal()` answer
+                //     captured before any redirect happened, and
+                // (b) `anstream::adapter::strip_bytes` for the strip
+                //     case so escape sequences split across writes are
+                //     handled correctly.
+                let should_color = match self.color {
+                    ColorSetting::Always => true,
+                    ColorSetting::Never => false,
+                    ColorSetting::Auto => crate::host_capture::terminal_stdout_is_terminal(),
+                };
+                let mut stdout = TerminalStdout;
+                if should_color {
+                    stdout.write(buf)
+                } else {
+                    let stripped = anstream::adapter::strip_bytes(buf).into_vec();
+                    stdout.write_all(&stripped)?;
+                    // Per Write::write contract, return the number of
+                    // input bytes consumed (not the post-strip count).
+                    Ok(buf.len())
+                }
             }
             Some(logfile) => {
                 let mut out = anstream::AutoStream::new(logfile.file, color_setting);
@@ -335,7 +384,7 @@ impl Write for PrettyImpl {
 
     fn flush(&mut self) -> std::io::Result<()> {
         match &mut self.logfile {
-            None => std::io::stdout().flush(),
+            None => TerminalStdout.flush(),
             Some(logfile) => logfile.file.flush(),
         }
     }
@@ -564,7 +613,9 @@ impl TestRunnerOutput for Pretty {
     }
 
     fn warning(&self, message: &str) {
-        eprintln!(
+        let mut err = TerminalStderr;
+        let _ = writeln!(
+            err,
             "{}{}{}",
             self.style_stderr.render(),
             message,

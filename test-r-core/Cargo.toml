@@ -30,6 +30,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "process", "io-std"], op
 topological-sort = "0.2"
 uuid = { version = "1.21", features = ["v4"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 anyhow = "1"
 pretty_assertions = "1"
