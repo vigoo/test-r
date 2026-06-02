@@ -1,6 +1,7 @@
 pub mod args;
 pub mod bench;
 mod execution;
+mod host_capture;
 pub mod internal;
 mod ipc;
 mod output;

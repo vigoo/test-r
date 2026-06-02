@@ -34,6 +34,14 @@ pub fn test_runner() -> ExitCode {
     if let Some(idx) = args.worker_index {
         crate::worker::set_worker_index(idx);
     }
+    // Host-side output capture is installed PER retry attempt (inside
+    // the `while remaining_retries > 0` loop below), AFTER
+    // `finalize_for_execution` has decided whether worker subprocesses
+    // are needed. That way every attempt has its own fresh fd
+    // redirect, and runs that ultimately won't spawn workers (e.g.
+    // `--nocapture` set per-test, no shared-capture deps) don't pay
+    // the host-capture cost. See `crate::host_capture` for the
+    // pipeline.
     let output = test_runner_output(&args);
 
     let registered_tests = internal::REGISTERED_TESTS.lock().unwrap();
@@ -65,6 +73,16 @@ pub fn test_runner() -> ExitCode {
                 registered_testsuite_props.as_slice(),
             );
             args.finalize_for_execution(&execution, output.clone());
+            // Install host-side capture for this attempt, NOW that
+            // `finalize_for_execution` has decided whether workers
+            // will actually spawn. Held in `host_capture` until the
+            // post-suite finalize call below; Drop restores fd 1/2
+            // and removes the spill file if anything bypasses that
+            // path.
+            let mut host_capture = crate::host_capture::install_if_needed(&args);
+            let host_capture_epoch: Option<Instant> = host_capture.as_ref().map(|hc| hc.epoch());
+            let host_capture_epoch_wall: Option<std::time::SystemTime> =
+                host_capture.as_ref().map(|hc| hc.epoch_wall());
             let is_top_level_parent = args.is_top_level_parent();
             let has_selected_tests = execution.remaining() > 0;
             // Parent-side collection for dependency scopes whose worker-side
@@ -173,6 +191,12 @@ pub fn test_runner() -> ExitCode {
 
             let count = execution.remaining();
             let mut results = Vec::with_capacity(count);
+            // Per-test execution windows captured in the parent. Used
+            // after all test_threads join to attribute host-log records
+            // (collected by `crate::host_capture`) to the test(s) whose
+            // window contains each record. Empty when no host capture
+            // is installed.
+            let mut host_windows: Vec<crate::host_capture::HostWindow> = Vec::new();
 
             let start = Instant::now();
             output.start_suite(&filtered_tests);
@@ -212,15 +236,50 @@ pub fn test_runner() -> ExitCode {
                         codecs_clone,
                         rpc_factories_clone,
                         hosted_rpc_owner_cells_clone,
+                        host_capture_epoch,
                     )
                 }));
             }
 
             for handle in handles {
-                results.extend(handle.join().unwrap());
+                let (thread_results, thread_windows) = handle.join().unwrap();
+                // Results and windows from a single thread are
+                // 1:1-aligned; preserve that as we merge them into the
+                // suite-wide vecs. The window vec stays the same length
+                // as `results` so an absolute test index in `results`
+                // also indexes into `host_windows`.
+                debug_assert_eq!(thread_results.len(), thread_windows.len());
+                results.extend(thread_results);
+                host_windows.extend(thread_windows);
             }
 
             drop(execution);
+
+            // Drop the parent-side Hosted/HostedRpc owners BEFORE
+            // finalising host capture so any `Drop` impls that
+            // shutdown background threads / subprocesses get a chance
+            // to emit their final lines through the still-active
+            // capture pipe. If we restored fd 1/2 first, those late
+            // lines would either land on the about-to-render
+            // structured output or be swallowed entirely.
+            drop(hosted_rpc_owner_cells);
+            drop(_hosted_owners);
+
+            // Finalise host capture (if any) BEFORE rendering the
+            // suite. This stops the reader thread, drains the spill
+            // file and attributes records to per-test windows.
+            if let Some(hc) = host_capture.take() {
+                let epoch_wall = host_capture_epoch_wall.unwrap_or_else(|| hc.epoch_wall());
+                let records = hc.finalize();
+                let windows_indexed: Vec<(usize, crate::host_capture::HostWindow)> =
+                    host_windows.iter().copied().enumerate().collect();
+                crate::host_capture::attribute_records_to_tests(
+                    epoch_wall,
+                    &records,
+                    &windows_indexed,
+                    &mut results,
+                );
+            }
 
             output.finished_suite(&all_tests, &results, start.elapsed());
             exit_code = SuiteResult::exit_code(&results);
@@ -246,7 +305,11 @@ fn test_thread(
     wire_codecs: Arc<HashMap<String, (CloneableCodec, WorkerReconstructor)>>,
     rpc_factories: Arc<HashMap<String, RpcFactory>>,
     hosted_rpc_owner_cells: Arc<HashMap<String, Arc<HostedRpcOwnerCell>>>,
-) -> Vec<(RegisteredTest, TestResult)> {
+    host_capture_epoch: Option<Instant>,
+) -> (
+    Vec<(RegisteredTest, TestResult)>,
+    Vec<crate::host_capture::HostWindow>,
+) {
     let mut worker = spawn_worker_if_needed(&args);
     // Parent dispatches incoming `HostedRpcCall` frames against the owner
     // cells materialised in the top-level parent. Workers don't need the owner
@@ -296,6 +359,11 @@ fn test_thread(
     }
 
     let mut results = Vec::with_capacity(count);
+    // 1:1 with `results`. Each entry records the wall-clock window
+    // (relative to the host-capture epoch) during which the parent
+    // observed this test running, so the post-suite attribution pass
+    // can map host-log records onto the right test(s).
+    let mut host_windows: Vec<crate::host_capture::HostWindow> = Vec::with_capacity(count);
     let mut expected_test = None;
 
     while !is_done(&execution) {
@@ -383,6 +451,12 @@ fn test_thread(
             if !skip {
                 expected_test = None;
 
+                // Snapshot the parent's monotonic-clock view of the
+                // test start. The matching end-instant is captured
+                // after `finished_running_test`, and the pair becomes
+                // a `HostWindow` for record attribution.
+                let window_start = Instant::now();
+
                 output.start_running_test(&next.test, next.index, count);
 
                 let result = if next.test.props.is_ignored && !args.include_ignored {
@@ -404,6 +478,7 @@ fn test_thread(
                 };
 
                 output.finished_running_test(&next.test, next.index, count, &result);
+                let window_end = Instant::now();
 
                 if let Some(connection) = connection_arc.as_ref() {
                     let finish_marker = Uuid::new_v4().to_string();
@@ -430,10 +505,25 @@ fn test_thread(
                 }
 
                 results.push((next.test.clone(), result));
+                // Always push a window, even when no host capture is
+                // installed (epoch is `None`): a zero-width default
+                // keeps `results` and `host_windows` in lock-step so
+                // the suite-runner can attribute-or-ignore without
+                // index arithmetic.
+                let window = crate::host_capture::HostWindow::from_instants(
+                    host_capture_epoch,
+                    window_start,
+                    window_end,
+                )
+                .unwrap_or(crate::host_capture::HostWindow {
+                    start: std::time::Duration::ZERO,
+                    end: std::time::Duration::ZERO,
+                });
+                host_windows.push(window);
             }
         }
     }
-    results
+    (results, host_windows)
 }
 
 fn is_done(execution: &Arc<Mutex<TestSuiteExecution>>) -> bool {
@@ -1160,9 +1250,19 @@ impl DumpOnFailure {
                 let mut all_lines = [out_lines, err_lines].concat();
                 all_lines.sort();
 
+                // Route the diagnostic through the real terminal even
+                // when host capture has fd 2 redirected into its pipe.
+                // We `process::exit(1)` immediately after this and
+                // never reach `host_capture.finalize()`, so anything we
+                // wrote into the host pipe would be lost. The capture
+                // pipe and its reader are abandoned on exit; that is
+                // acceptable for this fatal-IPC path.
+                use std::io::Write;
+                let mut err = crate::host_capture::TerminalStderr;
                 for line in all_lines {
-                    eprintln!("{}", line.line());
+                    let _ = writeln!(err, "{}", line.line());
                 }
+                let _ = err.flush();
 
                 std::process::exit(1);
             }
@@ -1221,7 +1321,15 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                                 .unwrap()
                                 .push_back(CapturedOutput::stdout(line));
                         } else {
-                            println!("{line}");
+                            // `#[never_capture]` pass-through: write to
+                            // the real terminal even when host capture
+                            // has redirected fd 1 into its pipe, so the
+                            // worker line stays uncaptured live output
+                            // and is not later re-labelled `[host]`.
+                            use std::io::Write;
+                            let mut out = crate::host_capture::TerminalStdout;
+                            let _ = writeln!(out, "{line}");
+                            let _ = out.flush();
                         }
                     }
                     Err(error) => {
@@ -1246,7 +1354,14 @@ fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
                                 .unwrap()
                                 .push_back(CapturedOutput::stderr(line));
                         } else {
-                            eprintln!("{line}");
+                            // Same as the stdout pass-through above:
+                            // route the never-captured worker line to
+                            // the real terminal stderr, not the host
+                            // capture pipe.
+                            use std::io::Write;
+                            let mut err = crate::host_capture::TerminalStderr;
+                            let _ = writeln!(err, "{line}");
+                            let _ = err.flush();
                         }
                     }
                     Err(error) => {

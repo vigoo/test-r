@@ -14,7 +14,7 @@ impl Json {
     pub fn new(show_output: bool, logfile_path: Option<PathBuf>) -> Self {
         let target = Mutex::new(match logfile_path {
             Some(path) => StdoutOrLogFile::LogFile(LogFile::new(path, false)),
-            None => StdoutOrLogFile::Stdout(std::io::stdout()),
+            None => StdoutOrLogFile::stdout(),
         });
         Self {
             show_output,
@@ -74,7 +74,16 @@ impl TestRunnerOutput for Json {
             let mut stdout_lines = result
                 .captured_output()
                 .iter()
-                .map(|line| line.line().to_string())
+                .map(|line| match line {
+                    // Host-attributed lines fold into the single
+                    // `stdout` string with a `[host]` prefix so JSON
+                    // consumers can tell them apart from the test's
+                    // own stdout/stderr.
+                    crate::internal::CapturedOutput::Host { line, .. } => {
+                        format!("[host] {line}")
+                    }
+                    other => other.line().to_string(),
+                })
                 .collect::<Vec<_>>();
 
             let extra = match result.failure_message() {

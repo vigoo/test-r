@@ -2261,8 +2261,29 @@ impl DependencyView for Arc<dyn DependencyView + Send + Sync> {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum CapturedOutput {
-    Stdout { timestamp: SystemTime, line: String },
-    Stderr { timestamp: SystemTime, line: String },
+    Stdout {
+        timestamp: SystemTime,
+        line: String,
+    },
+    Stderr {
+        timestamp: SystemTime,
+        line: String,
+    },
+    /// Host-side output captured in the parent process during this
+    /// test's execution window. Attribution is overlap-based and
+    /// best-effort: a line that lands on the parent's redirected
+    /// stdout/stderr pipe between the parent observing this test
+    /// start and finish is attributed to it. Sources include
+    /// `HostedRpc` owner dispatch methods, owner constructors that
+    /// are still emitting after returning, and any background
+    /// threads / tasks / subprocesses they spawn.
+    ///
+    /// When tests run in parallel a single host-side line may be
+    /// attributed to multiple tests whose windows overlap.
+    Host {
+        timestamp: SystemTime,
+        line: String,
+    },
 }
 
 impl CapturedOutput {
@@ -2280,10 +2301,19 @@ impl CapturedOutput {
         }
     }
 
+    /// Constructs a `Host`-tagged capture. Used by the parent's host
+    /// capture finaliser to inject overlap-attributed host log lines
+    /// into each test's captured output vec before the formatter
+    /// renders the suite.
+    pub fn host(timestamp: SystemTime, line: String) -> Self {
+        CapturedOutput::Host { timestamp, line }
+    }
+
     pub fn timestamp(&self) -> SystemTime {
         match self {
             CapturedOutput::Stdout { timestamp, .. } => *timestamp,
             CapturedOutput::Stderr { timestamp, .. } => *timestamp,
+            CapturedOutput::Host { timestamp, .. } => *timestamp,
         }
     }
 
@@ -2291,6 +2321,7 @@ impl CapturedOutput {
         match self {
             CapturedOutput::Stdout { line, .. } => line,
             CapturedOutput::Stderr { line, .. } => line,
+            CapturedOutput::Host { line, .. } => line,
         }
     }
 }

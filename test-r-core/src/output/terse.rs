@@ -119,7 +119,10 @@ impl TerseOutputState {
         out.flush().unwrap();
         self.column += 1;
         if self.column > Terse::QUIET_MODE_MAX_COLUMN {
-            println!();
+            // Use the same terminal-aware sink as the rest of the
+            // formatter so we don't write to `std::io::stdout()` directly
+            // when host-side capture is installed.
+            let _ = writeln!(crate::host_capture::TerminalStdout);
             self.column = 0;
         }
     }

@@ -21,7 +21,7 @@ impl JUnit {
         let logfile = logfile_path.map(|path| LogFile::new(path, false));
         let stream = match logfile {
             Some(log) => StdoutOrLogFile::LogFile(log),
-            None => StdoutOrLogFile::Stdout(std::io::stdout()),
+            None => StdoutOrLogFile::stdout(),
         };
         let writer = Writer::new_with_indent(stream, b' ', 4);
         Self {
@@ -48,6 +48,11 @@ impl JUnit {
                     .iter()
                     .filter_map(|line| match line {
                         CapturedOutput::Stdout { line, .. } => Some(line.clone()),
+                        // Host-attributed lines flow into `system-out`
+                        // alongside the test's own stdout, prefixed
+                        // with `[host]` so consumers can recognise the
+                        // overlap-attribution provenance.
+                        CapturedOutput::Host { line, .. } => Some(format!("[host] {line}")),
                         CapturedOutput::Stderr { .. } => None,
                     })
                     .collect::<Vec<_>>()
@@ -68,7 +73,9 @@ impl JUnit {
                     .iter()
                     .filter_map(|line| match line {
                         CapturedOutput::Stderr { line, .. } => Some(line.clone()),
-                        CapturedOutput::Stdout { .. } => None,
+                        // Host-attributed lines are reported only once,
+                        // in `system-out`; skip them here.
+                        CapturedOutput::Stdout { .. } | CapturedOutput::Host { .. } => None,
                     })
                     .collect::<Vec<_>>()
                     .join("\n"),

@@ -8,6 +8,7 @@
 //! [`tests/sharing.rs`](../../tests/sharing.rs).
 
 pub mod cloneable_basic;
+pub mod host_capture_demo;
 pub mod hosted_basic;
 pub mod hosted_both_basic;
 pub mod hosted_both_parent_consumer;

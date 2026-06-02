@@ -8,6 +8,7 @@ mod term_progress;
 mod terse;
 
 use crate::args::{Arguments, FormatSetting};
+use crate::host_capture::{TerminalStderr, TerminalStdout};
 use crate::internal::{RegisteredTest, TestResult};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -42,7 +43,8 @@ pub trait TestRunnerOutput: Send + Sync {
     fn test_list(&self, registered_tests: &[RegisteredTest]);
 
     fn warning(&self, message: &str) {
-        eprintln!("{message}");
+        let mut err = TerminalStderr;
+        let _ = writeln!(err, "{message}");
     }
 }
 
@@ -66,24 +68,27 @@ pub(crate) fn write_failure_summary_to_stderr(
         .filter(|(_, result)| result.is_ignored())
         .count();
 
-    eprintln!();
-    eprintln!(
+    let mut err = TerminalStderr;
+    let _ = writeln!(err);
+    let _ = writeln!(
+        err,
         "test result: FAILED; {} passed; {} failed; {} ignored; finished in {:.3}s",
         passed,
         failed.len(),
         ignored,
         exec_time.as_secs_f64()
     );
-    eprintln!();
-    eprintln!("Failed tests:");
+    let _ = writeln!(err);
+    let _ = writeln!(err, "Failed tests:");
     for (test, result) in &failed {
-        eprintln!(
+        let _ = writeln!(
+            err,
             " - {} ({})",
             test.fully_qualified_name(),
             result.failure_message().as_deref().unwrap_or("???"),
         );
     }
-    eprintln!();
+    let _ = writeln!(err);
 }
 
 pub fn test_runner_output(args: &Arguments) -> Arc<dyn TestRunnerOutput> {
@@ -141,7 +146,8 @@ impl LogFile {
             path.set_file_name(format!("{stem}-{uuid}.{extension}"));
         }
 
-        eprintln!("Logging to {}", path.to_string_lossy());
+        let mut err = TerminalStderr;
+        let _ = writeln!(err, "Logging to {}", path.to_string_lossy());
 
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -153,11 +159,20 @@ impl LogFile {
 }
 
 enum StdoutOrLogFile {
-    Stdout(std::io::Stdout),
+    /// Writes the formatter's own output to the terminal stdout. When
+    /// host-side output capture is active (see `crate::host_capture`),
+    /// `TerminalStdout` routes around the capture pipe so the formatter
+    /// keeps reaching the user's terminal directly. Otherwise it falls
+    /// back to `std::io::stdout()`.
+    Stdout(TerminalStdout),
     LogFile(LogFile),
 }
 
 impl StdoutOrLogFile {
+    fn stdout() -> Self {
+        StdoutOrLogFile::Stdout(TerminalStdout)
+    }
+
     fn reset_log_file(&mut self) -> std::io::Result<bool> {
         if let StdoutOrLogFile::LogFile(logfile) = self {
             logfile.file.set_len(0)?;
