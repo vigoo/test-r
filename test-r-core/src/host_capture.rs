@@ -37,8 +37,11 @@
 #![allow(dead_code)]
 
 use std::io::{self, IsTerminal, Write};
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+#[cfg(unix)]
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::args::Arguments;
@@ -369,7 +372,7 @@ mod imp {
             if rc < 0 {
                 return Err(io::Error::last_os_error());
             }
-            return Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) });
+            Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
         }
         #[cfg(not(any(
             target_os = "linux",
