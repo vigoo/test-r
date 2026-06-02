@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-2679f66c.js";
+            window.path_to_searchindex_js = "../searchindex-109e5fe0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-16c0bd11.js"></script>
@@ -198,6 +198,17 @@
 <li><code>--show-output</code> - shows the output of all tests <strong>after they finish</strong>, regardless of whether they passed or failed</li>
 </ul>
 <p>Note that this global setting of output capturing can be overwritten on a per-test basis using the <code>#[always_capture]</code> and <code>#[never_capture]</code> attributes, as explained in the <a href="/advanced_features/per_test_configuration.html">per-test configuration chapter</a>.</p>
+<h3 id="host-side-output-capture"><a class="header" href="#host-side-output-capture">Host-side output capture</a></h3>
+<p>Some test dependencies — most notably <code>#[test_dep(scope = HostedRpc, …)]</code> owners (see <a href="/advanced_features/dependency_sharing.html">Dependency sharing strategies</a>) — run <strong>in the parent test runner process</strong>, not in the worker subprocesses that own a given test. Anything those owners write to standard output or standard error (including from background threads they spawn, or from inside <code>dispatch</code>) used to be invisible per-test: it landed on the runner’s own stdout/stderr, which is either swallowed by <code>cargo test</code> or, worse, interleaved into the structured <code>--format=json</code> / <code>junit</code> / <code>ctrf</code> streams.</p>
+<p>When output capturing is on (the default), <code>test-r</code> now also captures the parent’s own stdout/stderr in the background and attributes each line to the test(s) that were running when the line was produced — a best-effort, window-overlap based attribution. These records show up alongside the test’s own captured output, prefixed with <code>[host] </code> so the provenance is visible. In <code>--format=pretty</code>, the prefix is also rendered in a dimmed colour.</p>
+<pre><code class="language-text">---- mycrate::my_module::tests::my_test stdout/err ----
+my own println from inside the test
+[host] HOST_DISPATCH_HIT
+[host] HOST_BG_THREAD_TICK
+</code></pre>
+<p>This feature is automatic, supported on Unix and Windows, and disabled in <code>--nocapture</code> mode (where everything just goes to the terminal anyway). If a line cannot be attributed to any test (e.g. it was produced before the suite started or in a gap between tests) it is silently dropped.</p>
+<p>When tests run in parallel and their windows overlap, a single host-side line may legitimately be attributed to several tests at once.</p>
+<p>Host-side attribution happens once at suite end, so the host lines only appear in formatters that render per-test output <strong>after</strong> the suite finishes: <code>pretty</code>, <code>junit</code> and <code>ctrf</code>. The <code>json</code> formatter is a streaming format that emits a <code>test</code> event for each test as soon as it finishes — well before suite-end attribution — so its per-test <code>stdout</code> field does not include host-side lines. The <code>terse</code> formatter never reports per-test output regardless of <code>--show-output</code>, so host lines do not appear there either.</p>
 <div class="warning">
 When attaching a debugger, always pass the `--nocapture` flag to the test runner to disable output capturing, which guarantees that all the tests are executed in the single root process the debugger is attached to.
 </div>
