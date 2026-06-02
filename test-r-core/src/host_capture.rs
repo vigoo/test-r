@@ -30,16 +30,17 @@
 //! anywhere — subsequent steps will read it back at suite end and feed
 //! it through the formatters.
 //!
-//! The capture is a no-op in IPC worker subprocesses, in `--nocapture`
-//! mode, and on non-Unix targets (Windows support deferred to a
-//! follow-up step).
+//! The capture is a no-op in IPC worker subprocesses and in
+//! `--nocapture` mode. It is supported on Unix (via `dup`/`dup2`) and
+//! on Windows (via `GetStdHandle`/`SetStdHandle` against an anonymous
+//! `CreatePipe`); on other targets it falls back to a no-op stub.
 
 #![allow(dead_code)]
 
 use std::io::{self, IsTerminal, Write};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -257,6 +258,12 @@ mod imp {
             if self.finalized {
                 return;
             }
+            // Flush any buffered Rust stdio writes BEFORE we point
+            // fd 1/2 back at the real terminal, so a partial `print!`
+            // without trailing newline doesn't end up on the terminal
+            // instead of inside the host-capture stream.
+            let _ = io::stdout().flush();
+            let _ = io::stderr().flush();
             let _ = dup2_overwrite(self.terminal_stdout_fd.as_raw_fd(), libc::STDOUT_FILENO);
             let _ = dup2_overwrite(self.terminal_stderr_fd.as_raw_fd(), libc::STDERR_FILENO);
             clear_terminal_fds();
@@ -499,22 +506,352 @@ mod imp {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+mod imp {
+    use super::*;
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    use std::sync::Arc;
+    use std::thread::{self, JoinHandle};
+    use std::time::Instant;
+    use uuid::Uuid;
+    use windows_sys::Win32::Foundation::{
+        DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, SetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    /// Active capture handle on Windows. Drop restores the original
+    /// `STD_OUTPUT_HANDLE` / `STD_ERROR_HANDLE` values, closes the held
+    /// write end of the pipe (causing the reader to see `BROKEN_PIPE`
+    /// and exit), joins the reader thread, and best-effort deletes the
+    /// spill file.
+    pub(super) struct HostCaptureImpl {
+        /// Saved values of the OS-level stdio slots. These are raw
+        /// handle pointers we DO NOT own — `SetStdHandle` only swaps
+        /// pointers, it does not change ownership. We restore them on
+        /// teardown.
+        original_stdout: HANDLE,
+        original_stderr: HANDLE,
+        /// One reference to the pipe write end retained so the pipe
+        /// stays open even if some misbehaving code closes the swapped
+        /// `STD_*_HANDLE`. Wrapped in `Option` so shutdown can `take()`
+        /// it out and drop it before joining the reader.
+        retained_write_end: Option<OwnedHandle>,
+        reader: Option<JoinHandle<()>>,
+        spill_path: PathBuf,
+        epoch: Instant,
+        epoch_wall: std::time::SystemTime,
+        finalized: bool,
+    }
+
+    pub(super) fn install(_args: &Arguments) -> io::Result<HostCaptureImpl> {
+        // ----- Phase 1: setup that DOES NOT touch STD_*_HANDLE -----
+
+        // Snapshot the current STD handles so we can restore them on
+        // teardown. `GetStdHandle` returns the raw value stored in the
+        // OS stdio slot; we do not own it and must not close it.
+        let original_stdout = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        if original_stdout == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        let original_stderr = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+        if original_stderr == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+
+        // Create an anonymous pipe. With null `SECURITY_ATTRIBUTES`,
+        // the returned handles are NOT inheritable, so worker
+        // subprocesses we later spawn cannot inherit the write end and
+        // hold it open past suite end (which would prevent the reader
+        // from seeing EOF and hang `finalize`).
+        let mut read_end: HANDLE = std::ptr::null_mut();
+        let mut write_end: HANDLE = std::ptr::null_mut();
+        let rc = unsafe { CreatePipe(&mut read_end, &mut write_end, std::ptr::null(), 0) };
+        if rc == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `CreatePipe` returned two fresh kernel handles owned
+        // by us; wrap each in `OwnedHandle` so RAII closes them on any
+        // error path below.
+        let read_end = unsafe { OwnedHandle::from_raw_handle(read_end as RawHandle) };
+        let write_end = unsafe { OwnedHandle::from_raw_handle(write_end as RawHandle) };
+
+        // Spill file: <tmpdir>/test-r-host-log-<uuid>.bin
+        let spill_path =
+            std::env::temp_dir().join(format!("test-r-host-log-{}.bin", Uuid::new_v4()));
+        let spill_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&spill_path)?;
+        let spill_file = Arc::new(Mutex::new(spill_file));
+
+        // Capture the monotonic + wall epochs at install time. They
+        // form the basis for per-test `HostWindow`s and for the
+        // wall-clock timestamps surfaced on `CapturedOutput::Host`.
+        let epoch = Instant::now();
+        let epoch_wall = std::time::SystemTime::now();
+
+        // From here on, any fallible step must remove the spill file on
+        // failure; centralise that via a closure.
+        let setup = || -> io::Result<JoinHandle<()>> {
+            install_terminal_handles(original_stdout, original_stderr)?;
+
+            // Spawn the reader BEFORE redirecting STD_*_HANDLE so writes
+            // into the pipe never block on a full pipe buffer with no
+            // reader. If the redirect below fails the `JoinHandle` is
+            // dropped (detached) and the reader exits as soon as
+            // `write_end` is dropped at function return.
+            let read_end_file = File::from(read_end);
+            let spill_clone = spill_file.clone();
+            let epoch_clone = epoch;
+            let reader = thread::Builder::new()
+                .name("test-r-host-capture".to_string())
+                .spawn(move || {
+                    reader_loop(read_end_file, spill_clone, epoch_clone);
+                })?;
+            Ok(reader)
+        };
+
+        let reader = match setup() {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = std::fs::remove_file(&spill_path);
+                return Err(e);
+            }
+        };
+
+        // ----- Phase 2: redirect, with explicit rollback -----
+
+        // Helper to drop the write end, join the reader so it stops
+        // holding the spill file open, and then best-effort delete the
+        // spill file. On Windows you cannot delete a file that is still
+        // open in this process, so the join must come BEFORE the
+        // `remove_file` call or the spill file would leak in temp.
+        let cleanup_on_failure = |write_end: OwnedHandle, reader: JoinHandle<()>| {
+            drop(write_end);
+            let _ = reader.join();
+            let _ = std::fs::remove_file(&spill_path);
+        };
+
+        let write_handle: HANDLE = write_end.as_raw_handle() as HANDLE;
+        if unsafe { SetStdHandle(STD_OUTPUT_HANDLE, write_handle) } == 0 {
+            let e = io::Error::last_os_error();
+            cleanup_on_failure(write_end, reader);
+            return Err(e);
+        }
+        if unsafe { SetStdHandle(STD_ERROR_HANDLE, write_handle) } == 0 {
+            let e = io::Error::last_os_error();
+            // Roll STD_OUTPUT_HANDLE back to the saved terminal value
+            // before we bail so the process doesn't end up writing into
+            // a pipe with a detached reader.
+            unsafe {
+                let _ = SetStdHandle(STD_OUTPUT_HANDLE, original_stdout);
+            }
+            cleanup_on_failure(write_end, reader);
+            return Err(e);
+        }
+
+        Ok(HostCaptureImpl {
+            original_stdout,
+            original_stderr,
+            retained_write_end: Some(write_end),
+            reader: Some(reader),
+            spill_path,
+            epoch,
+            epoch_wall,
+            finalized: false,
+        })
+    }
+
+    impl HostCaptureImpl {
+        pub fn spill_path(&self) -> &Path {
+            &self.spill_path
+        }
+
+        pub fn epoch(&self) -> Instant {
+            self.epoch
+        }
+
+        pub fn epoch_wall(&self) -> std::time::SystemTime {
+            self.epoch_wall
+        }
+
+        /// Shared shutdown path for `finalize` and `Drop`. Idempotent.
+        fn shutdown_pipe(&mut self) {
+            if self.finalized {
+                return;
+            }
+            // Flush any buffered Rust stdio writes BEFORE we point
+            // STD_*_HANDLE back at the real terminal, so a partial
+            // `print!` without trailing newline doesn't end up on the
+            // terminal instead of inside the host-capture stream.
+            let _ = io::stdout().flush();
+            let _ = io::stderr().flush();
+            unsafe {
+                let _ = SetStdHandle(STD_OUTPUT_HANDLE, self.original_stdout);
+                let _ = SetStdHandle(STD_ERROR_HANDLE, self.original_stderr);
+            }
+            clear_terminal_handles();
+            drop(self.retained_write_end.take());
+            if let Some(handle) = self.reader.take() {
+                let _ = handle.join();
+            }
+            self.finalized = true;
+        }
+
+        pub fn finalize_in_place(&mut self) -> Vec<super::HostLogRecord> {
+            self.shutdown_pipe();
+            let records = read_spill_file(&self.spill_path).unwrap_or_default();
+            let _ = std::fs::remove_file(&self.spill_path);
+            records
+        }
+    }
+
+    impl Drop for HostCaptureImpl {
+        fn drop(&mut self) {
+            self.shutdown_pipe();
+            let _ = std::fs::remove_file(&self.spill_path);
+        }
+    }
+
+    /// Duplicates a raw Win32 `HANDLE` into a fresh, non-inheritable
+    /// `OwnedHandle` that closes via `CloseHandle` when dropped.
+    ///
+    /// The original `HANDLE` returned from `GetStdHandle` is NOT owned
+    /// by us — it is the kernel's per-process stdio slot value. Calling
+    /// `CloseHandle` on it would close stdio for the whole process.
+    /// Duplicating gives us a separate handle the formatter statics can
+    /// own and free safely.
+    pub(super) fn duplicate_handle_owned(h: HANDLE) -> io::Result<OwnedHandle> {
+        let process = unsafe { GetCurrentProcess() };
+        let mut new_handle: HANDLE = std::ptr::null_mut();
+        let rc = unsafe {
+            DuplicateHandle(
+                process,
+                h,
+                process,
+                &mut new_handle,
+                0,
+                0, // bInheritHandle: FALSE — formatter handles must not
+                // leak into worker subprocesses.
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if rc == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `DuplicateHandle` filled `new_handle` with a fresh
+        // kernel handle owned by us; wrap it in `OwnedHandle` so it is
+        // closed via `CloseHandle` on drop.
+        Ok(unsafe { OwnedHandle::from_raw_handle(new_handle as RawHandle) })
+    }
+
+    /// Reader thread body: line-buffer the pipe and spill records to
+    /// `spill_file`. Exits on EOF (when the last write end is closed)
+    /// or on unrecoverable I/O error.
+    ///
+    /// Identical record format to the Unix reader (see Unix `imp`).
+    fn reader_loop(read_end: File, spill_file: Arc<Mutex<File>>, epoch: Instant) {
+        let mut reader = BufReader::with_capacity(64 * 1024, read_end);
+        let mut line = Vec::with_capacity(256);
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) => break, // EOF — all write ends closed
+                Ok(_) => {
+                    if line.last() == Some(&b'\n') {
+                        line.pop();
+                    }
+                    if line.last() == Some(&b'\r') {
+                        line.pop();
+                    }
+                    let elapsed = epoch.elapsed().as_nanos();
+                    let ts_ns = u64::try_from(elapsed).unwrap_or(u64::MAX);
+                    let stream_tag: u8 = 0;
+                    let len = u32::try_from(line.len()).unwrap_or(u32::MAX) as usize;
+                    let len_u32 = len as u32;
+                    let mut header = [0u8; 8 + 1 + 4];
+                    header[..8].copy_from_slice(&ts_ns.to_le_bytes());
+                    header[8] = stream_tag;
+                    header[9..13].copy_from_slice(&len_u32.to_le_bytes());
+                    if let Ok(mut f) = spill_file.lock() {
+                        let _ = f.write_all(&header);
+                        let _ = f.write_all(&line[..len]);
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                // BROKEN_PIPE is the Windows equivalent of EOF here
+                // (all write ends closed). Treat it as a normal exit.
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => break,
+                Err(_) => break,
+            }
+        }
+        if let Ok(mut f) = spill_file.lock() {
+            let _ = f.flush();
+        }
+    }
+
+    /// Parses the spill file written by [`reader_loop`] into a vec of
+    /// [`super::HostLogRecord`]s in file order. Identical layout to the
+    /// Unix reader; truncated trailing records are silently dropped.
+    pub(super) fn read_spill_file(path: &super::Path) -> io::Result<Vec<super::HostLogRecord>> {
+        use std::io::Read;
+        let mut file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+
+        let mut out = Vec::new();
+        let mut pos = 0;
+        while pos + 13 <= bytes.len() {
+            let mut ts_buf = [0u8; 8];
+            ts_buf.copy_from_slice(&bytes[pos..pos + 8]);
+            let elapsed_ns = u64::from_le_bytes(ts_buf);
+            let stream_tag = bytes[pos + 8];
+            let mut len_buf = [0u8; 4];
+            len_buf.copy_from_slice(&bytes[pos + 9..pos + 13]);
+            let line_len = u32::from_le_bytes(len_buf) as usize;
+            pos += 13;
+            if pos + line_len > bytes.len() {
+                break;
+            }
+            let line_bytes = &bytes[pos..pos + line_len];
+            pos += line_len;
+            out.push(super::HostLogRecord {
+                elapsed: super::Duration::from_nanos(elapsed_ns),
+                stream_tag,
+                line: String::from_utf8_lossy(line_bytes).into_owned(),
+            });
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 mod imp {
     use super::*;
     use std::path::Path;
     use std::time::Instant;
 
-    /// No-op handle on non-Unix targets. Host-side prints continue to
-    /// reach stdout/stderr directly (the pre-existing behaviour), and
-    /// the formatter accessors below transparently fall back to
-    /// `io::stdout()` / `io::stderr()`.
+    /// No-op handle on targets we don't yet support. Host-side prints
+    /// continue to reach stdout/stderr directly (the pre-existing
+    /// behaviour), and the formatter accessors below transparently
+    /// fall back to `io::stdout()` / `io::stderr()`.
     pub(super) struct HostCaptureImpl;
 
     pub(super) fn install(_args: &Arguments) -> io::Result<HostCaptureImpl> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "test-r host-side output capture is currently Unix-only",
+            "test-r host-side output capture is not supported on this target",
         ))
     }
 
@@ -531,7 +868,6 @@ mod imp {
             std::time::SystemTime::now()
         }
 
-        /// Non-Unix no-op: no spill file to read; returns an empty vec.
         pub fn finalize_in_place(&mut self) -> Vec<super::HostLogRecord> {
             Vec::new()
         }
@@ -672,7 +1008,8 @@ pub(crate) fn attribute_records_to_tests(
 ///   the terminal);
 /// - this attempt won't actually spawn workers (so there is no
 ///   structured per-test capture to align host output against);
-/// - the target is non-Unix (Windows support deferred);
+/// - the target is neither Unix nor Windows (other targets fall back
+///   to a no-op stub);
 /// - install failed for any I/O reason (we silently fall back to the
 ///   pre-existing behaviour so a broken capture never breaks the run).
 ///
@@ -777,16 +1114,58 @@ fn clear_terminal_fds() {
     // statics hold — which is exactly what we want for any late prints.
 }
 
-#[cfg(not(unix))]
-fn install_terminal_fds(
-    _stdout_fd: &std::os::raw::c_int,
-    _stderr_fd: &std::os::raw::c_int,
+#[cfg(windows)]
+static TERMINAL_STDOUT: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
+#[cfg(windows)]
+static TERMINAL_STDERR: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
+
+#[cfg(windows)]
+fn install_terminal_handles(
+    stdout_handle: windows_sys::Win32::Foundation::HANDLE,
+    stderr_handle: windows_sys::Win32::Foundation::HANDLE,
 ) -> io::Result<()> {
+    // Skip if already installed by an earlier retry attempt — the
+    // existing duplicated handles still target the real terminal that
+    // the `original_stdout` / `original_stderr` raw values we were just
+    // handed also point at.
+    if TERMINAL_STDOUT.get().is_some() && TERMINAL_STDERR.get().is_some() {
+        return Ok(());
+    }
+    let stdout_owned = imp::duplicate_handle_owned(stdout_handle)?;
+    let stderr_owned = match imp::duplicate_handle_owned(stderr_handle) {
+        Ok(h) => h,
+        Err(e) => {
+            // First dup succeeded but second failed: drop the first so
+            // the handle is closed and not leaked.
+            drop(stdout_owned);
+            return Err(e);
+        }
+    };
+    // `File::from(OwnedHandle)` takes ownership; the resulting File
+    // closes the handle via `CloseHandle` on drop. Writes go straight
+    // through `WriteFile` against the original terminal handle without
+    // touching `STD_OUTPUT_HANDLE` / `STD_ERROR_HANDLE`, which is
+    // exactly what we need after the pipe has taken those slots over.
+    let stdout_file = std::fs::File::from(stdout_owned);
+    let stderr_file = std::fs::File::from(stderr_owned);
+    if let Err(rejected) = TERMINAL_STDOUT.set(Mutex::new(stdout_file)) {
+        drop(rejected);
+    }
+    if let Err(rejected) = TERMINAL_STDERR.set(Mutex::new(stderr_file)) {
+        drop(rejected);
+    }
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn clear_terminal_fds() {}
+#[cfg(windows)]
+fn clear_terminal_handles() {
+    // Same rationale as the Unix `clear_terminal_fds`: `OnceLock` has
+    // no stable `take` API, so the statics stay populated for the rest
+    // of the process. After Drop, `STD_OUTPUT_HANDLE` / `STD_ERROR_HANDLE`
+    // are restored, and the statics continue to hold their duplicates
+    // of those original handles, so any late prints still reach the
+    // real terminal.
+}
 
 /// `Write`-impl that targets the real terminal stdout: the dup'd
 /// terminal fd when host capture is active, or `io::stdout()` otherwise.
@@ -798,7 +1177,7 @@ pub(crate) struct TerminalStdout;
 pub(crate) struct TerminalStderr;
 
 impl Write for TerminalStdout {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match TERMINAL_STDOUT.get() {
             Some(mtx) => mtx.lock().unwrap().write(buf),
@@ -806,7 +1185,7 @@ impl Write for TerminalStdout {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn flush(&mut self) -> io::Result<()> {
         match TERMINAL_STDOUT.get() {
             Some(mtx) => mtx.lock().unwrap().flush(),
@@ -814,19 +1193,19 @@ impl Write for TerminalStdout {
         }
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         io::stdout().write(buf)
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn flush(&mut self) -> io::Result<()> {
         io::stdout().flush()
     }
 }
 
 impl Write for TerminalStderr {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match TERMINAL_STDERR.get() {
             Some(mtx) => mtx.lock().unwrap().write(buf),
@@ -834,7 +1213,7 @@ impl Write for TerminalStderr {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn flush(&mut self) -> io::Result<()> {
         match TERMINAL_STDERR.get() {
             Some(mtx) => mtx.lock().unwrap().flush(),
@@ -842,18 +1221,18 @@ impl Write for TerminalStderr {
         }
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         io::stderr().write(buf)
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn flush(&mut self) -> io::Result<()> {
         io::stderr().flush()
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use super::*;
     use crate::internal::{

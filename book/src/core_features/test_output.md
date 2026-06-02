@@ -39,7 +39,7 @@ my own println from inside the test
 [host] HOST_BG_THREAD_TICK
 ```
 
-This feature is automatic, currently Unix-only, and disabled in `--nocapture` mode (where everything just goes to the terminal anyway). If a line cannot be attributed to any test (e.g. it was produced before the suite started or in a gap between tests) it is silently dropped.
+This feature is automatic, supported on Unix and Windows, and disabled in `--nocapture` mode (where everything just goes to the terminal anyway). If a line cannot be attributed to any test (e.g. it was produced before the suite started or in a gap between tests) it is silently dropped.
 
 When tests run in parallel and their windows overlap, a single host-side line may legitimately be attributed to several tests at once.
 
