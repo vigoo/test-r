@@ -24,7 +24,7 @@ jobs:
       releases: ${{ steps.release-plz.outputs.releases }}
       releases_created: ${{ steps.release-plz.outputs.releases_created }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -89,7 +89,7 @@ jobs:
             os: windows-2022
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ needs.extract-cargo-test-r-tag.outputs.tag }}
       - uses: actions-rust-lang/setup-rust-toolchain@v1
