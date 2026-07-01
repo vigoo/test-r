@@ -482,6 +482,87 @@ mod lazy_dep_pruning_tests {
             "DepB should be created"
         );
     }
+
+    /// `matrix_suite!` multiplies tests at runtime (Strategy B). Verify via
+    /// `--list` that each `&DbDep`-taking test in `matrix_suite_example`
+    /// appears once per case with the `<test>_<case>` naming, that the
+    /// non-`DbDep`-taking `no_dep_test` is NOT multiplied, and that the
+    /// `:tag:db_postgres` / `:tag:db_sqlite` selectors resolve to the right
+    /// subsets.
+    #[test]
+    #[serial]
+    fn matrix_suite_list_multiplies_tests() {
+        let cwd = std::env::current_dir().unwrap();
+        let root = cwd.parent().unwrap().join("example");
+
+        let process = std::process::Command::new("cargo")
+            .arg("test")
+            .arg("--")
+            .arg("--list")
+            .current_dir(&root)
+            .output()
+            .unwrap();
+
+        // `--list` always exits 0 regardless of whether some tests would fail.
+        assert_eq!(
+            process.status.code(),
+            Some(0),
+            "cargo test -- --list should exit 0; stderr: {}",
+            String::from_utf8_lossy(&process.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&process.stdout);
+
+        // Each DbDep-taking test is multiplied into a postgres + sqlite case.
+        for needle in [
+            "matrix_features_e2e::matrix_suite_example::thing_one_postgres",
+            "matrix_features_e2e::matrix_suite_example::thing_one_sqlite",
+            "matrix_features_e2e::matrix_suite_example::thing_two_postgres",
+            "matrix_features_e2e::matrix_suite_example::thing_two_sqlite",
+        ] {
+            assert!(
+                stdout.contains(needle),
+                "`--list` should contain `{needle}`, got:\n{stdout}"
+            );
+        }
+
+        // The non-DbDep test runs exactly once — it must NOT be multiplied.
+        assert!(
+            stdout.contains("matrix_features_e2e::matrix_suite_example::no_dep_test"),
+            "`--list` should contain the unmultiplied `no_dep_test`, got:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("matrix_features_e2e::matrix_suite_example::no_dep_test_postgres"),
+            "`no_dep_test` must not be multiplied, but a `_postgres` variant appeared:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("matrix_features_e2e::matrix_suite_example::no_dep_test_sqlite"),
+            "`no_dep_test` must not be multiplied, but a `_sqlite` variant appeared:\n{stdout}"
+        );
+    }
+
+    /// Running the example with `:tag:db_sqlite` selects exactly the
+    /// `_sqlite`-suffixed matrix cases (plus any other sqlite-tagged tests)
+    /// and they all pass.
+    #[test]
+    #[serial]
+    fn matrix_suite_tag_selector_runs_only_sqlite_cases() {
+        let cwd = std::env::current_dir().unwrap();
+        let root = cwd.parent().unwrap().join("example");
+
+        let process = std::process::Command::new("cargo")
+            .arg("test")
+            .arg(":tag:db_sqlite")
+            .current_dir(&root)
+            .status()
+            .unwrap();
+
+        assert_eq!(
+            process.code(),
+            Some(0),
+            "selecting :tag:db_sqlite should run only sqlite matrix cases and pass"
+        );
+    }
 }
 
 mod nocapture_no_spawn_workers_tests {

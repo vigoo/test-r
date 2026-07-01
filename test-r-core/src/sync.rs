@@ -59,7 +59,12 @@ pub fn test_runner() -> ExitCode {
         .collect();
 
     if args.list {
-        output.test_list(&all_tests);
+        // Apply suite properties (including runtime matrix-suite multiplication)
+        // before listing, so matrix-multiplied cases appear in `--list` output
+        // with their `<test>_<case>` names and `:tag:`-selectable auto-tags.
+        let tests_with_props =
+            internal::apply_suite_props_to_tests(&all_tests, &registered_testsuite_props);
+        output.test_list(&tests_with_props);
         ExitCode::SUCCESS
     } else {
         let mut remaining_retries = args.flaky_run.unwrap_or(1);

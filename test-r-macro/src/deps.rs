@@ -1514,7 +1514,7 @@ fn get_dependency_param_from_pat_type(typ: &PatType) -> TypePath {
 }
 
 #[derive(Debug, Clone)]
-enum DependencyTag {
+pub(crate) enum DependencyTag {
     None,
     Tagged(String),
     Matrix(Ident),
@@ -1730,7 +1730,7 @@ fn type_to_string(typ: &Type, optional_tag: DependencyTag) -> String {
     }
 }
 
-fn type_path_to_string(dep_type: &TypePath, optional_tag: DependencyTag) -> String {
+pub(crate) fn type_path_to_string(dep_type: &TypePath, optional_tag: DependencyTag) -> String {
     let merged_ident = dep_type
         .path
         .segments

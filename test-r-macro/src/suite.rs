@@ -1,12 +1,10 @@
-use crate::helpers::is_testr_attribute;
+use crate::deps::{DependencyTag, type_path_to_string};
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
-use quote::ToTokens;
-use quote::quote;
+use quote::{ToTokens, quote};
+use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::spanned::Spanned;
-use syn::{Expr, ItemMod, LitInt, LitStr, Token, parse_macro_input};
-use syn::{FnArg, Item, ItemFn, Type, parse_quote};
+use syn::{Expr, ItemMod, LitInt, LitStr, Token, Type, parse_macro_input};
 
 pub fn tag(attr: TokenStream, item: TokenStream) -> TokenStream {
     if let Ok(ast) = syn::parse::<ItemMod>(item.clone()) {
@@ -264,150 +262,102 @@ fn parse_timeout_millis(attr: TokenStream) -> u64 {
     }
 }
 
-/// Parsed arguments of `#[matrix_suite(<dim>, <DepType>)]`.
-struct MatrixSuiteArgs {
+/// Parsed input of `matrix_suite!(<module>, <dim>, <DepType>)`.
+struct MatrixSuiteInput {
+    module: Ident,
     dim: Ident,
     dep_type: Type,
 }
 
-impl syn::parse::Parse for MatrixSuiteArgs {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+impl Parse for MatrixSuiteInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let module: Ident = input.parse()?;
+        input.parse::<Token![,]>()?;
         let dim: Ident = input.parse()?;
         input.parse::<Token![,]>()?;
         let dep_type: Type = input.parse()?;
-        Ok(MatrixSuiteArgs { dim, dep_type })
+        Ok(MatrixSuiteInput {
+            module,
+            dim,
+            dep_type,
+        })
     }
 }
 
-/// Render a path type to a stable comparison key. This is used to match a
-/// `#[test]` fn's `&<DepType>` parameter against the `<DepType>` named in the
-/// `#[matrix_suite(...)]` attribute, so we compare the path types as written by
-/// the user (case-sensitive, full path, including generic arguments).
-fn type_path_key(ty: &Type) -> Option<String> {
-    match ty {
-        Type::Path(p) => Some(p.to_token_stream().to_string()),
-        Type::Paren(inner) => type_path_key(&inner.elem),
-        _ => None,
-    }
-}
-
-/// If `ty` is `&T` where `T` is a path type, return its path key. Returns
-/// `None` for by-value parameters, mutable references, and anything more exotic
-/// (references to slices, tuples, etc.) which the matrix machinery does not
-/// support anyway.
-fn param_type_key(ty: &Type) -> Option<String> {
-    match ty {
-        Type::Reference(r) if r.mutability.is_none() => type_path_key(&r.elem),
-        _ => None,
-    }
-}
-
-/// `#[matrix_suite(<dim>, <DepType>)]` — see [`crate::matrix_suite`] in
+/// `matrix_suite!(<module>, <dim>, <DepType>)` — see [`crate::matrix_suite`] in
 /// `lib.rs` for the user-facing docs.
 ///
-/// Strategy A (compile-time module rewrite): walk the annotated module's
-/// items, find each `#[test] fn` whose signature has a `&<DepType>` parameter
-/// without an existing `#[dimension]` / `#[tagged_as]`, and inject
-/// `#[dimension(<dim>)]` onto that parameter. The inner `#[test]` macro then
-/// expands each such fn through the existing per-function `matrix_test_impl`,
-/// multiplying it into one test per case and — courtesy of Feature 1 —
-/// auto-tagging each generated case with `<dim>_<case>`.
+/// Function-like form (Strategy B, runtime test multiplication). Unlike
+/// `tag_suite!` / `sequential_suite!`, the registration needs the dimension's
+/// case list at runtime, so we synthesize a `#[cfg(test)]` ctor that:
+///   1. calls the `test_r_get_dep_tags_<dim>()` helper emitted by
+///      `define_matrix_dimension!` (it must be in scope at the invocation
+///      site — typically the same parent module that declared the dimension),
+///   2. maps each `(case_label, dep_name, _getter, auto_tag)` tuple to a
+///      `test_r::core::MatrixCase` (dropping the per-case getter, since the
+///      multiplied test reuses its own compiled getter with the dependency
+///      view aliased to the case's tagged dep name), and
+///   3. registers a suite-level `Matrix` property keyed by `<module>` and the
+///      untagged dep name derived from `<DepType>`.
 ///
-/// We choose Strategy A over the runtime-multiplication alternative because
-/// the per-function matrix generator is already the single, well-tested
-/// expansion point that knows how to swap a dimension parameter's dep getter
-/// per case. Duplicating that logic at runtime would require re-resolving the
-/// case-specific tagged dep inside the (already-compiled) test closure, which
-/// is not possible without macro support. Keeping it compile-time also lets
-/// `matrix_suite` compose with Feature 1's auto-tags for free.
-///
-/// Note on syntax: this is an **attribute** macro on the inline module, not a
-/// function-like `matrix_suite!(name, dim)` invocation referencing a separate
-/// module item. A function-like macro that only receives the module's name
-/// cannot rewrite the module's test fns at expansion time (Rust macros
-/// cannot introspect sibling items), so the post-hoc function-like form used
-/// by `tag_suite!` / `sequential_suite!` is not available here.
-pub fn matrix_suite(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(attr as MatrixSuiteArgs);
-    let dim = args.dim;
-    let target_key = match type_path_key(&args.dep_type) {
-        Some(key) => key,
-        None => {
-            let msg = format!(
-                "matrix_suite expects a concrete dependency type, got `{}`",
-                args.dep_type.to_token_stream()
+/// `<module>` is referenced by name only, so it may be a file-based module
+/// (`mod worker;`) or a directory module (`mod api;` with `api/mod.rs`); no
+/// compile-time introspection of the module body is performed.
+pub fn matrix_suite(input: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(input as MatrixSuiteInput);
+
+    let module_str = args.module.to_string();
+    let dim_str = args.dim.to_string();
+    let get_dep_tags_fn = Ident::new(&format!("test_r_get_dep_tags_{dim_str}"), Span::call_site());
+
+    let type_path = match &args.dep_type {
+        Type::Path(p) => p.clone(),
+        Type::Paren(inner) => match &*inner.elem {
+            Type::Path(p) => p.clone(),
+            _ => return mismatched_dep_type(&args.dep_type),
+        },
+        _ => return mismatched_dep_type(&args.dep_type),
+    };
+    let dep_name_str = type_path_to_string(&type_path, DependencyTag::None);
+    let dep_name_str_lit = dep_name_str.clone();
+
+    let random = rand::random::<u64>();
+    let register_ident = Ident::new(
+        &format!("test_r_register_mod_{module_str}_matrix_{random}"),
+        Span::call_site(),
+    );
+
+    let result = quote! {
+        #[cfg(test)]
+        #[test_r::ctor::ctor(crate_path=::test_r::ctor)]
+        fn #register_ident() {
+            let __cases: Vec<test_r::core::MatrixCase> = #get_dep_tags_fn()
+                .into_iter()
+                .map(|(__case_label, __dep_name, _getter, __auto_tag)| {
+                    test_r::core::MatrixCase {
+                        case_label: __case_label,
+                        dep_name: __dep_name,
+                        auto_tag: __auto_tag,
+                    }
+                })
+                .collect();
+            test_r::core::register_suite_matrix(
+                #module_str,
+                module_path!(),
+                #dep_name_str_lit.to_string(),
+                __cases,
             );
-            return syn::Error::new_spanned(&args.dep_type, msg)
-                .to_compile_error()
-                .into();
         }
     };
-
-    let mut item_mod: ItemMod = parse_macro_input!(item as ItemMod);
-
-    let content = match &mut item_mod.content {
-        Some(content) => content,
-        None => {
-            return syn::Error::new(
-                item_mod.span(),
-                "matrix_suite must be applied to an inline module (`mod x { ... }`), \
-                 not a non-inlined module (`mod x;`)",
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
-
-    for item in content.1.iter_mut() {
-        let item_fn = match item {
-            Item::Fn(f) => f,
-            _ => continue,
-        };
-
-        let is_test = item_fn.attrs.iter().any(|a| is_testr_attribute(a, "test"));
-        let is_bench = item_fn.attrs.iter().any(|a| is_testr_attribute(a, "bench"));
-        // Matrix expansion for benches is not supported (see matrix_test_impl),
-        // and a fn that is not a #[test] at all is left entirely alone.
-        if !is_test || is_bench {
-            continue;
-        }
-
-        inject_dimension_attrs(item_fn, &dim, &target_key);
-    }
-
-    quote! { #item_mod }.into()
+    result.into()
 }
 
-/// Inject `#[dimension(<dim>)]` onto every `&<target_key>` parameter of `fn`
-/// that does not already carry a `#[dimension]` or `#[tagged_as]` attribute.
-/// Parameters of any other type, and parameters already tagged/dimensioned,
-/// are left untouched.
-fn inject_dimension_attrs(item_fn: &mut ItemFn, dim: &Ident, target_key: &str) {
-    // Only rewrite if the function has at least one matching parameter; we
-    // touch the signature in place so the inner `#[test]` macro sees the
-    // injected `#[dimension(...)]` helper attribute when it expands.
-    for fn_arg in item_fn.sig.inputs.iter_mut() {
-        let pat_type = match fn_arg {
-            FnArg::Typed(t) => t,
-            _ => continue,
-        };
-
-        let already_marked = pat_type
-            .attrs
-            .iter()
-            .any(|a| is_testr_attribute(a, "dimension") || is_testr_attribute(a, "tagged_as"));
-        if already_marked {
-            continue;
-        }
-
-        let Some(param_key) = param_type_key(&pat_type.ty) else {
-            continue;
-        };
-        if param_key != target_key {
-            continue;
-        }
-
-        let dim_attr: syn::Attribute = parse_quote!(#[dimension(#dim)]);
-        pat_type.attrs.push(dim_attr);
-    }
+fn mismatched_dep_type(dep_type: &Type) -> TokenStream {
+    let msg = format!(
+        "matrix_suite expects a concrete dependency type, got `{}`",
+        dep_type.to_token_stream()
+    );
+    syn::Error::new_spanned(dep_type, msg)
+        .to_compile_error()
+        .into()
 }

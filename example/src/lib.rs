@@ -52,7 +52,7 @@ mod tests {
 #[cfg(test)]
 mod matrix_suite_generic_type_matching_repro {
     use std::marker::PhantomData;
-    use test_r::test_dep;
+    use test_r::{define_matrix_dimension, test_dep};
 
     pub struct Primary;
     pub struct Secondary;
@@ -70,18 +70,20 @@ mod matrix_suite_generic_type_matching_repro {
         }
     }
 
-    #[test_r::matrix_suite(kind, Wrapped<Primary>)]
+    // The dimension helper must live in the same module that invokes
+    // `matrix_suite!`, so the function-like macro's generated ctor can call
+    // `test_r_get_dep_tags_kind()`.
+    define_matrix_dimension!(kind: Wrapped<Primary> -> "primary");
+
     mod suite {
         use super::{Primary, Secondary, Wrapped};
         use std::marker::PhantomData;
-        use test_r::{define_matrix_dimension, test, test_dep};
+        use test_r::{test, test_dep};
 
         test_r::inherit_test_dep!(
             #[tagged_as("primary")]
             Wrapped<Primary>
         );
-
-        define_matrix_dimension!(kind: Wrapped<Primary> -> "primary");
 
         #[test_dep]
         fn create_secondary() -> Wrapped<Secondary> {
@@ -91,11 +93,20 @@ mod matrix_suite_generic_type_matching_repro {
             }
         }
 
+        // Depends on `wrappedsecondary`, not the dimension's `wrappedprimary`,
+        // so it is NOT multiplied by the matrix suite — it runs exactly once.
         #[test]
         fn secondary_dependency_is_not_part_of_primary_matrix(dep: &Wrapped<Secondary>) {
             assert_eq!(dep.value, "secondary");
         }
     }
+
+    // Function-like form: registers a runtime `Matrix` suite property for
+    // `suite` keyed by the untagged dep name `wrappedprimary`. No test in
+    // `suite` depends on that dep, so nothing is multiplied here — this just
+    // exercises that `matrix_suite!` accepts a generic dep type without
+    // breaking compilation or polluting unrelated tests.
+    test_r::matrix_suite!(suite, kind, Wrapped<Primary>);
 }
 
 mod inner {
@@ -445,19 +456,36 @@ mod matrix_features_e2e {
         }
     }
 
-    // ----- Feature 2: `#[matrix_suite]` rewrites the whole module -----
+    // ----- Feature 2: `matrix_suite!` multiplies the whole module at runtime -----
 
-    /// `#[matrix_suite(db, DbDep)]` injects `#[dimension(db)]` onto every
-    /// `&DbDep` parameter of each `#[test]` in this module before the inner
-    /// `#[test]` macro expands. Tests that do not take `&DbDep` are left alone.
+    // An untagged `DbDep` constructor. Its body is dead code for the matrix'd
+    // tests below (their dependency list is rewritten to the tagged variant
+    // and the compiled getter is aliased to that tagged dep at runtime), but
+    // the *getter symbol* `test_r_get_dep_dbdep` it emits must exist in scope
+    // so the `#[test]` expansion of `thing_one`/`thing_two` (which take an
+    // untagged `&DbDep`) compiles. It also serves as the real backend for any
+    // test that asks for an untagged `&DbDep` directly.
+    #[test_dep]
+    fn create_db() -> DbDep {
+        DbDep { flavor: "postgres" }
+    }
+
+    /// `matrix_suite!(matrix_suite_example, db, DbDep)` registers a runtime
+    /// `Matrix` suite property: every `#[test]` in `matrix_suite_example` whose
+    /// dependency list contains the untagged `dbdep` name is duplicated into
+    /// one test per `db` case (`thing_one_postgres`, `thing_one_sqlite`, ...),
+    /// each carrying the `db_<case>` auto-tag and a dependency rewritten to the
+    /// case-specific tagged dep. Tests that do not depend on `DbDep` (such as
+    /// `no_dep_test`) run exactly once.
     #[cfg(test)]
-    #[test_r::matrix_suite(db, DbDep)]
     mod matrix_suite_example {
         use super::DbDep;
-        use test_r::{define_matrix_dimension, tag, test};
+        use test_r::{tag, test};
 
-        // The dimension's tagged deps live in the parent module; inherit them
-        // so the per-case getters resolve in this child module.
+        // Bring the tagged (postgres/sqlite) AND untagged `DbDep` getters into
+        // this child module. The untagged getter is required so the compiled
+        // `&DbDep` parameter resolves at compile time; at runtime the aliasing
+        // dependency view redirects it to the per-case tagged dep.
         test_r::inherit_test_dep!(
             #[tagged_as("postgres")]
             DbDep
@@ -466,12 +494,7 @@ mod matrix_features_e2e {
             #[tagged_as("sqlite")]
             DbDep
         );
-
-        // `define_matrix_dimension!` emits a module-local `test_r_get_dep_tags_db`
-        // helper. The injected `#[dimension(db)]` (added by `matrix_suite`)
-        // expands to a call to that helper, so it must be defined in the same
-        // module as the rewritten tests — not just in a parent.
-        define_matrix_dimension!(db: DbDep -> "postgres", "sqlite");
+        test_r::inherit_test_dep!(DbDep);
 
         #[test]
         fn thing_one(deps: &DbDep) {
@@ -482,11 +505,6 @@ mod matrix_features_e2e {
         #[tag(suite_explicit)]
         fn thing_two(deps: &DbDep) {
             assert!(deps.flavor == "postgres" || deps.flavor == "sqlite");
-        }
-
-        /// A helper that is NOT a `#[test]` — must be left untouched.
-        fn helper_not_a_test(deps: &DbDep) -> bool {
-            deps.flavor == "postgres"
         }
 
         /// A `#[test]` that takes no `&DbDep` parameter — runs exactly once,
@@ -500,57 +518,15 @@ mod matrix_features_e2e {
             assert_eq!(2 + 2, expected);
         }
 
-        #[test]
-        fn matrix_suite_expands_every_matching_test() {
-            // `thing_one` and `thing_two` were rewritten by `matrix_suite` to
-            // carry `#[dimension(db)]`, so their generator functions produce 2
-            // cases each. `no_dep_test` was not rewritten; it stays a single
-            // plain test (no `no_dep_test()` generator fn exists).
-            let thing_one_cases = thing_one();
-            let thing_two_cases = thing_two();
-
-            assert_eq!(
-                thing_one_cases.len(),
-                2,
-                "thing_one should be matrix-expanded into 2 cases"
-            );
-            assert_eq!(
-                thing_two_cases.len(),
-                2,
-                "thing_two should be matrix-expanded into 2 cases"
-            );
-
-            let mut pg_count = 0;
-            let mut sqlite_count = 0;
-            for case in thing_one_cases.iter().chain(thing_two_cases.iter()) {
-                assert!(
-                    case.props.tags.contains(&"db_postgres".to_string())
-                        || case.props.tags.contains(&"db_sqlite".to_string()),
-                    "case `{}` should carry a db_<case> auto-tag, got {:?}",
-                    case.name,
-                    case.props.tags
-                );
-                if case.props.tags.contains(&"db_postgres".to_string()) {
-                    pg_count += 1;
-                }
-                if case.props.tags.contains(&"db_sqlite".to_string()) {
-                    sqlite_count += 1;
-                }
-            }
-            assert_eq!(pg_count, 2, "two postgres cases expected (one per test)");
-            assert_eq!(sqlite_count, 2, "two sqlite cases expected (one per test)");
-
-            // Explicit `#[tag(suite_explicit)]` on thing_two is preserved.
-            for case in &thing_two_cases {
-                assert!(
-                    case.props.tags.contains(&"suite_explicit".to_string()),
-                    "explicit tag on thing_two must be preserved, got {:?}",
-                    case.props.tags
-                );
-            }
-
-            // The helper is a plain function callable directly (untouched).
-            assert!(helper_not_a_test(&DbDep { flavor: "postgres" }));
-        }
+        // Under the runtime-multiplication strategy there is no compile-time
+        // rewrite of this module, so there is nothing to introspect by calling
+        // the test fns directly. The multiplication into `thing_one_postgres`
+        // / `thing_one_sqlite` / `thing_two_postgres` / `thing_two_sqlite`
+        // (and the single, unmultiplied `no_dep_test`) is verified end-to-end
+        // by `matrix_suite_list_multiplies_tests` in `test-r/tests/tests.rs`
+        // via `--list`, and the multiplied cases are run green by
+        // `can_run_sync_examples`.
     }
+
+    test_r::matrix_suite!(matrix_suite_example, db, DbDep);
 }
