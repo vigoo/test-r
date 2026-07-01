@@ -171,7 +171,7 @@ mod tests {
     /// (descriptor-reconstructed `&LiveServiceOwner` and
     /// RPC-routed `&LiveControlStub`) backed by the same parent
     /// owner.
-    #[test_dep(scope = Hosted, worker = both(LiveControl))]
+    #[test_dep(scope = Hosted, worker = both(LiveControl), tagged_as = "live")]
     fn live_service() -> LiveServiceOwner {
         OWNER_CTOR_RUNS.fetch_add(1, Ordering::SeqCst);
         LiveServiceOwner::new()
@@ -180,13 +180,13 @@ mod tests {
     // ----------------------- descriptor-view tests -----------------------
 
     #[test]
-    fn both_descriptor_round_trip_one(service: &LiveServiceOwner) {
+    fn both_descriptor_round_trip_one(#[tagged_as("live")] service: &LiveServiceOwner) {
         let echoed = service.round_trip(b"both-hello-1");
         assert_eq!(&echoed, b"both-hello-1");
     }
 
     #[test]
-    fn both_descriptor_round_trip_two(service: &LiveServiceOwner) {
+    fn both_descriptor_round_trip_two(#[tagged_as("live")] service: &LiveServiceOwner) {
         let echoed = service.round_trip(b"both-hello-2");
         assert_eq!(&echoed, b"both-hello-2");
     }
@@ -194,13 +194,13 @@ mod tests {
     // -------------------------- RPC-view tests ---------------------------
 
     #[test]
-    fn both_rpc_next_id_returns_positive(ctrl: &LiveControlStub) {
+    fn both_rpc_next_id_returns_positive(#[tagged_as("live")] ctrl: &LiveControlStub) {
         let id = ctrl.next_id();
         assert!(id > 0, "ids must be positive, got {id}");
     }
 
     #[test]
-    fn both_rpc_next_id_is_monotonic_within_a_test(ctrl: &LiveControlStub) {
+    fn both_rpc_next_id_is_monotonic_within_a_test(#[tagged_as("live")] ctrl: &LiveControlStub) {
         let a = ctrl.next_id();
         let b = ctrl.next_id();
         let c = ctrl.next_id();
@@ -214,7 +214,10 @@ mod tests {
     /// TCP echo round-trip; the RPC view bumps the counter; both
     /// must observe the singleton parent owner created exactly once.
     #[test]
-    fn both_views_share_the_same_parent_owner(service: &LiveServiceOwner, ctrl: &LiveControlStub) {
+    fn both_views_share_the_same_parent_owner(
+        #[tagged_as("live")] service: &LiveServiceOwner,
+        #[tagged_as("live")] ctrl: &LiveControlStub,
+    ) {
         let echoed = service.round_trip(b"both-shared");
         assert_eq!(&echoed, b"both-shared");
 
@@ -222,6 +225,58 @@ mod tests {
         assert!(
             id > 0,
             "RPC view must reach the parent counter, got id {id}"
+        );
+    }
+
+    pub struct DerivedFromTaggedStub {
+        first_id: u64,
+        parent_stub_debug: String,
+    }
+
+    impl HostedDep for DerivedFromTaggedStub {
+        fn descriptor(&self) -> Vec<u8> {
+            let mut bytes = self.first_id.to_le_bytes().to_vec();
+            bytes.extend_from_slice(self.parent_stub_debug.as_bytes());
+            bytes
+        }
+
+        fn from_descriptor(bytes: &[u8]) -> Self {
+            let (id, debug) = bytes.split_at(8);
+            let arr: [u8; 8] = id.try_into().expect("8-byte id");
+            Self {
+                first_id: u64::from_le_bytes(arr),
+                parent_stub_debug: std::str::from_utf8(debug).expect("utf-8 debug").to_string(),
+            }
+        }
+    }
+
+    #[test_dep(scope = Hosted)]
+    fn derived_from_tagged_stub(
+        #[tagged_as("live")] ctrl: &LiveControlStub,
+    ) -> DerivedFromTaggedStub {
+        DerivedFromTaggedStub {
+            first_id: ctrl.next_id(),
+            parent_stub_debug: format!("{ctrl:?}"),
+        }
+    }
+
+    #[test]
+    fn downstream_hosted_dep_reads_tagged_stub(dep: &DerivedFromTaggedStub) {
+        assert!(
+            dep.first_id > 0,
+            "derived dependency must be built from the tagged RPC stub view"
+        );
+    }
+
+    #[test]
+    fn downstream_hosted_dep_tagged_stub_keeps_qualified_dep_id(
+        dep: &DerivedFromTaggedStub,
+        #[tagged_as("live")] ctrl: &LiveControlStub,
+    ) {
+        assert_eq!(
+            dep.parent_stub_debug,
+            format!("{ctrl:?}"),
+            "generated both(...) stubs built while resolving parent-side constructors must carry the same fully-qualified dep id as ordinary injected stubs"
         );
     }
 
@@ -233,8 +288,8 @@ mod tests {
     /// that share the owner.
     #[test]
     fn both_owner_runs_only_in_top_level_parent(
-        _service: &LiveServiceOwner,
-        _ctrl: &LiveControlStub,
+        #[tagged_as("live")] _service: &LiveServiceOwner,
+        #[tagged_as("live")] _ctrl: &LiveControlStub,
     ) {
         let is_ipc_worker = std::env::args().any(|a| a == "--ipc");
         let runs = OWNER_CTOR_RUNS.load(Ordering::SeqCst);

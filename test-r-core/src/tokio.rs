@@ -1334,10 +1334,14 @@ fn install_local_hosted_rpc_stubs(
         let channel = HostedRpcChannel::new(dep_id.clone(), transport.clone());
         let stub = (factory.build_stub)(channel);
         let applied = execution.provide_cloneable_value(dep_id, stub);
-        assert!(
-            applied,
-            "Local HostedRpc stub for '{dep_id}' did not match any registered dep"
-        );
+        if !applied {
+            // The owner cell can be materialised solely because another
+            // parent-side Cloneable/Hosted/HostedRpc dependency needs this
+            // HostedRpc dep as a constructor input. In that case the stub is
+            // intentionally not present in the worker execution tree; there is
+            // nothing to pre-populate for no-spawn test execution.
+            continue;
+        }
     }
 }
 
