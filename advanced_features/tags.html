@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-109e5fe0.js";
+            window.path_to_searchindex_js = "../searchindex-53e40e3b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-16c0bd11.js"></script>
@@ -189,6 +189,7 @@ fn tagged_test() {
     assert!(true);
 }
 <span class="boring">}</span></code></pre>
+<p>Matrix-generated test cases also get an auto-derived tag for each matrix case. See <a href="./dependency_injection.html#dependency-matrix">Dependency matrix</a> for details.</p>
 <h2 id="tagging-entire-test-suites"><a class="header" href="#tagging-entire-test-suites">Tagging entire test suites</a></h2>
 <p>It is possible to tag an entire <strong>test suite</strong>. This can be done by using the <code>#[tag]</code> attribute on the module containing the tests,
 or alternatively using the <code>tag_suite!</code> macro:</p>
@@ -212,6 +213,14 @@ mod inner2 {
 <pre><code class="language-sh">cargo test :tag:tag1
 </code></pre>
 <p>This example will run every test tagged as <code>tag1</code>, but no others.</p>
+<h3 id="selecting-matrix-cases-by-auto-derived-tags"><a class="header" href="#selecting-matrix-cases-by-auto-derived-tags">Selecting matrix cases by auto-derived tags</a></h3>
+<p>Each generated dependency-matrix case is automatically tagged as <code>&lt;dimension&gt;_&lt;case&gt;</code>. For example, a matrix dimension named <code>db</code> with cases <code>postgres</code> and <code>sqlite</code> produces case tags <code>db_postgres</code> and <code>db_sqlite</code>.</p>
+<p>These are ordinary tags and can be selected with the same <code>:tag:</code> syntax:</p>
+<pre><code class="language-sh">cargo test ':tag:db_sqlite'
+</code></pre>
+<p>When a test uses multiple matrix dimensions, the generated case carries one auto-derived tag per dimension, so tag expressions can select a specific combination:</p>
+<pre><code class="language-sh">cargo test ':tag:db_postgres&amp;runtime_tokio'
+</code></pre>
 <h3 id="selecting-untagged-tests"><a class="header" href="#selecting-untagged-tests">Selecting untagged tests</a></h3>
 <p>Sometimes it is useful to select all tests <strong>without a tag</strong>. This can be done by using the <code>:tag:</code> prefix with no tag name:</p>
 <pre><code class="language-sh">cargo test :tag:
