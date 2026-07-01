@@ -20,7 +20,7 @@ pkg-fmt = "zip"
 pkg-fmt = "zip"
 
 [dependencies]
-anyhow = "1.0.102"
+anyhow = "1.0.103"
 camino = "1.2.2"
 clap = { version = "4.5", features = ["derive"] }
 fs_extra = "1.3.0"
