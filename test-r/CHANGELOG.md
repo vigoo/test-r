@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.11](https://github.com/vigoo/test-r/compare/test-r-v3.0.10...test-r-v3.0.11) - 2026-07-01
+
+### Other
+
+- Auto-derived case tags and matrix-suite support ([#181](https://github.com/vigoo/test-r/pull/181))
+
 ### Added
 
 - Add auto-derived `<dimension>_<case>` tags for dependency-matrix test cases, selectable with the existing `:tag:` filter.
