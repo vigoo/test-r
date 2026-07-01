@@ -1267,6 +1267,9 @@ pub fn define_matrix_dimension(item: TokenStream) -> TokenStream {
         Span::call_site(),
     );
     let typ = def.typ;
+    // The dimension name, used to precompute the auto-derived `<dim>_<case>`
+    // test tag carried by every matrix-generated test case (Feature 1).
+    let dim_name = def.dim.to_string();
 
     let typ_path = match &typ {
         Type::Path(path) => path,
@@ -1283,14 +1286,22 @@ pub fn define_matrix_dimension(item: TokenStream) -> TokenStream {
         let getter_ident = Ident::new(&format!("test_r_get_dep_{dep_name_str}"), Span::call_site());
 
         let name = tag.value();
+        // Precompute the auto-derived case tag (`<dim>_<case>`) so the
+        // per-case test generator in `matrix_test_impl` can splice it into
+        // each generated test's `TestProperties.tags` without re-deriving
+        // the dimension name at the call site.
+        let case_tag = format!("{dim_name}_{name}");
         pushes.push(quote! {
-            result.push((#name.to_string(), #dep_name_str.to_string(), std::sync::Arc::new(|dependency_view: std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>| #getter_ident(&dependency_view))));
+            result.push((#name.to_string(), #dep_name_str.to_string(), std::sync::Arc::new(|dependency_view: std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>| #getter_ident(&dependency_view)), #case_tag.to_string()));
         });
     }
 
+    // The 4th tuple element is the precomputed `<dim>_<case>` auto-tag for
+    // the case, consumed by `matrix_test_impl` to extend each generated
+    // test's `tags` (alongside any explicit `#[tag(...)]` on the test).
     let ast = quote! {
-        fn #get_dep_tags_fn() -> Vec<(String, String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> {
-            let mut result: Vec<(String, String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> = Vec::new();
+        fn #get_dep_tags_fn() -> Vec<(String, String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>, String)> {
+            let mut result: Vec<(String, String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>, String)> = Vec::new();
             #(#pushes)*
             result
         }

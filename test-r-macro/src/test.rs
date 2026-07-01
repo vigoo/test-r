@@ -387,7 +387,19 @@ fn matrix_test_impl(
         props.push(quote! { capture_control: #capture_control });
         props.push(quote! { report_time_control: #report_time_control });
         props.push(quote! { ensure_time_control: #ensure_time_control });
-        props.push(quote! { tags: #tags });
+        // The matrix case tag(s) are not known until the per-case loop runs
+        // (each case contributes its `<dim>_<case>` auto-derived tag). So we
+        // build the `tags` field per-case: start from the explicit `#[tag(...)]`
+        // list captured here, then extend with the live `matrix_tag_stack`
+        // which is pushed/popped in lockstep with `name_stack` below.
+        // `matrix_tag_stack` is declared inside the generated function body
+        // and is in scope wherever `#(#test_props),*` is emitted (inside the
+        // for-loop body of each branch).
+        props.push(quote! { tags: {
+            let mut __test_r_matrix_tags = #tags;
+            __test_r_matrix_tags.extend(matrix_tag_stack.iter().cloned());
+            __test_r_matrix_tags
+        } });
         props.push(quote! { is_ignored: #is_ignored });
         props.push(quote! { detached_panic_policy: #detached_panic_policy });
 
@@ -447,13 +459,16 @@ fn matrix_test_impl(
         let dep_name_var = Ident::new(&format!("tag_{idx}"), Span::call_site());
         let dep_actual_name_var = Ident::new(&format!("dep_name_{idx}"), Span::call_site());
         let dep_var = Ident::new(&format!("dep_{idx}"), Span::call_site());
+        let dep_case_tag_var = Ident::new(&format!("case_tag_{idx}"), Span::call_site());
         let get_dep_tags_fn = Ident::new(&format!("test_r_get_dep_tags_{dim}"), Span::call_site());
         loops = quote! {
-            for (#dep_name_var, #dep_actual_name_var, #dep_var) in #get_dep_tags_fn() {
+            for (#dep_name_var, #dep_actual_name_var, #dep_var, #dep_case_tag_var) in #get_dep_tags_fn() {
                 name_stack.push(#dep_name_var);
+                matrix_tag_stack.push(#dep_case_tag_var);
                 dep_name_stack.push(#dep_actual_name_var);
                 #loops
                 dep_name_stack.pop();
+                matrix_tag_stack.pop();
                 name_stack.pop();
             }
         };
@@ -465,6 +480,7 @@ fn matrix_test_impl(
         fn #test_name(r: &mut test_r::core::DynamicTestRegistration) {
             let mut name_stack = Vec::new();
             let mut dep_name_stack: Vec<String> = Vec::new();
+            let mut matrix_tag_stack: Vec<String> = Vec::new();
             #loops
         }
 

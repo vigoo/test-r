@@ -119,6 +119,26 @@ pub fn tag_suite(input: TokenStream) -> TokenStream {
     suite::tag_suite(input)
 }
 
+/// `#[matrix_suite(<dim>, <DepType>)]` — apply a previously-defined matrix
+/// dimension to every `#[test]` in the annotated module.
+///
+/// Unlike `tag_suite!` / `sequential_suite!` (which are pure runtime suite
+/// properties and can be applied post-hoc by naming the module), `matrix_suite`
+/// must be applied **as an attribute on the inline module definition**, because
+/// it rewrites the test function signatures at macro-expansion time: each
+/// `#[test] fn` in the module whose signature contains a `&<DepType>` parameter
+/// gets a `#[dimension(<dim>)]` injected onto that parameter before the inner
+/// `#[test]` macro expands. Tests in the module that do not take a `&<DepType>`
+/// parameter (or that already carry `#[dimension]` / `#[tagged_as]` on the
+/// matching parameter) are left untouched and run exactly once.
+///
+/// See `book/src/advanced_features/dependency_injection.md` for the worked
+/// example and the rationale for the compile-time (Strategy A) approach.
+#[proc_macro_attribute]
+pub fn matrix_suite(attr: TokenStream, item: TokenStream) -> TokenStream {
+    suite::matrix_suite(attr, item)
+}
+
 #[proc_macro_attribute]
 pub fn sequential(_attr: TokenStream, item: TokenStream) -> TokenStream {
     suite::sequential(item)

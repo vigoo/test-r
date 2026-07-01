@@ -8,6 +8,7 @@ pub use test_r_macro::flaky;
 pub use test_r_macro::hosted_rpc;
 pub use test_r_macro::ignore_detached_panics;
 pub use test_r_macro::inherit_test_dep;
+pub use test_r_macro::matrix_suite;
 pub use test_r_macro::never_capture;
 pub use test_r_macro::never_ensure_time;
 pub use test_r_macro::never_report_time;

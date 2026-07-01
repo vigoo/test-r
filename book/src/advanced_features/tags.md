@@ -15,6 +15,8 @@ fn tagged_test() {
 }
 ```
 
+Matrix-generated test cases also get an auto-derived tag for each matrix case. See [Dependency matrix](./dependency_injection.md#dependency-matrix) for details.
+
 ## Tagging entire test suites
 
 It is possible to tag an entire **test suite**. This can be done by using the `#[tag]` attribute on the module containing the tests, 
@@ -44,6 +46,22 @@ cargo test :tag:tag1
 ``` 
 
 This example will run every test tagged as `tag1`, but no others.
+
+### Selecting matrix cases by auto-derived tags
+
+Each generated dependency-matrix case is automatically tagged as `<dimension>_<case>`. For example, a matrix dimension named `db` with cases `postgres` and `sqlite` produces case tags `db_postgres` and `db_sqlite`.
+
+These are ordinary tags and can be selected with the same `:tag:` syntax:
+
+```sh
+cargo test ':tag:db_sqlite'
+```
+
+When a test uses multiple matrix dimensions, the generated case carries one auto-derived tag per dimension, so tag expressions can select a specific combination:
+
+```sh
+cargo test ':tag:db_postgres&runtime_tokio'
+```
 
 ### Selecting untagged tests
 Sometimes it is useful to select all tests **without a tag**. This can be done by using the `:tag:` prefix with no tag name:

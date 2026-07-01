@@ -2970,4 +2970,65 @@ mod filter_tests {
             vec!["m::t2", "m::t3", "m::t4"]
         );
     }
+
+    // --- matrix auto-derived `<dim>_<case>` tags are :tag:-selectable ---
+    //
+    // Feature 1 makes every matrix-generated test case carry a `<dim>_<case>`
+    // tag (e.g. `db_postgres`) in its `TestProperties.tags`. The `:tag:` filter
+    // only ever checks `test.props.tags.contains(...)`, so once the macro
+    // places the tag there the existing filter logic selects it. These tests
+    // pin that contract at the runtime-filter level.
+
+    #[test]
+    fn matrix_dim_case_tag_selects_exactly_one_case() {
+        // A matrix dimension `db` with cases `postgres` and `sqlite` produces
+        // two generated tests, each carrying its `<dim>_<case>` auto-tag
+        // alongside any explicit tag.
+        let tests = vec![
+            make_tagged_test("my_test_postgres", "m", vec!["db_postgres", "fast"]),
+            make_tagged_test("my_test_sqlite", "m", vec!["db_sqlite", "fast"]),
+        ];
+        // `:tag:db_postgres` selects exactly the postgres case.
+        let args = make_args(vec![":tag:db_postgres"], vec![], false);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::my_test_postgres"]);
+    }
+
+    #[test]
+    fn matrix_dim_case_tags_select_subset_per_dimension() {
+        // Cartesian product of `db` (postgres/sqlite) and `lang` (ts/rust):
+        // each generated case carries the relevant subset of auto-tags.
+        let tests = vec![
+            make_tagged_test("combo_postgres_ts", "m", vec!["db_postgres", "lang_ts"]),
+            make_tagged_test("combo_postgres_rust", "m", vec!["db_postgres", "lang_rust"]),
+            make_tagged_test("combo_sqlite_ts", "m", vec!["db_sqlite", "lang_ts"]),
+            make_tagged_test("combo_sqlite_rust", "m", vec!["db_sqlite", "lang_rust"]),
+        ];
+        // `:tag:db_postgres` selects both postgres cases regardless of lang.
+        let args = make_args(vec![":tag:db_postgres"], vec![], false);
+        assert_eq!(
+            filtered_names(&args, &tests),
+            vec!["m::combo_postgres_ts", "m::combo_postgres_rust"]
+        );
+        // Combine dims: `:tag:db_sqlite&lang_rust` selects exactly one case.
+        let args = make_args(vec![":tag:db_sqlite&lang_rust"], vec![], false);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::combo_sqlite_rust"]);
+    }
+
+    #[test]
+    fn matrix_auto_tag_coexists_with_explicit_tags() {
+        // Explicit `#[tag(fast)]` on the test is preserved on every generated
+        // case alongside the auto-derived `<dim>_<case>` tag, and both are
+        // independently selectable.
+        let tests = vec![
+            make_tagged_test("t_postgres", "m", vec!["db_postgres", "fast"]),
+            make_tagged_test("t_sqlite", "m", vec!["db_sqlite", "fast"]),
+        ];
+        let args = make_args(vec![":tag:fast"], vec![], false);
+        assert_eq!(
+            filtered_names(&args, &tests),
+            vec!["m::t_postgres", "m::t_sqlite"]
+        );
+        let args = make_args(vec![":tag:db_sqlite"], vec![], false);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::t_sqlite"]);
+    }
 }
