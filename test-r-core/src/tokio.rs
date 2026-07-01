@@ -72,7 +72,12 @@ async fn async_test_runner() -> ExitCode {
         .collect();
 
     if args.list {
-        output.test_list(&all_tests);
+        // Apply suite properties (including runtime matrix-suite multiplication)
+        // before listing, so matrix-multiplied cases appear in `--list` output
+        // with their `<test>_<case>` names and `:tag:`-selectable auto-tags.
+        let tests_with_props =
+            internal::apply_suite_props_to_tests(&all_tests, &registered_testsuite_props);
+        output.test_list(&tests_with_props);
         ExitCode::SUCCESS
     } else {
         let mut remaining_retries = args.flaky_run.unwrap_or(1);
@@ -1334,10 +1339,14 @@ fn install_local_hosted_rpc_stubs(
         let channel = HostedRpcChannel::new(dep_id.clone(), transport.clone());
         let stub = (factory.build_stub)(channel);
         let applied = execution.provide_cloneable_value(dep_id, stub);
-        assert!(
-            applied,
-            "Local HostedRpc stub for '{dep_id}' did not match any registered dep"
-        );
+        if !applied {
+            // The owner cell can be materialised solely because another
+            // parent-side Cloneable/Hosted/HostedRpc dependency needs this
+            // HostedRpc dep as a constructor input. In that case the stub is
+            // intentionally not present in the worker execution tree; there is
+            // nothing to pre-populate for no-spawn test execution.
+            continue;
+        }
     }
 }
 

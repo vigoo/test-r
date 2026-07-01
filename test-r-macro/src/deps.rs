@@ -714,12 +714,49 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
         None => quote! { #dep_type },
     };
 
-    let getter_body = quote! {
-        dependency_view
-            .get(#dep_name_str)
-            .expect("Dependency not found")
-            .downcast::<#injected_ty>()
-            .expect("Dependency type mismatch")
+    let getter_body = if matches!(scope, Scope::HostedRpc) {
+        let stub_ty = stub_type_path
+            .as_ref()
+            .expect("HostedRpc stub type checked above");
+        quote! {
+            let __any = dependency_view
+                .get(#dep_name_str)
+                .expect("Dependency not found");
+            match __any.downcast::<#stub_ty>() {
+                Ok(__stub) => __stub,
+                Err(__any) => {
+                    let __cell = __any
+                        .downcast::<test_r::core::HostedRpcOwnerCell>()
+                        .expect("Dependency type mismatch");
+                    let __dep_id = format!("{}::{}", module_path!(), #dep_name_str);
+                    let mut __cells = std::collections::HashMap::new();
+                    __cells.insert(__dep_id.clone(), __cell);
+                    let __transport: std::sync::Arc<dyn test_r::core::HostedRpcTransport> =
+                        std::sync::Arc::new(test_r::core::InProcessHostedRpcTransport::new(__cells));
+                    let __channel = test_r::core::HostedRpcChannel::new(__dep_id, __transport);
+                    test_r::__test_r_select_runtime! {
+                        sync {
+                            std::sync::Arc::new(
+                                <#dep_type as test_r::core::HostedRpcDep>::build_stub(__channel),
+                            )
+                        }
+                        tokio {
+                            std::sync::Arc::new(
+                                <#dep_type as test_r::core::AsyncHostedRpcDep>::build_stub(__channel),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        quote! {
+            dependency_view
+                .get(#dep_name_str)
+                .expect("Dependency not found")
+                .downcast::<#injected_ty>()
+                .expect("Dependency type mismatch")
+        }
     };
 
     let result = quote! {
@@ -770,8 +807,9 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// - sync and async constructors both work;
 /// - constructor dependencies are resolved in the parent acquisition context;
-/// - no `tagged_as` (the dep is registered under two derived names already;
-///   tagging would require two-name plumbing we don't have yet);
+/// - optional `tagged_as` applies to both derived registrations (owner type
+///   and `<Trait>Stub`), matching the two `#[tagged_as(...)]` parameter
+///   lookups users need to consume either view;
 /// - no `stub = ...` (the stub type is derived from the trait path passed to
 ///   `both(...)`).
 ///
@@ -826,14 +864,6 @@ fn expand_hosted_both_dep(args: &TestDepArgs, mut ast: ItemFn, trait_path: &Path
     // message so we don't quietly drop user intent. Async owner constructors
     // are supported by emitting async dependency constructors for both views.
     let is_async = ast.sig.asyncness.is_some();
-    if args.tagged_as.is_some() {
-        panic!(
-            "`tagged_as = ...` is not supported with `worker = both(...)` yet. \
-             The `both` lowering registers the dep under two derived names \
-             (owner type + `<Trait>Stub`); a tag would have to apply to both \
-             which is not wired up. Remove `tagged_as` from this dep."
-        );
-    }
     if args.stub.is_some() {
         panic!(
             "`stub = ...` is not valid together with `worker = both(...)`. \
@@ -876,13 +906,14 @@ fn expand_hosted_both_dep(args: &TestDepArgs, mut ast: ItemFn, trait_path: &Path
 
     filter_custom_parameter_attributes(&mut ast);
 
-    let owner_dep_name = type_path_to_string(&dep_type, DependencyTag::None);
+    let dep_tag = DependencyTag::from(args.tagged_as.clone());
+    let owner_dep_name = type_path_to_string(&dep_type, dep_tag.clone());
     let stub_path = WorkerView::stub_path_from_trait(trait_path);
     let stub_type_path = TypePath {
         qself: None,
         path: stub_path.clone(),
     };
-    let stub_dep_name = type_path_to_string(&stub_type_path, DependencyTag::None);
+    let stub_dep_name = type_path_to_string(&stub_type_path, dep_tag);
     // Path to the `<Trait>Dispatch` helper trait emitted by
     // `#[hosted_rpc]`. Used so the macro can route shared-owner RPC
     // dispatch through the trait's `&self`-receiver dispatcher helper
@@ -1213,15 +1244,47 @@ fn expand_hosted_both_dep(args: &TestDepArgs, mut ast: ItemFn, trait_path: &Path
 
         // Stub-view getter: tests parameterise on `&#stub_ty` and
         // resolve through this getter to the worker-side RPC stub.
+        //
+        // As with the owner-view getter, downstream parent-side dep
+        // constructors can see the parent collection shape
+        // (`Arc<HostedBothShared>`) rather than the worker/no-spawn
+        // direct `Arc<#stub_ty>` shape. In that context there is no
+        // IPC worker channel yet, so build the same in-process
+        // transport the no-spawn path uses and wire it directly to
+        // the shared RPC cell.
         #[cfg(test)]
         fn #stub_getter_ident<'a>(
             dependency_view: &'a impl test_r::core::DependencyView,
         ) -> std::sync::Arc<#stub_ty> {
-            dependency_view
+            let __any = dependency_view
                 .get(#stub_dep_name)
-                .expect("Dependency not found")
-                .downcast::<#stub_ty>()
-                .expect("Dependency type mismatch")
+                .expect("Dependency not found");
+            match __any.downcast::<#stub_ty>() {
+                Ok(__stub) => __stub,
+                Err(__any) => {
+                    let __shared = __any
+                        .downcast::<test_r::core::HostedBothShared>()
+                        .expect("Dependency type mismatch");
+                    let __dep_id = format!("{}::{}", module_path!(), #stub_dep_name);
+                    let mut __cells = std::collections::HashMap::new();
+                    __cells.insert(__dep_id.clone(), __shared.rpc_cell());
+                    let __transport: std::sync::Arc<dyn test_r::core::HostedRpcTransport> =
+                        std::sync::Arc::new(test_r::core::InProcessHostedRpcTransport::new(__cells));
+                    let __channel = test_r::core::HostedRpcChannel::new(__dep_id, __transport);
+                    test_r::__test_r_select_runtime! {
+                        sync {
+                            std::sync::Arc::new(
+                                <#dep_ty as test_r::core::HostedRpcDep>::build_stub(__channel),
+                            )
+                        }
+                        tokio {
+                            std::sync::Arc::new(
+                                <#dep_ty as test_r::core::AsyncHostedRpcDep>::build_stub(__channel),
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         // Keep the user's constructor as a real function so any
@@ -1267,6 +1330,9 @@ pub fn define_matrix_dimension(item: TokenStream) -> TokenStream {
         Span::call_site(),
     );
     let typ = def.typ;
+    // The dimension name, used to precompute the auto-derived `<dim>_<case>`
+    // test tag carried by every matrix-generated test case (Feature 1).
+    let dim_name = def.dim.to_string();
 
     let typ_path = match &typ {
         Type::Path(path) => path,
@@ -1283,14 +1349,22 @@ pub fn define_matrix_dimension(item: TokenStream) -> TokenStream {
         let getter_ident = Ident::new(&format!("test_r_get_dep_{dep_name_str}"), Span::call_site());
 
         let name = tag.value();
+        // Precompute the auto-derived case tag (`<dim>_<case>`) so the
+        // per-case test generator in `matrix_test_impl` can splice it into
+        // each generated test's `TestProperties.tags` without re-deriving
+        // the dimension name at the call site.
+        let case_tag = format!("{dim_name}_{name}");
         pushes.push(quote! {
-            result.push((#name.to_string(), #dep_name_str.to_string(), std::sync::Arc::new(|dependency_view: std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>| #getter_ident(&dependency_view))));
+            result.push((#name.to_string(), #dep_name_str.to_string(), std::sync::Arc::new(|dependency_view: std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>| #getter_ident(&dependency_view)), #case_tag.to_string()));
         });
     }
 
+    // The 4th tuple element is the precomputed `<dim>_<case>` auto-tag for
+    // the case, consumed by `matrix_test_impl` to extend each generated
+    // test's `tags` (alongside any explicit `#[tag(...)]` on the test).
     let ast = quote! {
-        fn #get_dep_tags_fn() -> Vec<(String, String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> {
-            let mut result: Vec<(String, String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>)> = Vec::new();
+        fn #get_dep_tags_fn() -> Vec<(String, String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>, String)> {
+            let mut result: Vec<(String, String, std::sync::Arc<dyn (Fn(std::sync::Arc<dyn test_r::core::DependencyView + Send + Sync>) -> std::sync::Arc<#typ>) + Send + Sync + 'static>, String)> = Vec::new();
             #(#pushes)*
             result
         }
@@ -1440,7 +1514,7 @@ fn get_dependency_param_from_pat_type(typ: &PatType) -> TypePath {
 }
 
 #[derive(Debug, Clone)]
-enum DependencyTag {
+pub(crate) enum DependencyTag {
     None,
     Tagged(String),
     Matrix(Ident),
@@ -1656,7 +1730,7 @@ fn type_to_string(typ: &Type, optional_tag: DependencyTag) -> String {
     }
 }
 
-fn type_path_to_string(dep_type: &TypePath, optional_tag: DependencyTag) -> String {
+pub(crate) fn type_path_to_string(dep_type: &TypePath, optional_tag: DependencyTag) -> String {
     let merged_ident = dep_type
         .path
         .segments

@@ -8,6 +8,7 @@ pub use test_r_macro::flaky;
 pub use test_r_macro::hosted_rpc;
 pub use test_r_macro::ignore_detached_panics;
 pub use test_r_macro::inherit_test_dep;
+pub use test_r_macro::matrix_suite;
 pub use test_r_macro::never_capture;
 pub use test_r_macro::never_ensure_time;
 pub use test_r_macro::never_report_time;
@@ -43,8 +44,9 @@ pub mod core {
         DetachedPanicPolicy, DynamicTestRegistration, FailureCause, FlakinessControl,
         GeneratedTest, HostedBothShared, HostedDep, HostedRpcChannel, HostedRpcDep,
         HostedRpcDispatcher, HostedRpcError, HostedRpcOwnerCell, HostedRpcTransport,
-        InProcessHostedRpcTransport, ReportTimeControl, RpcFactory, ShouldPanic, TestFunction,
-        TestGeneratorFunction, TestProperties, TestReturnValue, TestType, WorkerReconstructor,
+        InProcessHostedRpcTransport, MatrixCase, ReportTimeControl, RpcFactory, ShouldPanic,
+        TestFunction, TestGeneratorFunction, TestProperties, TestReturnValue, TestType,
+        WorkerReconstructor,
     };
     pub use test_r_core::*;
 
@@ -208,6 +210,33 @@ pub mod core {
                 crate_name,
                 module_path,
                 tag,
+            },
+        );
+    }
+
+    /// Register a runtime matrix-suite dimension (Strategy B). Every registered
+    /// test under `<crate>::<module_path>::<name>` whose `dependencies` contain
+    /// `dep_name` is multiplied into one test per `case` at suite-property
+    /// application time. `cases` is typically produced by calling the
+    /// `test_r_get_dep_tags_<dim>()` helper that `define_matrix_dimension!`
+    /// emits, dropping the per-case getter (the multiplied test reuses its own
+    /// compiled getter, with the dependency view aliased to the case's tagged
+    /// dep name).
+    pub fn register_suite_matrix(
+        name: &str,
+        module_path: &str,
+        dep_name: String,
+        cases: Vec<internal::MatrixCase>,
+    ) {
+        let (crate_name, module_path) = split_module_path(module_path);
+
+        internal::REGISTERED_TESTSUITE_PROPS.lock().unwrap().push(
+            internal::RegisteredTestSuiteProperty::Matrix {
+                name: name.to_string(),
+                crate_name,
+                module_path,
+                dep_name,
+                cases,
             },
         );
     }

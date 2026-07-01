@@ -1672,6 +1672,23 @@ impl RegisteredDependency {
 pub static REGISTERED_DEPENDENCY_CONSTRUCTORS: Mutex<Vec<RegisteredDependency>> =
     Mutex::new(Vec::new());
 
+/// A single case of a runtime matrix suite dimension, captured at
+/// `matrix_suite!` registration time by reading the
+/// `test_r_get_dep_tags_<dim>()` helper emitted by `define_matrix_dimension!`.
+///
+/// `dep_name` is the case-specific tagged dependency name (the entry that
+/// appears in the multiplied test's `dependencies` list, so the dependency
+/// materializer constructs the right backend). `auto_tag` is the
+/// `<dim>_<case>` tag that gets pushed onto each multiplied test's
+/// `TestProperties.tags`, making the case selectable via `:tag:db_postgres`
+/// etc.
+#[derive(Debug, Clone)]
+pub struct MatrixCase {
+    pub case_label: String,
+    pub dep_name: String,
+    pub auto_tag: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum RegisteredTestSuiteProperty {
     Sequential {
@@ -1691,6 +1708,19 @@ pub enum RegisteredTestSuiteProperty {
         module_path: String,
         timeout: Duration,
     },
+    /// Runtime matrix-suite dimension (Strategy B). Every registered test
+    /// under the suite's module prefix whose `dependencies` contain
+    /// `dep_name` is multiplied into one `RegisteredTest` per case at
+    /// suite-property application time. Tests that do not depend on
+    /// `dep_name` (or that already carry an explicit `#[dimension]` /
+    /// `#[tagged_as]` for that dep) are left untouched and run exactly once.
+    Matrix {
+        name: String,
+        crate_name: String,
+        module_path: String,
+        dep_name: String,
+        cases: Vec<MatrixCase>,
+    },
 }
 
 impl RegisteredTestSuiteProperty {
@@ -1699,6 +1729,7 @@ impl RegisteredTestSuiteProperty {
             RegisteredTestSuiteProperty::Sequential { crate_name, .. } => crate_name,
             RegisteredTestSuiteProperty::Tag { crate_name, .. } => crate_name,
             RegisteredTestSuiteProperty::Timeout { crate_name, .. } => crate_name,
+            RegisteredTestSuiteProperty::Matrix { crate_name, .. } => crate_name,
         }
     }
 
@@ -1707,6 +1738,7 @@ impl RegisteredTestSuiteProperty {
             RegisteredTestSuiteProperty::Sequential { module_path, .. } => module_path,
             RegisteredTestSuiteProperty::Tag { module_path, .. } => module_path,
             RegisteredTestSuiteProperty::Timeout { module_path, .. } => module_path,
+            RegisteredTestSuiteProperty::Matrix { module_path, .. } => module_path,
         }
     }
 
@@ -1715,6 +1747,7 @@ impl RegisteredTestSuiteProperty {
             RegisteredTestSuiteProperty::Sequential { name, .. } => name,
             RegisteredTestSuiteProperty::Tag { name, .. } => name,
             RegisteredTestSuiteProperty::Timeout { name, .. } => name,
+            RegisteredTestSuiteProperty::Matrix { name, .. } => name,
         }
     }
 
@@ -1880,27 +1913,169 @@ pub(crate) fn apply_suite_props_to_tests(
 
     let mut result = Vec::new();
     for test in tests {
-        let mut test = test.clone();
+        // Collect the matrix dimensions that apply to this test (by module
+        // prefix). A test may match several suites; each matching Matrix
+        // property multiplies the test independently (Cartesian product across
+        // dimensions), while Tag/Timeout/Sequential props are applied to every
+        // produced test.
+        let mut matrix_dims: Vec<&RegisteredTestSuiteProperty> = Vec::new();
+        let mut tag_timeout_sequential: Vec<&RegisteredTestSuiteProperty> = Vec::new();
         for (prefix, prop) in &props_with_prefix {
             if test.crate_and_module().starts_with(prefix) {
                 match prop {
-                    RegisteredTestSuiteProperty::Tag { tag, .. } => {
-                        test.props.tags.push(tag.clone());
-                    }
-                    RegisteredTestSuiteProperty::Timeout { timeout, .. } => {
-                        if test.props.timeout.is_none() {
-                            test.props.timeout = Some(*timeout);
-                        }
-                    }
-                    RegisteredTestSuiteProperty::Sequential { .. } => {
-                        // handled in TestSuiteExecution
-                    }
+                    RegisteredTestSuiteProperty::Matrix { .. } => matrix_dims.push(prop),
+                    _ => tag_timeout_sequential.push(prop),
                 }
             }
         }
-        result.push(test);
+
+        // Expand the test across all matching matrix dimensions. Tests that
+        // match no Matrix property produce a single clone (preserving the
+        // previous 1:1 behavior). A dimension only multiplies a test if the
+        // test's `dependencies` actually contain the dimension's untagged
+        // `dep_name`; otherwise the dimension is a no-op for this test (it runs
+        // once, unchanged).
+        let mut expanded: Vec<RegisteredTest> = vec![test.clone()];
+        for dim_prop in &matrix_dims {
+            let RegisteredTestSuiteProperty::Matrix {
+                dep_name, cases, ..
+            } = dim_prop
+            else {
+                unreachable!()
+            };
+            let mut next: Vec<RegisteredTest> = Vec::new();
+            for t in expanded.iter().cloned() {
+                let depends_on_dim = t.dependencies.iter().flatten().any(|d| d == dep_name);
+                if depends_on_dim && !cases.is_empty() {
+                    for case in cases {
+                        next.push(multiply_test_for_case(&t, dep_name, case));
+                    }
+                } else {
+                    next.push(t);
+                }
+            }
+            expanded = next;
+        }
+
+        // Apply the non-multiplying props (Tag/Timeout/Sequential) to every
+        // produced test. Sequential is recorded for the execution grouping
+        // elsewhere; here it is a no-op.
+        for mut t in expanded {
+            for prop in &tag_timeout_sequential {
+                match prop {
+                    RegisteredTestSuiteProperty::Tag { tag, .. } => {
+                        t.props.tags.push(tag.clone());
+                    }
+                    RegisteredTestSuiteProperty::Timeout { timeout, .. } => {
+                        if t.props.timeout.is_none() {
+                            t.props.timeout = Some(*timeout);
+                        }
+                    }
+                    RegisteredTestSuiteProperty::Sequential { .. } => {}
+                    RegisteredTestSuiteProperty::Matrix { .. } => unreachable!(),
+                }
+            }
+            result.push(t);
+        }
     }
     result
+}
+
+/// Produce one `RegisteredTest` clone for a single matrix case of `test`.
+///
+/// The clone:
+/// - is named `<test.name>_<case.case_label>`;
+/// - has the case's `<dim>_<case>` auto-tag appended to `props.tags`;
+/// - has its `dependencies` rewritten so the untagged `dep_name` entry is
+///   replaced by the case-specific `case.dep_name` (so the dependency
+///   materializer constructs the right backend); and
+/// - has its `TestFunction` wrapped so the closure's compiled getter, which
+///   calls `DependencyView::get(dep_name)` with the *untagged* name baked in,
+///   receives an [`AliasedDependencyView`] that redirects that lookup to the
+///   case's dep name. Other dep lookups pass through unchanged.
+fn multiply_test_for_case(
+    test: &RegisteredTest,
+    dep_name: &str,
+    case: &MatrixCase,
+) -> RegisteredTest {
+    let mut clone = test.clone();
+    clone.name = format!("{}_{}", test.name, case.case_label);
+    clone.props.tags.push(case.auto_tag.clone());
+    if let Some(deps) = clone.dependencies.as_mut() {
+        for d in deps.iter_mut() {
+            if d == dep_name {
+                *d = case.dep_name.clone();
+            }
+        }
+    }
+    clone.run = wrap_with_aliasing_view(
+        test.run.clone(),
+        dep_name.to_string(),
+        case.dep_name.clone(),
+    );
+    clone
+}
+
+/// Wrap a `TestFunction` so its `DependencyView` argument is wrapped in an
+/// [`AliasedDependencyView`] that maps `alias_from` lookups to `alias_to`.
+/// Every test function variant (sync/async, test/bench) is handled so the
+/// wrapper is variant-agnostic. The case identity is captured per clone (no
+/// global/thread-local state), so concurrent and async-interleaved cases are
+/// safe.
+fn wrap_with_aliasing_view(
+    run: TestFunction,
+    alias_from: String,
+    alias_to: String,
+) -> TestFunction {
+    let make_view = move |deps: Arc<dyn DependencyView + Send + Sync>| {
+        Arc::new(AliasedDependencyView {
+            inner: deps,
+            alias_from: alias_from.clone(),
+            alias_to: alias_to.clone(),
+        }) as Arc<dyn DependencyView + Send + Sync>
+    };
+    match run {
+        TestFunction::Sync(f) => TestFunction::Sync(Arc::new(move |deps| {
+            let aliased = make_view(deps);
+            f(aliased)
+        })),
+        TestFunction::SyncBench(f) => TestFunction::SyncBench(Arc::new(move |b, deps| {
+            let aliased = make_view(deps);
+            f(b, aliased)
+        })),
+        #[cfg(feature = "tokio")]
+        TestFunction::Async(f) => TestFunction::Async(Arc::new(move |deps| {
+            let aliased = make_view(deps);
+            f(aliased)
+        })),
+        #[cfg(feature = "tokio")]
+        TestFunction::AsyncBench(f) => TestFunction::AsyncBench(Arc::new(move |b, deps| {
+            let aliased = make_view(deps);
+            f(b, aliased)
+        })),
+    }
+}
+
+/// A `DependencyView` that redirects a single dependency-name lookup
+/// (`alias_from`) to another (`alias_to`), delegating every other lookup to
+/// the wrapped view. Used by matrix-suite multiplication so a test closure
+/// compiled against an untagged dep name resolves the per-case tagged dep
+/// instead, without recompiling the closure.
+#[derive(Debug)]
+struct AliasedDependencyView {
+    inner: Arc<dyn DependencyView + Send + Sync>,
+    alias_from: String,
+    alias_to: String,
+}
+
+impl DependencyView for AliasedDependencyView {
+    fn get(&self, name: &str) -> Option<Arc<dyn Any + Send + Sync>> {
+        if name == self.alias_from {
+            self.inner.get(&self.alias_to)
+        } else {
+            self.inner.get(name)
+        }
+    }
 }
 
 pub(crate) fn filter_registered_tests(
@@ -2969,5 +3144,66 @@ mod filter_tests {
             filtered_names(&args, &tests),
             vec!["m::t2", "m::t3", "m::t4"]
         );
+    }
+
+    // --- matrix auto-derived `<dim>_<case>` tags are :tag:-selectable ---
+    //
+    // Feature 1 makes every matrix-generated test case carry a `<dim>_<case>`
+    // tag (e.g. `db_postgres`) in its `TestProperties.tags`. The `:tag:` filter
+    // only ever checks `test.props.tags.contains(...)`, so once the macro
+    // places the tag there the existing filter logic selects it. These tests
+    // pin that contract at the runtime-filter level.
+
+    #[test]
+    fn matrix_dim_case_tag_selects_exactly_one_case() {
+        // A matrix dimension `db` with cases `postgres` and `sqlite` produces
+        // two generated tests, each carrying its `<dim>_<case>` auto-tag
+        // alongside any explicit tag.
+        let tests = vec![
+            make_tagged_test("my_test_postgres", "m", vec!["db_postgres", "fast"]),
+            make_tagged_test("my_test_sqlite", "m", vec!["db_sqlite", "fast"]),
+        ];
+        // `:tag:db_postgres` selects exactly the postgres case.
+        let args = make_args(vec![":tag:db_postgres"], vec![], false);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::my_test_postgres"]);
+    }
+
+    #[test]
+    fn matrix_dim_case_tags_select_subset_per_dimension() {
+        // Cartesian product of `db` (postgres/sqlite) and `lang` (ts/rust):
+        // each generated case carries the relevant subset of auto-tags.
+        let tests = vec![
+            make_tagged_test("combo_postgres_ts", "m", vec!["db_postgres", "lang_ts"]),
+            make_tagged_test("combo_postgres_rust", "m", vec!["db_postgres", "lang_rust"]),
+            make_tagged_test("combo_sqlite_ts", "m", vec!["db_sqlite", "lang_ts"]),
+            make_tagged_test("combo_sqlite_rust", "m", vec!["db_sqlite", "lang_rust"]),
+        ];
+        // `:tag:db_postgres` selects both postgres cases regardless of lang.
+        let args = make_args(vec![":tag:db_postgres"], vec![], false);
+        assert_eq!(
+            filtered_names(&args, &tests),
+            vec!["m::combo_postgres_ts", "m::combo_postgres_rust"]
+        );
+        // Combine dims: `:tag:db_sqlite&lang_rust` selects exactly one case.
+        let args = make_args(vec![":tag:db_sqlite&lang_rust"], vec![], false);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::combo_sqlite_rust"]);
+    }
+
+    #[test]
+    fn matrix_auto_tag_coexists_with_explicit_tags() {
+        // Explicit `#[tag(fast)]` on the test is preserved on every generated
+        // case alongside the auto-derived `<dim>_<case>` tag, and both are
+        // independently selectable.
+        let tests = vec![
+            make_tagged_test("t_postgres", "m", vec!["db_postgres", "fast"]),
+            make_tagged_test("t_sqlite", "m", vec!["db_sqlite", "fast"]),
+        ];
+        let args = make_args(vec![":tag:fast"], vec![], false);
+        assert_eq!(
+            filtered_names(&args, &tests),
+            vec!["m::t_postgres", "m::t_sqlite"]
+        );
+        let args = make_args(vec![":tag:db_sqlite"], vec![], false);
+        assert_eq!(filtered_names(&args, &tests), vec!["m::t_sqlite"]);
     }
 }

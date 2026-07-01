@@ -167,3 +167,87 @@ fn test5(#[dimension(shd)] shared: &SharedDependency) {
 
 The library will generate two separate test functions (named `test5::test5_tag1` and `test5::test5_tag2`) from this definition, and each will use a different instance of `SharedDependency`.
 
+### Auto-derived case tags
+
+Every matrix-generated test case additionally carries an **auto-derived tag** of the form `<dimension>_<case>`. For a dimension named `db` with cases `postgres` and `sqlite`, the generated cases get the tags `db_postgres` and `db_sqlite` respectively (alongside any explicit `#[tag(...)]` already on the test).
+
+These auto-tags are ordinary tags — they are selectable with the existing [`:tag:` filter](./tags.md). So after:
+
+```rust
+#[test_dep(tagged_as = "postgres")]
+fn db_postgres() -> DbDep { DbDep::postgres() }
+
+#[test_dep(tagged_as = "sqlite")]
+fn db_sqlite() -> DbDep { DbDep::sqlite() }
+
+define_matrix_dimension!(db: DbDep -> "postgres", "sqlite");
+
+#[test]
+fn my_test(#[dimension(db)] dep: &DbDep) {
+    // ...
+}
+```
+
+you can run only the `sqlite` case with:
+
+```sh
+cargo test ':tag:db_sqlite'
+```
+
+The auto-derived tag is added to each generated case's tags; it never replaces an explicit `#[tag(...)]`. With multiple dimensions (the Cartesian product), each generated case carries the relevant subset of auto-tags. For example, a test with dimensions `db` (postgres/sqlite) and `lang` (ts/rust) produces a case for `db_postgres` + `lang_ts` that carries `["db_postgres", "lang_ts"]` plus any explicit tags, and you can select it with `cargo test ':tag:db_postgres&lang_ts'`.
+
+### Applying a dimension to every test in a module: `matrix_suite!`
+
+When a whole module of tests shares the same matrix dimension, annotating every test function's parameter with `#[dimension(...)]` is repetitive. The function-like `matrix_suite!(<module>, <dim>, <DepType>)` macro applies a matrix dimension to every `#[test]` in `<module>` whose dependency list contains the untagged `<DepType>` dep, without any per-test `#[dimension]` annotations. It is invoked in the **parent** of the target module — like `tag_suite!` / `sequential_suite!` — after the module is declared, and it works with file-based modules (`mod my_suite;`) as well as inline ones:
+
+```rust
+// The dimension helper must be in scope where `matrix_suite!` is invoked,
+// so define the dimension in the same parent module.
+define_matrix_dimension!(db: EnvDeps -> "postgres", "sqlite");
+
+// An untagged `EnvDeps` constructor: its body is never used for the matrix'd
+// tests below (their dependency is rewritten to the tagged variant at
+// runtime), but the *getter symbol* it emits must exist so the `#[test]`
+// expansion of `deps: &EnvDeps` (untagged) compiles.
+#[test_dep]
+fn create_env_deps() -> EnvDeps { /* postgres-by-default, or any value */ }
+
+mod my_suite {
+    use test_r::test;
+
+    // Inherit the tagged (postgres/sqlite) getters AND the untagged getter
+    // into this child module. The untagged getter is required for the
+    // `&EnvDeps` parameter to compile; at runtime the aliasing dependency
+    // view redirects it to the per-case tagged dep.
+    test_r::inherit_test_dep!(#[tagged_as("postgres")] EnvDeps);
+    test_r::inherit_test_dep!(#[tagged_as("sqlite")] EnvDeps);
+    test_r::inherit_test_dep!(EnvDeps);
+
+    // tests here take `deps: &EnvDeps` with NO #[dimension] attribute
+    #[test]
+    fn thing_one(deps: &EnvDeps) { /* ... */ }
+
+    #[test]
+    fn thing_two(deps: &EnvDeps) { /* ... */ }
+
+    // A test that does NOT take a `&EnvDeps` parameter is left untouched:
+    // it runs exactly once, not matrix-expanded.
+    #[test]
+    fn helper_without_dep() { /* ... */ }
+}
+
+// Register the runtime Matrix suite property for `my_suite`.
+test_r::matrix_suite!(my_suite, db, EnvDeps);
+```
+
+`thing_one` and `thing_two` are each multiplied into one test per case (`thing_one_postgres` / `thing_one_sqlite` / `thing_two_postgres` / `thing_two_sqlite`) at test-collection time, carrying the `db_postgres` / `db_sqlite` auto-tags. `helper_without_dep` is not multiplied because it does not depend on the `EnvDeps` dep, so it runs exactly once.
+
+#### How `matrix_suite!` works, and why it is a runtime (post-hoc) macro
+
+`matrix_suite!` does **not** rewrite the module at compile time. Instead it emits a `#[cfg(test)]` constructor that calls the dimension's `test_r_get_dep_tags_<dim>()` helper (emitted by `define_matrix_dimension!`) and registers a suite-level `Matrix` property keyed by `<module>` and the untagged dep name derived from `<DepType>`. At test-collection time the runner applies suite properties to the already-registered tests: for every test under `<module>` whose `dependencies` contain that untagged dep name, it produces one clone per case — named `<test>_<case>`, tagged `<dim>_<case>`, with the dependency entry rewritten to the case-specific tagged dep, and the test closure wrapped in an aliasing `DependencyView` that redirects the compiled (untagged) getter lookup to that tagged dep.
+
+Because the closure is *already compiled* against the untagged getter, the untagged getter symbol must still exist at compile time (hence the untagged `#[test_dep]` / `inherit_test_dep!` shown above) — but the untagged dep is never materialized for a matrix'd test, since its dependency list is rewritten to the tagged variant. This is why `matrix_suite!` is a **function-like macro invoked in the parent** (`test_r::matrix_suite!(my_suite, db, EnvDeps)`), just like `tag_suite!` and `sequential_suite!`: it only needs the module's *name*, so the target module may be file-based, and no compile-time introspection of the module body is required.
+
+The `<DepType>` match is by the untagged dep name derived from the type as written (the same lowercased, segment-joined spelling `#[test_dep]` / `#[dimension]` use). Generic types are supported: `matrix_suite!(suite, kind, Wrapped<Primary>)` matches a test taking `deps: &Wrapped<Primary>` (untagged dep name `wrappedprimary`); a test taking `&Wrapped<Secondary>` is left untouched because its dep name differs.
+
+`matrix_suite!` only multiplies tests whose dependency list contains the untagged dep name. A test that already carries an explicit `#[dimension]` or `#[tagged_as]` for that dep is also left untouched (its dependency is already a tagged variant, not the untagged name), so you can mix per-test overrides inside a matrix suite. Benches (`#[bench]`) are not multiplied (the matrix mechanism is not defined for benchmarks).

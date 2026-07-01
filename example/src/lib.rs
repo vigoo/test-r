@@ -49,6 +49,66 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod matrix_suite_generic_type_matching_repro {
+    use std::marker::PhantomData;
+    use test_r::{define_matrix_dimension, test_dep};
+
+    pub struct Primary;
+    pub struct Secondary;
+
+    pub struct Wrapped<T> {
+        value: &'static str,
+        _marker: PhantomData<T>,
+    }
+
+    #[test_dep(tagged_as = "primary")]
+    fn create_primary() -> Wrapped<Primary> {
+        Wrapped {
+            value: "primary",
+            _marker: PhantomData,
+        }
+    }
+
+    // The dimension helper must live in the same module that invokes
+    // `matrix_suite!`, so the function-like macro's generated ctor can call
+    // `test_r_get_dep_tags_kind()`.
+    define_matrix_dimension!(kind: Wrapped<Primary> -> "primary");
+
+    mod suite {
+        use super::{Primary, Secondary, Wrapped};
+        use std::marker::PhantomData;
+        use test_r::{test, test_dep};
+
+        test_r::inherit_test_dep!(
+            #[tagged_as("primary")]
+            Wrapped<Primary>
+        );
+
+        #[test_dep]
+        fn create_secondary() -> Wrapped<Secondary> {
+            Wrapped {
+                value: "secondary",
+                _marker: PhantomData,
+            }
+        }
+
+        // Depends on `wrappedsecondary`, not the dimension's `wrappedprimary`,
+        // so it is NOT multiplied by the matrix suite — it runs exactly once.
+        #[test]
+        fn secondary_dependency_is_not_part_of_primary_matrix(dep: &Wrapped<Secondary>) {
+            assert_eq!(dep.value, "secondary");
+        }
+    }
+
+    // Function-like form: registers a runtime `Matrix` suite property for
+    // `suite` keyed by the untagged dep name `wrappedprimary`. No test in
+    // `suite` depends on that dep, so nothing is multiplied here — this just
+    // exercises that `matrix_suite!` accepts a generic dep type without
+    // breaking compilation or polluting unrelated tests.
+    test_r::matrix_suite!(suite, kind, Wrapped<Primary>);
+}
+
 mod inner {
     #[cfg(test)]
     mod tests {
@@ -268,11 +328,205 @@ mod nested_sequential {
             fn child_b_test_1() {
                 assert_no_concurrency();
             }
-
             #[test]
             fn child_b_test_2() {
                 assert_no_concurrency();
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Feature 1 + Feature 2 end-to-end checks
+// ---------------------------------------------------------------------------
+//
+// The matrix auto-tag feature (Feature 1) makes every matrix-generated test
+// case carry a `<dim>_<case>` tag derived at `define_matrix_dimension!` time.
+// `matrix_suite` (Feature 2) applies a dimension to every matching `#[test]`
+// in a module without per-test `#[dimension]` annotations.
+//
+// We verify both by invoking the generated test-generator function (which the
+// `#[test]` macro rewrites into `fn <name>() -> Vec<GeneratedTest>`) and
+// inspecting the returned `GeneratedTest` entries' names and `props.tags`.
+// This does not execute the test closures, so no dependency resolution runs.
+
+#[cfg(test)]
+mod matrix_features_e2e {
+    use test_r::core::GeneratedTest;
+    use test_r::{define_matrix_dimension, tag, test, test_dep};
+
+    // The shared matrix dimension: a `DbDep` value per case.
+    pub struct DbDep {
+        pub flavor: &'static str,
+    }
+
+    #[test_dep(tagged_as = "postgres")]
+    fn create_db_postgres() -> DbDep {
+        DbDep { flavor: "postgres" }
+    }
+
+    #[test_dep(tagged_as = "sqlite")]
+    fn create_db_sqlite() -> DbDep {
+        DbDep { flavor: "sqlite" }
+    }
+
+    define_matrix_dimension!(db: DbDep -> "postgres", "sqlite");
+
+    // ----- Feature 1: per-test `#[dimension]` carries the auto-tag -----
+
+    /// A matrix test that also carries an explicit `#[tag(...)]`. The generated
+    /// cases must keep the explicit tag AND gain the `db_<case>` auto-tags.
+    #[test]
+    #[tag(matrix_suite_e2e)]
+    fn matrix_dep_test(#[dimension(db)] dep: &DbDep) {
+        assert!(dep.flavor == "postgres" || dep.flavor == "sqlite");
+    }
+
+    /// Returns the generated cases for `matrix_dep_test` without running them.
+    fn generated_cases() -> Vec<GeneratedTest> {
+        // `matrix_dep_test()` is the test-generator function produced by the
+        // `#[test]` + `#[dimension]` expansion; calling it returns the
+        // per-case `GeneratedTest` entries.
+        matrix_dep_test()
+    }
+
+    #[test]
+    fn matrix_cases_have_dim_case_auto_tags() {
+        let cases = generated_cases();
+        assert_eq!(
+            cases.len(),
+            2,
+            "expected exactly 2 matrix cases (postgres, sqlite)"
+        );
+
+        let by_name: std::collections::HashMap<String, GeneratedTest> =
+            cases.into_iter().map(|t| (t.name.clone(), t)).collect();
+        assert_eq!(by_name.len(), 2, "case names must be distinct");
+
+        let pg = by_name
+            .get("matrix_dep_test_postgres")
+            .expect("postgres case name should be matrix_dep_test_postgres");
+        let sql = by_name
+            .get("matrix_dep_test_sqlite")
+            .expect("sqlite case name should be matrix_dep_test_sqlite");
+
+        // Feature 1: each case carries the `<dim>_<case>` auto-tag, alongside
+        // the explicit `#[tag(...)]` already on the test.
+        assert!(
+            pg.props.tags.contains(&"db_postgres".to_string()),
+            "postgres case must carry the db_postgres auto-tag, got {:?}",
+            pg.props.tags
+        );
+        assert!(
+            sql.props.tags.contains(&"db_sqlite".to_string()),
+            "sqlite case must carry the db_sqlite auto-tag, got {:?}",
+            sql.props.tags
+        );
+        // Explicit tag is preserved (not replaced) on every case.
+        for case in [pg, sql] {
+            assert!(
+                case.props.tags.contains(&"matrix_suite_e2e".to_string()),
+                "explicit #[tag(matrix_suite_e2e)] must be preserved, got {:?}",
+                case.props.tags
+            );
+        }
+        // The non-matching auto-tag is NOT smeared onto the wrong case.
+        assert!(
+            !pg.props.tags.contains(&"db_sqlite".to_string()),
+            "postgres case must not carry db_sqlite, got {:?}",
+            pg.props.tags
+        );
+    }
+
+    #[test]
+    fn matrix_cases_have_tagged_dependency_names() {
+        let cases = generated_cases();
+        for case in &cases {
+            let deps = case
+                .dependencies
+                .as_ref()
+                .expect("matrix case should declare its dependency");
+            assert!(
+                deps.iter()
+                    .any(|d| d == "dbdep_postgres" || d == "dbdep_sqlite"),
+                "case `{}` should depend on a tagged dbdep variant, got {:?}",
+                case.name,
+                deps
+            );
+        }
+    }
+
+    // ----- Feature 2: `matrix_suite!` multiplies the whole module at runtime -----
+
+    // An untagged `DbDep` constructor. Its body is dead code for the matrix'd
+    // tests below (their dependency list is rewritten to the tagged variant
+    // and the compiled getter is aliased to that tagged dep at runtime), but
+    // the *getter symbol* `test_r_get_dep_dbdep` it emits must exist in scope
+    // so the `#[test]` expansion of `thing_one`/`thing_two` (which take an
+    // untagged `&DbDep`) compiles. It also serves as the real backend for any
+    // test that asks for an untagged `&DbDep` directly.
+    #[test_dep]
+    fn create_db() -> DbDep {
+        DbDep { flavor: "postgres" }
+    }
+
+    /// `matrix_suite!(matrix_suite_example, db, DbDep)` registers a runtime
+    /// `Matrix` suite property: every `#[test]` in `matrix_suite_example` whose
+    /// dependency list contains the untagged `dbdep` name is duplicated into
+    /// one test per `db` case (`thing_one_postgres`, `thing_one_sqlite`, ...),
+    /// each carrying the `db_<case>` auto-tag and a dependency rewritten to the
+    /// case-specific tagged dep. Tests that do not depend on `DbDep` (such as
+    /// `no_dep_test`) run exactly once.
+    #[cfg(test)]
+    mod matrix_suite_example {
+        use super::DbDep;
+        use test_r::{tag, test};
+
+        // Bring the tagged (postgres/sqlite) AND untagged `DbDep` getters into
+        // this child module. The untagged getter is required so the compiled
+        // `&DbDep` parameter resolves at compile time; at runtime the aliasing
+        // dependency view redirects it to the per-case tagged dep.
+        test_r::inherit_test_dep!(
+            #[tagged_as("postgres")]
+            DbDep
+        );
+        test_r::inherit_test_dep!(
+            #[tagged_as("sqlite")]
+            DbDep
+        );
+        test_r::inherit_test_dep!(DbDep);
+
+        #[test]
+        fn thing_one(deps: &DbDep) {
+            assert!(deps.flavor == "postgres" || deps.flavor == "sqlite");
+        }
+
+        #[test]
+        #[tag(suite_explicit)]
+        fn thing_two(deps: &DbDep) {
+            assert!(deps.flavor == "postgres" || deps.flavor == "sqlite");
+        }
+
+        /// A `#[test]` that takes no `&DbDep` parameter — runs exactly once,
+        /// not matrix-expanded.
+        #[test]
+        fn no_dep_test() {
+            // Use a runtime value so clippy's `eq_op` does not flag this as a
+            // constant-equal assertion. The point of this test is just that it
+            // runs exactly once (not matrix-expanded).
+            let expected = 4;
+            assert_eq!(2 + 2, expected);
+        }
+
+        // Under the runtime-multiplication strategy there is no compile-time
+        // rewrite of this module, so there is nothing to introspect by calling
+        // the test fns directly. The multiplication into `thing_one_postgres`
+        // / `thing_one_sqlite` / `thing_two_postgres` / `thing_two_sqlite`
+        // (and the single, unmultiplied `no_dep_test`) is verified end-to-end
+        // by `matrix_suite_list_multiplies_tests` in `test-r/tests/tests.rs`
+        // via `--list`, and the multiplied cases are run green by
+        // `can_run_sync_examples`.
+    }
+
+    test_r::matrix_suite!(matrix_suite_example, db, DbDep);
 }

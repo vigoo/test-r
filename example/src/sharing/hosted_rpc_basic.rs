@@ -35,7 +35,7 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
-    use test_r::core::{HostedRpcChannel, HostedRpcDep, HostedRpcError};
+    use test_r::core::{HostedDep, HostedRpcChannel, HostedRpcDep, HostedRpcError};
     use test_r::{test, test_dep};
 
     /// Counts how many times the owner constructor ran in this process.
@@ -105,6 +105,10 @@ mod tests {
     }
 
     impl LastUniqueIdStub {
+        pub fn dep_id(&self) -> &str {
+            self.channel.dep_id()
+        }
+
         pub fn next(&self) -> Result<u64, HostedRpcError> {
             let bytes = self.channel.call(METHOD_NEXT, Vec::new())?;
             let arr: [u8; 8] = bytes
@@ -136,6 +140,58 @@ mod tests {
     fn unique_id_owner() -> LastUniqueIdOwner {
         OWNER_CTOR_RUNS.fetch_add(1, Ordering::SeqCst);
         LastUniqueIdOwner::new()
+    }
+
+    pub struct DerivedFromRpcStub {
+        first_id: u64,
+        parent_stub_dep_id: String,
+    }
+
+    impl HostedDep for DerivedFromRpcStub {
+        fn descriptor(&self) -> Vec<u8> {
+            let mut bytes = self.first_id.to_be_bytes().to_vec();
+            bytes.extend_from_slice(self.parent_stub_dep_id.as_bytes());
+            bytes
+        }
+
+        fn from_descriptor(bytes: &[u8]) -> Self {
+            let (id, dep_id) = bytes.split_at(8);
+            let arr: [u8; 8] = id.try_into().expect("8-byte id");
+            Self {
+                first_id: u64::from_be_bytes(arr),
+                parent_stub_dep_id: std::str::from_utf8(dep_id)
+                    .expect("utf-8 dep id")
+                    .to_string(),
+            }
+        }
+    }
+
+    #[test_dep(scope = Hosted)]
+    fn derived_from_rpc_stub(ids: &LastUniqueIdStub) -> DerivedFromRpcStub {
+        DerivedFromRpcStub {
+            first_id: ids.next().expect("derive id from hosted rpc stub"),
+            parent_stub_dep_id: ids.dep_id().to_string(),
+        }
+    }
+
+    #[test]
+    fn downstream_hosted_dep_reads_rpc_stub(dep: &DerivedFromRpcStub) {
+        assert!(
+            dep.first_id > 0,
+            "derived dependency must be built from the HostedRpc stub"
+        );
+    }
+
+    #[test]
+    fn downstream_hosted_dep_rpc_stub_keeps_qualified_dep_id(
+        dep: &DerivedFromRpcStub,
+        ids: &LastUniqueIdStub,
+    ) {
+        assert_eq!(
+            dep.parent_stub_dep_id,
+            ids.dep_id(),
+            "HostedRpc stubs built while resolving parent-side constructors must carry the same fully-qualified dep id as ordinary injected stubs"
+        );
     }
 
     #[test]

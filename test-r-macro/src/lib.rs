@@ -119,6 +119,42 @@ pub fn tag_suite(input: TokenStream) -> TokenStream {
     suite::tag_suite(input)
 }
 
+/// `matrix_suite!(<module>, <dim>, <DepType>)` — apply a previously-defined
+/// matrix dimension to every `#[test]` in the named module.
+///
+/// Unlike `tag_suite!` / `sequential_suite!` (which are pure runtime suite
+/// properties applied to already-registered tests), `matrix_suite!` works by
+/// **runtime test multiplication** (Strategy B): at test-collection time, each
+/// registered test under `<module>` whose `dependencies` contain the untagged
+/// `<DepType>` dep name is duplicated into one test per case of the `<dim>`
+/// dimension. The multiplied cases are named `<test>_<case>`, carry the
+/// `<dim>_<case>` auto-tag (selectable via `:tag:`), and have their dependency
+/// rewritten to the case-specific tagged dep, with the test closure's
+/// compiled getter redirected to that tagged dep via an aliased
+/// `DependencyView`.
+///
+/// Because multiplication happens at runtime over already-registered tests,
+/// `<module>` may be a **file-based module** (`mod worker;`) or a directory
+/// module (`mod api;` with `api/mod.rs`), not just an inline module. This is
+/// the key difference from the earlier compile-time attribute form, which
+/// required an inline module body to rewrite test signatures.
+///
+/// Tests in the module that do not depend on `<DepType>` (or that already
+/// carry an explicit `#[dimension]` / `#[tagged_as]` for that dep) are left
+/// untouched and run exactly once.
+///
+/// `matrix_suite!` must be invoked in a scope where the
+/// `test_r_get_dep_tags_<dim>()` helper emitted by `define_matrix_dimension!`
+/// is in scope (typically the same parent module that declared the dimension).
+///
+/// See `book/src/advanced_features/dependency_injection.md` for the worked
+/// example and the rationale for the runtime-multiplication (Strategy B)
+/// approach.
+#[proc_macro]
+pub fn matrix_suite(item: TokenStream) -> TokenStream {
+    suite::matrix_suite(item)
+}
+
 #[proc_macro_attribute]
 pub fn sequential(_attr: TokenStream, item: TokenStream) -> TokenStream {
     suite::sequential(item)

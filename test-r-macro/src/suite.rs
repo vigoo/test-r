@@ -1,8 +1,10 @@
+use crate::deps::{DependencyTag, type_path_to_string};
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span};
-use quote::quote;
+use quote::{ToTokens, quote};
+use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Expr, ItemMod, LitInt, LitStr, Token, parse_macro_input};
+use syn::{Expr, ItemMod, LitInt, LitStr, Token, Type, parse_macro_input};
 
 pub fn tag(attr: TokenStream, item: TokenStream) -> TokenStream {
     if let Ok(ast) = syn::parse::<ItemMod>(item.clone()) {
@@ -258,4 +260,104 @@ fn parse_timeout_millis(attr: TokenStream) -> u64 {
             "timeout attribute's parameter must be an integer (timeout milliseconds) or a human-readable duration string"
         );
     }
+}
+
+/// Parsed input of `matrix_suite!(<module>, <dim>, <DepType>)`.
+struct MatrixSuiteInput {
+    module: Ident,
+    dim: Ident,
+    dep_type: Type,
+}
+
+impl Parse for MatrixSuiteInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let module: Ident = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let dim: Ident = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let dep_type: Type = input.parse()?;
+        Ok(MatrixSuiteInput {
+            module,
+            dim,
+            dep_type,
+        })
+    }
+}
+
+/// `matrix_suite!(<module>, <dim>, <DepType>)` — see [`crate::matrix_suite`] in
+/// `lib.rs` for the user-facing docs.
+///
+/// Function-like form (Strategy B, runtime test multiplication). Unlike
+/// `tag_suite!` / `sequential_suite!`, the registration needs the dimension's
+/// case list at runtime, so we synthesize a `#[cfg(test)]` ctor that:
+///   1. calls the `test_r_get_dep_tags_<dim>()` helper emitted by
+///      `define_matrix_dimension!` (it must be in scope at the invocation
+///      site — typically the same parent module that declared the dimension),
+///   2. maps each `(case_label, dep_name, _getter, auto_tag)` tuple to a
+///      `test_r::core::MatrixCase` (dropping the per-case getter, since the
+///      multiplied test reuses its own compiled getter with the dependency
+///      view aliased to the case's tagged dep name), and
+///   3. registers a suite-level `Matrix` property keyed by `<module>` and the
+///      untagged dep name derived from `<DepType>`.
+///
+/// `<module>` is referenced by name only, so it may be a file-based module
+/// (`mod worker;`) or a directory module (`mod api;` with `api/mod.rs`); no
+/// compile-time introspection of the module body is performed.
+pub fn matrix_suite(input: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(input as MatrixSuiteInput);
+
+    let module_str = args.module.to_string();
+    let dim_str = args.dim.to_string();
+    let get_dep_tags_fn = Ident::new(&format!("test_r_get_dep_tags_{dim_str}"), Span::call_site());
+
+    let type_path = match &args.dep_type {
+        Type::Path(p) => p.clone(),
+        Type::Paren(inner) => match &*inner.elem {
+            Type::Path(p) => p.clone(),
+            _ => return mismatched_dep_type(&args.dep_type),
+        },
+        _ => return mismatched_dep_type(&args.dep_type),
+    };
+    let dep_name_str = type_path_to_string(&type_path, DependencyTag::None);
+    let dep_name_str_lit = dep_name_str.clone();
+
+    let random = rand::random::<u64>();
+    let register_ident = Ident::new(
+        &format!("test_r_register_mod_{module_str}_matrix_{random}"),
+        Span::call_site(),
+    );
+
+    let result = quote! {
+        #[cfg(test)]
+        #[test_r::ctor::ctor(crate_path=::test_r::ctor)]
+        fn #register_ident() {
+            let __cases: Vec<test_r::core::MatrixCase> = #get_dep_tags_fn()
+                .into_iter()
+                .map(|(__case_label, __dep_name, _getter, __auto_tag)| {
+                    test_r::core::MatrixCase {
+                        case_label: __case_label,
+                        dep_name: __dep_name,
+                        auto_tag: __auto_tag,
+                    }
+                })
+                .collect();
+            test_r::core::register_suite_matrix(
+                #module_str,
+                module_path!(),
+                #dep_name_str_lit.to_string(),
+                __cases,
+            );
+        }
+    };
+    result.into()
+}
+
+fn mismatched_dep_type(dep_type: &Type) -> TokenStream {
+    let msg = format!(
+        "matrix_suite expects a concrete dependency type, got `{}`",
+        dep_type.to_token_stream()
+    );
+    syn::Error::new_spanned(dep_type, msg)
+        .to_compile_error()
+        .into()
 }

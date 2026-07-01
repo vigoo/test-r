@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add auto-derived `<dimension>_<case>` tags for dependency-matrix test cases, selectable with the existing `:tag:` filter.
+- Add `#[matrix_suite(<dimension>, <DepType>)]` to apply a matrix dimension to matching tests in an inline module.
+
 ## [3.0.10](https://github.com/vigoo/test-r/compare/test-r-v3.0.9...test-r-v3.0.10) - 2026-06-02
 
 ### Other
