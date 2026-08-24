@@ -291,6 +291,13 @@ async fn async_test_runner() -> ExitCode {
             drop(execution);
 
             let mut results = results.lock().await;
+            if is_top_level_parent {
+                assert_eq!(
+                    results.len(),
+                    count,
+                    "IPC worker exhaustion stranded tests in the parent execution plan"
+                );
+            }
             // Drop parent-owned hosted / hosted-rpc owners BEFORE
             // finalising host capture so any `Drop` impls that
             // shutdown background threads / subprocesses get a chance
@@ -320,7 +327,11 @@ async fn async_test_runner() -> ExitCode {
             output.finished_suite(&all_tests, &results, start.elapsed());
             exit_code = SuiteResult::exit_code(&results);
 
-            if exit_code == ExitCode::SUCCESS {
+            // IPC workers execute exactly one parent-controlled dispatch
+            // session. Suite-level retries belong to the top-level parent;
+            // after Shutdown this subprocess must exit instead of reconnecting
+            // to the same listener for an independent retry attempt.
+            if !is_top_level_parent || exit_code == ExitCode::SUCCESS {
                 break;
             } else {
                 remaining_retries -= 1;
@@ -393,8 +404,18 @@ async fn test_thread(
     }
 
     let mut expected_test = None;
+    let mut owned_worker_exhausted = false;
 
-    while !is_done(&execution).await {
+    'test_loop: loop {
+        let is_ipc_worker = connection_arc.is_some();
+        if crate::ipc::test_loop_should_exit(
+            is_ipc_worker,
+            is_done(&execution).await,
+            owned_worker_exhausted,
+        ) {
+            break;
+        }
+
         if let Some(connection) = connection_arc.as_ref() {
             while expected_test.is_none() {
                 let mut conn = connection.lock().await;
@@ -413,6 +434,7 @@ async fn test_thread(
                     } => {
                         expected_test = Some((name, crate_name, module_path));
                     }
+                    IpcCommand::Shutdown => break 'test_loop,
                     IpcCommand::ProvideCloneable { dep_id, wire_bytes } => {
                         // Worker-side reconstruction (see sync.rs::apply_provided_wire_bytes).
                         apply_provided_wire_bytes(
@@ -505,26 +527,34 @@ async fn test_thread(
                     &mut worker,
                 )
                 .await;
+                owned_worker_exhausted = worker
+                    .as_ref()
+                    .map(|worker| worker.exhausted)
+                    .unwrap_or(false);
                 output.finished_running_test(&next.test, next.index, count, &result);
                 let window_end = std::time::Instant::now();
 
                 if let Some(connection) = connection_arc.as_ref() {
                     let finish_marker = Uuid::new_v4().to_string();
                     let finish_marker_line = format!("{finish_marker}\n");
-                    tokio::io::stdout()
+                    let mut stdout = tokio::io::stdout();
+                    stdout
                         .write_all(finish_marker_line.as_bytes())
                         .await
                         .unwrap();
-                    tokio::io::stderr()
+                    stdout.flush().await.unwrap();
+
+                    let mut stderr = tokio::io::stderr();
+                    stderr
                         .write_all(finish_marker_line.as_bytes())
                         .await
                         .unwrap();
-                    tokio::io::stdout().flush().await.unwrap();
-                    tokio::io::stderr().flush().await.unwrap();
+                    stderr.flush().await.unwrap();
 
                     let response = IpcResponse::TestFinished {
                         result: (&result).into(),
                         finish_marker,
+                        worker_exhausted: is_done(&execution).await,
                     };
                     let msg =
                         serialize_to_byte_vec(&response).expect("Failed to encode IPC response");
@@ -552,6 +582,10 @@ async fn test_thread(
                 windows_guard.push(window);
             }
         }
+    }
+
+    if let Some(worker) = worker {
+        worker.shutdown().await;
     }
 }
 
@@ -915,13 +949,14 @@ async fn run_test(
 
 struct Worker {
     _listener: Listener,
-    _process: Child,
+    process: Child,
     _out_handle: JoinHandle<()>,
     _err_handle: JoinHandle<()>,
     out_lines: Arc<Mutex<VecDeque<CapturedOutput>>>,
     err_lines: Arc<Mutex<VecDeque<CapturedOutput>>>,
     capture_enabled: Arc<Mutex<bool>>,
     connection: Stream,
+    exhausted: bool,
     /// Parent-held HostedRpc owner cells keyed by fully-qualified dep id. Used
     /// to dispatch incoming `IpcResponse::HostedRpcCall` frames from the worker
     /// subprocess back to the right owner.
@@ -1022,10 +1057,12 @@ impl Worker {
         let IpcResponse::TestFinished {
             result,
             finish_marker,
+            worker_exhausted,
         } = response
         else {
             unreachable!("loop only breaks on TestFinished")
         };
+        self.exhausted = worker_exhausted;
 
         if test.props.capture_control.requires_capturing(!nocapture) {
             let out_lines: Vec<_> =
@@ -1036,6 +1073,23 @@ impl Worker {
         } else {
             result.into_test_result(Vec::new(), Vec::new())
         }
+    }
+
+    /// Ends this worker only after its owning scheduler thread has finished.
+    /// A worker cannot infer that fact from its private execution plan because
+    /// its test order may diverge from the shared parent scheduler.
+    async fn shutdown(mut self) {
+        let msg = serialize_to_byte_vec(&IpcCommand::Shutdown)
+            .expect("Failed to encode IPC shutdown command");
+        let dump_on_ipc_failure = self.dump_on_failure();
+        dump_on_ipc_failure
+            .run(write_frame_async(&mut self.connection, &msg).await)
+            .await;
+
+        self.process
+            .wait()
+            .await
+            .expect("Failed to wait for worker process");
     }
 
     /// Async counterpart to `sync::Worker::provide_cloneable`. `dep_id` is the
@@ -1303,13 +1357,14 @@ async fn spawn_worker_if_needed(args: &Arguments) -> Option<Worker> {
 
         Some(Worker {
             _listener: listener,
-            _process: process,
+            process,
             _out_handle: out_handle,
             _err_handle: err_handle,
             out_lines,
             err_lines,
             connection,
             capture_enabled,
+            exhausted: false,
             hosted_rpc_owner_cells: Arc::new(HashMap::new()),
         })
     } else {
