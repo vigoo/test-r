@@ -9,17 +9,24 @@ mod tests {
     use test_r::{never_report_time, tag, test};
     use tokio::io::AsyncWriteExt;
 
+    async fn write_captured_output(stdout: &[u8], stderr: &[u8]) {
+        let mut stdout_handle = tokio::io::stdout();
+        stdout_handle.write_all(stdout).await.unwrap();
+        stdout_handle.flush().await.unwrap();
+
+        let mut stderr_handle = tokio::io::stderr();
+        stderr_handle.write_all(stderr).await.unwrap();
+        stderr_handle.flush().await.unwrap();
+    }
+
     #[test]
     #[tag(output_capture_test)]
     async fn it_does_work() {
-        let _ = tokio::io::stdout()
-            .write(b"Print from 'it_does_work'\n")
-            .await
-            .unwrap();
-        let _ = tokio::io::stderr()
-            .write(b"Stderr from 'it_does_work'\n")
-            .await
-            .unwrap();
+        write_captured_output(
+            b"Print from 'it_does_work'\n",
+            b"Stderr from 'it_does_work'\n",
+        )
+        .await;
         let result = 2 + 2;
         assert_eq!(result, 5);
     }
@@ -27,14 +34,7 @@ mod tests {
     #[test]
     #[tag(output_capture_test)]
     async fn this_too() {
-        let _ = tokio::io::stdout()
-            .write(b"Print from 'this_too'\n")
-            .await
-            .unwrap();
-        let _ = tokio::io::stderr()
-            .write(b"Stderr from 'this_too'\n")
-            .await
-            .unwrap();
+        write_captured_output(b"Print from 'this_too'\n", b"Stderr from 'this_too'\n").await;
         let result = 2 + 2;
         assert_eq!(result, 4);
     }
@@ -43,14 +43,11 @@ mod tests {
     #[should_panic]
     #[tag(output_capture_test)]
     async fn panic_test_1() {
-        let _ = tokio::io::stdout()
-            .write(b"Print from 'panic_test_1'\n")
-            .await
-            .unwrap();
-        let _ = tokio::io::stderr()
-            .write(b"Stderr from 'panic_test_1'\n")
-            .await
-            .unwrap();
+        write_captured_output(
+            b"Print from 'panic_test_1'\n",
+            b"Stderr from 'panic_test_1'\n",
+        )
+        .await;
         panic!("This test should panic");
     }
 
