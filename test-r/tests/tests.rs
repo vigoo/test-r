@@ -6,6 +6,65 @@ mod cargo_tests {
 
     #[test]
     #[serial]
+    fn listing_respects_filters_in_both_runners() {
+        let cwd = std::env::current_dir().unwrap();
+        for (example, crate_name, third_test) in [
+            (
+                "example",
+                "test_r_example",
+                "inner::tests::inner_test_works",
+            ),
+            (
+                "example-tokio",
+                "test_r_example_tokio",
+                "tests::panic_test_1",
+            ),
+        ] {
+            let root = cwd.parent().unwrap().join(example);
+            let tagged_tests = vec![
+                format!("{crate_name}::tests::it_does_work"),
+                format!("{crate_name}::tests::this_too"),
+                format!("{crate_name}::{third_test}"),
+            ];
+            for (filters, mut expected) in [
+                (vec![":tag:output_capture_test"], tagged_tests.clone()),
+                (
+                    vec![":tag:output_capture_test", "--skip", "this_too"],
+                    vec![tagged_tests[0].clone(), tagged_tests[2].clone()],
+                ),
+                (vec![":tag:nonexistent_tag"], vec![]),
+                (
+                    vec!["tests::this_too", "--exact"],
+                    vec![tagged_tests[1].clone()],
+                ),
+            ] {
+                let process = std::process::Command::new("cargo")
+                    .args(["test", "--lib", "--", "--list"])
+                    .args(&filters)
+                    .current_dir(&root)
+                    .output()
+                    .unwrap();
+                assert!(
+                    process.status.success(),
+                    "{example} {filters:?}: {}",
+                    String::from_utf8_lossy(&process.stderr)
+                );
+                let stdout = String::from_utf8(process.stdout).unwrap();
+                let mut listed: Vec<_> = stdout
+                    .lines()
+                    .filter(|line| line.starts_with(&format!("{crate_name}::")))
+                    .map(str::to_owned)
+                    .collect();
+                listed.sort();
+                expected.sort();
+                assert_eq!(listed, expected, "{example} {filters:?}: {stdout}");
+                assert!(stdout.contains(&format!("{} tests", expected.len())));
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
     fn can_run_sync_examples() {
         let cwd = std::env::current_dir().unwrap();
         let root = cwd.parent().unwrap().join("example");
