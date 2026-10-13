@@ -17,6 +17,22 @@ fn flaky_test() {
 }
 ```
 
+### Retry reporting
+
+Retry notifications are reported in both direct and captured worker execution,
+including parallel runs. `--show-output` only controls captured log visibility;
+it does not change retry accounting.
+
+In CTRF reports, `retries` counts performed repetitions after the first attempt,
+not the configured budget. A known-flaky test that passes immediately has no
+`retries` or `flaky` field. Once retried, it has `flaky: true`, even if all
+attempts fail: this indicates that a known-flaky test was retried, not that it
+eventually recovered. With `#[flaky(3)]`, a persistent failure makes three
+attempts and reports `retries: 2` while remaining failed.
+
+Worker retry notifications are delivered with the final test result, so plain
+output displays them at completion rather than while an attempt is running.
+
 ## Ensuring tests are not flaky
 
 The opposite appraoch is to ensure that a test is not flaky by running it multiple times. This can help in diagnosing flakiness and reproducing issues locally. The `#[non_flaky(n)]` attribute will run a test `n` times before marking it as succeeded.
@@ -30,3 +46,6 @@ fn non_flaky_test() {
     assert!(true); // This test will pass 3 times before being marked as succeeded
 }
 ```
+
+CTRF also counts these verification repetitions in `retries`, but records
+`flaky: false` for them.
