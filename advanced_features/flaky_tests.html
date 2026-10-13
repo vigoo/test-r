@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-bb5db72d.js";
+            window.path_to_searchindex_js = "../searchindex-6badfa3c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-16c0bd11.js"></script>
@@ -178,7 +178,10 @@
 <p>Tests can be sometimes flaky, and only fail sporadically or depending on the environment or hardware they run on.</p>
 <p><code>test-r</code> provides two ways to handle flaky tests:</p>
 <h2 id="marking-tests-as-known-to-be-flaky"><a class="header" href="#marking-tests-as-known-to-be-flaky">Marking tests as known to be flaky</a></h2>
-<p>By using the <code>#[flaky(n)]</code> attribute, where <code>n</code> is a number, we acknowledge that a test is known to be flaky, and the test runner will retry it up to <code>n</code> times before marking it as failed.</p>
+<p>By using the <code>#[flaky(n)]</code> attribute, where <code>n</code> is a number, we acknowledge that a test is known to be flaky. The test runner allows up to <code>n</code> total attempts (the initial execution plus at most <code>n - 1</code> retries), stopping at the first successful attempt.</p>
+<p>Both synchronous and asynchronous tests retry test-body panics and returned <code>Result::Err</code> values. Dynamically registered tests using <code>FlakinessControl::RetryKnownFlaky(n)</code> follow the same rules. Reported retry counts reflect additional executions, not the configured attempt budget.</p>
+<p>Harness failures, including asynchronous timeouts and critical run-time threshold violations, are not retried. An asynchronous timeout applies to each attempt separately, not to the entire retry sequence. Dependency-construction failures and worker crashes are not retried by this attribute either.</p>
+<p><code>should_panic</code> is evaluated after the retry loop; this attribute does not change the existing expected-panic behavior.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use test_r::{flaky, test};
