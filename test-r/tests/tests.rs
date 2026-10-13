@@ -72,7 +72,9 @@ mod ctrf_retry_tests {
                         assert_eq!(
                             output.status.success(),
                             !matches!(scenario, "fail" | "detached" | "prove"),
-                            "{example} {scenario}: {}",
+                            "{example} {scenario} nocapture={nocapture} show_output={show_output}: status={}\nstdout:\n{}\nstderr:\n{}",
+                            output.status,
+                            String::from_utf8_lossy(&output.stdout),
                             String::from_utf8_lossy(&output.stderr)
                         );
                         let report_path = std::fs::read_dir(&dir)

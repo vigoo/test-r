@@ -154,11 +154,17 @@ impl LogFile {
         let mut err = TerminalStderr;
         let _ = writeln!(err, "Logging to {}", path.to_string_lossy());
 
-        let file = std::fs::OpenOptions::new()
+        // These files have one formatter writer. Open with ordinary write
+        // access so snapshot formats can truncate on Windows; append-only
+        // handles there deliberately lack FILE_WRITE_DATA.
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
-            .append(true)
+            .write(true)
+            .truncate(false)
             .open(path.clone())
             .unwrap_or_else(|_| panic!("Failed to open log file {}", path.to_string_lossy()));
+        file.seek(SeekFrom::End(0))
+            .expect("Failed to seek log file");
         LogFile { file }
     }
 }
