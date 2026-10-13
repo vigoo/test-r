@@ -2180,28 +2180,57 @@ pub(crate) fn get_ensure_time(args: &Arguments, test: &RegisteredTest) -> Option
 #[derive(Clone)]
 pub enum TestResult {
     Passed {
+        attempts: Vec<TestAttempt>,
         captured: Vec<CapturedOutput>,
         exec_time: Duration,
     },
     Benchmarked {
+        attempts: Vec<TestAttempt>,
         captured: Vec<CapturedOutput>,
         exec_time: Duration,
         ns_iter_summ: Summary,
         mb_s: usize,
     },
     Failed {
+        attempts: Vec<TestAttempt>,
         cause: FailureCause,
         captured: Vec<CapturedOutput>,
         exec_time: Duration,
     },
     Ignored {
+        attempts: Vec<TestAttempt>,
         captured: Vec<CapturedOutput>,
     },
 }
 
+#[derive(Clone)]
+pub struct TestAttempt {
+    pub result: Box<TestResult>,
+    pub finish_marker: Option<String>,
+}
+
 impl TestResult {
+    pub(crate) fn attempts(&self) -> &Vec<TestAttempt> {
+        match self {
+            Self::Passed { attempts, .. }
+            | Self::Failed { attempts, .. }
+            | Self::Benchmarked { attempts, .. }
+            | Self::Ignored { attempts, .. } => attempts,
+        }
+    }
+
+    pub(crate) fn set_attempts(&mut self, history: Vec<TestAttempt>) {
+        match self {
+            Self::Passed { attempts, .. }
+            | Self::Failed { attempts, .. }
+            | Self::Benchmarked { attempts, .. }
+            | Self::Ignored { attempts, .. } => *attempts = history,
+        }
+    }
+
     pub fn passed(exec_time: Duration) -> Self {
         TestResult::Passed {
+            attempts: Vec::new(),
             captured: Vec::new(),
             exec_time,
         }
@@ -2209,6 +2238,7 @@ impl TestResult {
 
     pub fn benchmarked(exec_time: Duration, ns_iter_summ: Summary, mb_s: usize) -> Self {
         TestResult::Benchmarked {
+            attempts: Vec::new(),
             captured: Vec::new(),
             exec_time,
             ns_iter_summ,
@@ -2218,6 +2248,7 @@ impl TestResult {
 
     pub fn failed(exec_time: Duration, cause: FailureCause) -> Self {
         TestResult::Failed {
+            attempts: Vec::new(),
             cause,
             captured: Vec::new(),
             exec_time,
@@ -2226,6 +2257,7 @@ impl TestResult {
 
     pub fn ignored() -> Self {
         TestResult::Ignored {
+            attempts: Vec::new(),
             captured: Vec::new(),
         }
     }
@@ -2274,6 +2306,7 @@ impl TestResult {
             } => *captured_ref = captured,
             TestResult::Ignored {
                 captured: captured_ref,
+                ..
             } => *captured_ref = captured,
             TestResult::Benchmarked {
                 captured: captured_ref,

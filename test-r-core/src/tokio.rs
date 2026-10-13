@@ -722,7 +722,7 @@ async fn run_with_flakiness_control<F>(
     idx: usize,
     count: usize,
     test: F,
-) -> Result<Result<(), FailureCause>, Box<dyn Any + Send>>
+) -> TestResult
 where
     F: Fn(
             Instant,
@@ -731,60 +731,71 @@ where
         + Send
         + Sync,
 {
-    match &test_description.props.flakiness_control {
-        FlakinessControl::None => {
-            let start = Instant::now();
-            test(start).await
-        }
-        FlakinessControl::ProveNonFlaky(tries) => {
-            for n in 0..*tries {
-                if n > 0 {
-                    output.repeat_running_test(
-                        test_description,
-                        idx,
-                        count,
-                        n + 1,
-                        *tries,
-                        "to ensure test is not flaky",
-                    );
+    let total_start = Instant::now();
+    let mut attempts = Vec::new();
+    let max_attempts = match test_description.props.flakiness_control {
+        FlakinessControl::None => 1,
+        FlakinessControl::ProveNonFlaky(n) | FlakinessControl::RetryKnownFlaky(n) => n,
+    };
+    if max_attempts == 0
+        && matches!(
+            test_description.props.flakiness_control,
+            FlakinessControl::ProveNonFlaky(_)
+        )
+    {
+        return TestResult::from_result(
+            &test_description.props.should_panic,
+            total_start.elapsed(),
+            Ok(Ok(())),
+        );
+    }
+    let mut n = 1;
+    loop {
+        let start = Instant::now();
+        let raw = test(start).await;
+        let repeat = match test_description.props.flakiness_control {
+            FlakinessControl::None => false,
+            FlakinessControl::ProveNonFlaky(_) => matches!(&raw, Ok(Ok(()))),
+            FlakinessControl::RetryKnownFlaky(_) => matches!(
+                &raw,
+                Err(_)
+                    | Ok(Err(
+                        FailureCause::ReturnedError { .. } | FailureCause::ReturnedMessage(_)
+                    ))
+            ),
+        };
+        let mut result =
+            TestResult::from_result(&test_description.props.should_panic, start.elapsed(), raw);
+        attempts.push(internal::TestAttempt {
+            result: Box::new(result.clone()),
+            finish_marker: output.finish_test_attempt(test_description),
+        });
+        if !repeat || n >= max_attempts {
+            match &mut result {
+                TestResult::Passed { exec_time, .. } | TestResult::Failed { exec_time, .. } => {
+                    *exec_time = total_start.elapsed()
                 }
-                let start = Instant::now();
-                match test(start).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => return Ok(Err(e)),
-                    Err(e) => return Err(e),
-                };
+                _ => {}
             }
-            Ok(Ok(()))
+            result.set_attempts(attempts);
+            return result;
         }
-        FlakinessControl::RetryKnownFlaky(max_retries) => {
-            let mut tries = 1;
-            loop {
-                let start = Instant::now();
-                let result = test(start).await;
-
-                let retryable = matches!(
-                    &result,
-                    Err(_)
-                        | Ok(Err(
-                            FailureCause::ReturnedError { .. } | FailureCause::ReturnedMessage(_)
-                        ))
-                );
-                if retryable && tries < *max_retries {
-                    tries += 1;
-                    output.repeat_running_test(
-                        test_description,
-                        idx,
-                        count,
-                        tries,
-                        *max_retries,
-                        "because test is known to be flaky",
-                    );
-                } else {
-                    break result;
-                }
-            }
-        }
+        n += 1;
+        output.repeat_running_test(
+            test_description,
+            idx,
+            count,
+            n,
+            max_attempts,
+            if matches!(
+                test_description.props.flakiness_control,
+                FlakinessControl::ProveNonFlaky(_)
+            ) {
+                "to ensure test is not flaky"
+            } else {
+                "because test is known to be flaky"
+            },
+        );
     }
 }
 
@@ -833,49 +844,50 @@ async fn run_test(
                 let timeout = test.props.timeout;
                 let test_fn = test_fn.clone();
                 let detached_panic_policy = test.props.detached_panic_policy.clone();
-                let result = run_with_flakiness_control(output, &test, idx, count, |start| {
-                    let dependency_view = dependency_view.clone();
-                    let test_fn = test_fn.clone();
-                    Box::pin(async move {
-                        let test_id = crate::panic_hook::next_test_id();
-                        crate::panic_hook::set_current_test_id(test_id);
-                        crate::panic_hook::create_detached_collector(test_id);
-                        let result = AssertUnwindSafe(Box::pin(async move {
-                            match timeout {
-                                None => test_fn(dependency_view).await,
-                                Some(duration) => {
-                                    let result =
-                                        tokio::time::timeout(duration, test_fn(dependency_view))
-                                            .await;
-                                    match result {
-                                        Ok(result) => result,
-                                        Err(_) => {
-                                            return Err(FailureCause::HarnessError(
-                                                "Test timed out".to_string(),
-                                            ))
+                let mut test_result =
+                    run_with_flakiness_control(output, &test, idx, count, |start| {
+                        let dependency_view = dependency_view.clone();
+                        let test_fn = test_fn.clone();
+                        Box::pin(async move {
+                            let test_id = crate::panic_hook::next_test_id();
+                            crate::panic_hook::set_current_test_id(test_id);
+                            crate::panic_hook::create_detached_collector(test_id);
+                            let result = AssertUnwindSafe(Box::pin(async move {
+                                match timeout {
+                                    None => test_fn(dependency_view).await,
+                                    Some(duration) => {
+                                        let result = tokio::time::timeout(
+                                            duration,
+                                            test_fn(dependency_view),
+                                        )
+                                        .await;
+                                        match result {
+                                            Ok(result) => result,
+                                            Err(_) => {
+                                                return Err(FailureCause::HarnessError(
+                                                    "Test timed out".to_string(),
+                                                ))
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            .into_result()?;
-                            if let Some(ensure_time) = ensure_time {
-                                let elapsed = start.elapsed();
-                                if ensure_time.is_critical(&elapsed) {
-                                    return Err(FailureCause::HarnessError(format!(
-                                        "Test run time exceeds critical threshold: {elapsed:?}"
-                                    )));
+                                .into_result()?;
+                                if let Some(ensure_time) = ensure_time {
+                                    let elapsed = start.elapsed();
+                                    if ensure_time.is_critical(&elapsed) {
+                                        return Err(FailureCause::HarnessError(format!(
+                                            "Test run time exceeds critical threshold: {elapsed:?}"
+                                        )));
+                                    }
                                 }
-                            }
-                            Ok(())
-                        }))
-                        .catch_unwind()
-                        .await;
-                        result
+                                Ok(())
+                            }))
+                            .catch_unwind()
+                            .await;
+                            result
+                        })
                     })
-                })
-                .await;
-                let mut test_result =
-                    TestResult::from_result(&test.props.should_panic, start.elapsed(), result);
+                    .await;
                 if let Some(test_id) = crate::panic_hook::current_test_id() {
                     if let Some(collector) = crate::panic_hook::take_detached_collector(test_id) {
                         let panics = match collector.lock() {
@@ -887,17 +899,26 @@ async fn run_test(
                             && test_result.is_passed()
                         {
                             let messages: Vec<String> = panics.iter().map(|p| p.render()).collect();
-                            test_result = TestResult::failed(
-                                start.elapsed(),
-                                FailureCause::Panic(internal::PanicCause {
-                                    message: Some(format!(
-                                        "Detached task(s) panicked:\n{}",
-                                        messages.join("\n---\n")
-                                    )),
-                                    location: panics.first().and_then(|p| p.location.clone()),
-                                    backtrace: panics.first().and_then(|p| p.backtrace.clone()),
-                                }),
-                            );
+                            let mut attempts = test_result.attempts().clone();
+                            let cause = FailureCause::Panic(internal::PanicCause {
+                                message: Some(format!(
+                                    "Detached task(s) panicked:\n{}",
+                                    messages.join("\n---\n")
+                                )),
+                                location: panics.first().and_then(|p| p.location.clone()),
+                                backtrace: panics.first().and_then(|p| p.backtrace.clone()),
+                            });
+                            test_result = TestResult::failed(start.elapsed(), cause.clone());
+                            if let Some(last) = attempts.last_mut() {
+                                let TestResult::Passed { exec_time, .. } = last.result.as_ref()
+                                else {
+                                    unreachable!(
+                                        "a passed logical test has a passed final invocation"
+                                    );
+                                };
+                                *last.result = TestResult::failed(*exec_time, cause);
+                            }
+                            test_result.set_attempts(attempts);
                         }
                     }
                 }

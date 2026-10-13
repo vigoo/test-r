@@ -42,6 +42,11 @@ pub trait TestRunnerOutput: Send + Sync {
     );
     fn test_list(&self, registered_tests: &[RegisteredTest]);
 
+    /// Delimits worker output for an individual invocation, if capture is active.
+    fn finish_test_attempt(&self, _test: &RegisteredTest) -> Option<String> {
+        None
+    }
+
     fn warning(&self, message: &str) {
         let mut err = TerminalStderr;
         let _ = writeln!(err, "{message}");
@@ -93,7 +98,7 @@ pub(crate) fn write_failure_summary_to_stderr(
 
 pub fn test_runner_output(args: &Arguments) -> Arc<dyn TestRunnerOutput> {
     if args.ipc.is_some() {
-        Arc::new(ipc::IpcWorkerOutput::new())
+        Arc::new(ipc::IpcWorkerOutput::new(!args.nocapture))
     } else if args.quiet {
         Arc::new(terse::Terse::new())
     } else {

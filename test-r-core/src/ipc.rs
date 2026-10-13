@@ -142,6 +142,16 @@ pub enum SerializableTestResult {
         rendered_failure_cause: String,
     },
     Ignored,
+    WithAttempts {
+        result: Box<SerializableTestResult>,
+        attempts: Vec<SerializableTestAttempt>,
+    },
+}
+
+#[derive(Debug, BinaryCodec)]
+pub struct SerializableTestAttempt {
+    result: SerializableTestResult,
+    finish_marker: Option<String>,
 }
 
 impl SerializableTestResult {
@@ -150,6 +160,35 @@ impl SerializableTestResult {
         stdout: Vec<CapturedOutput>,
         stderr: Vec<CapturedOutput>,
     ) -> TestResult {
+        if let Self::WithAttempts { result, attempts } = self {
+            let mut stdout = stdout.into_iter();
+            let mut stderr = stderr.into_iter();
+            let mut history = Vec::new();
+            let mut all_output = Vec::new();
+            for attempt in attempts {
+                let (out, err) = if let Some(marker) = &attempt.finish_marker {
+                    (
+                        take_attempt_output(&mut stdout, marker),
+                        take_attempt_output(&mut stderr, marker),
+                    )
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+                let attempt_result = attempt.result.into_test_result(out, err);
+                all_output.extend(attempt_result.captured_output().iter().cloned());
+                history.push(crate::internal::TestAttempt {
+                    result: Box::new(attempt_result),
+                    finish_marker: None,
+                });
+            }
+            all_output.extend(stdout);
+            all_output.extend(stderr);
+            all_output.sort();
+            let mut result = result.into_test_result(Vec::new(), Vec::new());
+            result.set_captured_output(all_output);
+            result.set_attempts(history);
+            return result;
+        }
         let mut captured = [stdout, stderr].concat();
         captured.sort();
 
@@ -159,8 +198,54 @@ impl SerializableTestResult {
     }
 }
 
+fn take_attempt_output(
+    source: &mut impl Iterator<Item = CapturedOutput>,
+    marker: &str,
+) -> Vec<CapturedOutput> {
+    let mut captured = Vec::new();
+    for mut output in source.by_ref() {
+        let line = match &mut output {
+            CapturedOutput::Stdout { line, .. }
+            | CapturedOutput::Stderr { line, .. }
+            | CapturedOutput::Host { line, .. } => line,
+        };
+        // A test may leave a partial line before the flushed marker. Strip
+        // only the unique marker suffix, retaining the test's actual bytes.
+        if let Some(prefix) = line.strip_suffix(marker) {
+            if !prefix.is_empty() {
+                *line = prefix.to_string();
+                captured.push(output);
+            }
+            break;
+        }
+        captured.push(output);
+    }
+    captured
+}
+
 impl From<&TestResult> for SerializableTestResult {
     fn from(result: &TestResult) -> Self {
+        let final_result = Self::without_attempts(result);
+        if result.attempts().is_empty() {
+            final_result
+        } else {
+            Self::WithAttempts {
+                result: Box::new(final_result),
+                attempts: result
+                    .attempts()
+                    .iter()
+                    .map(|attempt| SerializableTestAttempt {
+                        result: Self::without_attempts(&attempt.result),
+                        finish_marker: attempt.finish_marker.clone(),
+                    })
+                    .collect(),
+            }
+        }
+    }
+}
+
+impl SerializableTestResult {
+    fn without_attempts(result: &TestResult) -> Self {
         match &result {
             TestResult::Passed { exec_time, .. } => SerializableTestResult::Passed {
                 exec_time: *exec_time,
@@ -189,6 +274,9 @@ impl From<&TestResult> for SerializableTestResult {
 impl From<SerializableTestResult> for TestResult {
     fn from(result: SerializableTestResult) -> Self {
         match result {
+            SerializableTestResult::WithAttempts { .. } => {
+                result.into_test_result(Vec::new(), Vec::new())
+            }
             SerializableTestResult::Passed { exec_time } => TestResult::passed(exec_time),
             SerializableTestResult::Failed {
                 exec_time,

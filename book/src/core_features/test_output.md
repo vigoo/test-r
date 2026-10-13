@@ -3,12 +3,13 @@
 The default setting of `test-r` is to use the **pretty** format and capture test outputs.  
 
 ## Output format
-There are four supported output formats in `test-r`, which can be selected with the `--format` flag:
+There are five supported output formats in `test-r`, which can be selected with the `--format` flag:
 
 - `pretty` (default) - human-readable output showing the progress and the final results in a verbose way
 - `terse` - human-readable output, only emitting a single character for each test during the test run
 - `json` - emits JSON messages during the test run, useful for integration with other tools like IDEs
 - `junit` - writes a JUnit XML test report, useful for generating browsable test reports 
+- `ctrf` - writes a Common Test Report Format JSON report, including structured retry evidence
 
 When using the `pretty` (default) mode, the `--color` flag can be used to control whether the output should use colors or not:
 
@@ -61,3 +62,42 @@ Note that `test-r` provides a nicer way to fail long running tests (but only if 
 ## Saving the output to a log file
 The test output can be saved into a log file using the `--logfile <path>` flag. Because of the [issue described in the Rust issue tracker](https://github.com/rust-lang/rust/issues/105424), the test runner cannot directly use the provided path as other test harnesses would overwrite it. Instead, `test-r` interprets the provided path as a template, and appends a random UUID to its file name part for each generated log file. This allows saving multiple JUnit test reports, for example, into a single directory, where a test browser can pick them up from.
 
+### CTRF retry evidence
+
+CTRF keeps one logical entry per test in `results.tests`; summary counts describe only
+the current suite attempt, not the number of invocations. A test's standard `duration`
+continues to cover its entire execution, including per-test retries (milliseconds).
+The standard `retries` field counts additional invocations within that suite attempt.
+
+When a test runs more than once, its `extra.testR.attempts` array contains ordered
+invocation records. Each has a one-based `attempt`, CTRF `status`, `duration` in
+milliseconds for that invocation, failure `message` when applicable, and captured
+`stdout`/`stderr` arrays when available. A first-invocation pass has no attempt-history
+extension. Failed-invocation diagnostics are retained even after eventual success,
+without `--show-output`; successful-invocation output requires `--show-output`.
+This policy applies both to invocation records and to the logical test's standard
+`stdout`/`stderr`: a repeated test that ultimately fails includes only its failed
+invocations' worker output unless `--show-output` is set.
+Under `--nocapture` (or `#[never_capture]`) no captured logs are fabricated.
+
+For `--flaky-run`, the second and later suite reports also have
+`results.extra.testR` with a one-based `suiteAttempt`, `complete` boolean, and
+`previousSuiteAttempts` array. Each prior suite record contains its `suiteAttempt`,
+`summary`, and `tests`, including any nested per-test invocation records. Thus
+invocation numbers restart within each suite attempt and never inflate final counts.
+Suite summary start/stop timestamps describe that suite, not cumulative retry time.
+
+With `--logfile`, each snapshot is a single JSON document. At suite restart a partial
+snapshot (`complete: false`) preserves prior completed suites, even if the new suite
+never finishes a test. Subsequent partial snapshots include the current suite's
+completed tests. Without a logfile, reports are emitted at suite end on stdout;
+later reports include earlier suite evidence. History has no separate size limit;
+its size grows with the configured attempt count and captured diagnostics.
+
+Output attribution uses flushed worker stream boundaries between invocations.
+Output from background work that outlives an invocation may appear in a later
+invocation's window. Host-side output is attributed only to the logical test;
+for repeated tests it is retained separately in `extra.testR.hostOutput` when
+any invocation failed or `--show-output` is set, rather than assigned to a
+fictitious invocation. Existing `[host]` rendering in the standard output remains
+unchanged. These extensions have the same semantics in sync and async runners.

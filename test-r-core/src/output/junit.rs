@@ -126,6 +126,7 @@ impl JUnit {
                                     TestResult::Passed {
                                         exec_time,
                                         captured,
+                                        ..
                                     }
                                     | TestResult::Benchmarked {
                                         exec_time,

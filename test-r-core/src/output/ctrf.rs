@@ -44,6 +44,8 @@ impl TestRunnerOutput for Ctrf {
         state.suites.clear();
         state.pending_tests.clear();
         state.pending_stops.clear();
+        state.suite_attempt += 1;
+        write_ctrf_snapshot(&mut state, false);
         drop(state);
         self.progress.start_suite(tests.len());
     }
@@ -243,7 +245,23 @@ fn build_test_value(
     let mut stdout_lines = vec![];
     let mut stderr_lines = vec![];
 
-    for capture in result.captured_output() {
+    let captures = if result.attempts().len() > 1 && !show_output {
+        let mut captures: Vec<_> =
+            result
+                .attempts()
+                .iter()
+                .filter(|attempt| attempt.result.is_failed())
+                .flat_map(|attempt| attempt.result.captured_output())
+                .chain(result.captured_output().iter().filter(|capture| {
+                    matches!(capture, crate::internal::CapturedOutput::Host { .. })
+                }))
+                .collect();
+        captures.sort();
+        captures
+    } else {
+        result.captured_output().iter().collect()
+    };
+    for capture in captures {
         match capture {
             crate::internal::CapturedOutput::Stdout { line, .. } => stdout_lines.push(line.clone()),
             crate::internal::CapturedOutput::Stderr { line, .. } => stderr_lines.push(line.clone()),
@@ -263,14 +281,70 @@ fn build_test_value(
 
     test.message = result.failure_message();
     test.suite = Some(registered_test.crate_and_module());
-    test.flaky = flaky;
-    test.retries = retries;
+    test.flaky = if result.attempts().len() > 1 {
+        match registered_test.props.flakiness_control {
+            FlakinessControl::RetryKnownFlaky(_) => Some(true),
+            FlakinessControl::ProveNonFlaky(_) => Some(false),
+            FlakinessControl::None => flaky,
+        }
+    } else {
+        flaky
+    };
+    test.retries = if result.attempts().len() > 1 {
+        Some(result.attempts().len() - 1)
+    } else {
+        retries
+    };
     test.start = start;
     test.stop = stop;
 
     let status = test.status();
     let suite = test.suite.clone();
-    let value = serde_json::to_value(&test).expect("Failed to serialize CTRF test");
+    let mut value = serde_json::to_value(&test).expect("Failed to serialize CTRF test");
+    if result.attempts().len() > 1 {
+        let attempts: Vec<_> = result
+            .attempts()
+            .iter()
+            .enumerate()
+            .map(|(index, attempt)| {
+                let (_, _, mut evidence) = build_test_value(
+                    registered_test,
+                    &attempt.result,
+                    show_output,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                evidence["attempt"] = json!(index + 1);
+                evidence
+            })
+            .collect();
+        value["extra"] = json!({ "testR": { "attempts": attempts } });
+        if result
+            .attempts()
+            .iter()
+            .any(|attempt| attempt.result.is_failed())
+            || show_output
+        {
+            // Host records only have a logical-test window, not worker
+            // invocation boundaries. Preserve them without inventing attribution.
+            let host_output: Vec<_> = result
+                .captured_output()
+                .iter()
+                .filter_map(|capture| {
+                    if let crate::internal::CapturedOutput::Host { line, .. } = capture {
+                        Some(line)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !host_output.is_empty() {
+                value["extra"]["testR"]["hostOutput"] = json!(host_output);
+            }
+        }
+    }
     (status, suite, value)
 }
 
@@ -327,7 +401,7 @@ fn write_ctrf_snapshot(state: &mut CtrfState, is_final: bool) {
             .insert("suites".to_string(), json!(state.suites.len()));
     }
 
-    let report = json!({
+    let mut report = json!({
         "reportFormat": ctrf_rs::report::REPORT_FORMAT,
         "specVersion": ctrf_rs::report::SPEC_VERSION.to_string(),
         "timestamp": format!("{now:?}"),
@@ -338,6 +412,23 @@ fn write_ctrf_snapshot(state: &mut CtrfState, is_final: bool) {
             "tests": state.tests,
         },
     });
+
+    // Only prior completed suites live in history: the current suite remains
+    // the single source of truth for standard CTRF tests and summary counts.
+    if state.suite_attempt > 1 {
+        report["results"]["extra"] = json!({ "testR": {
+            "suiteAttempt": state.suite_attempt,
+            "complete": is_final,
+            "previousSuiteAttempts": state.previous_suites,
+        }});
+    }
+    if is_final {
+        state.previous_suites.push(json!({
+            "suiteAttempt": state.suite_attempt,
+            "summary": report["results"]["summary"],
+            "tests": state.tests,
+        }));
+    }
 
     let raw = serde_json::to_string(&report).expect("Failed to serialize CTRF document");
     let out = &mut state.target;
@@ -370,6 +461,8 @@ struct CtrfState {
     /// preserves true per-test stop times.
     pub pending_stops: HashMap<String, u64>,
     pub start: Option<SystemTime>,
+    pub suite_attempt: usize,
+    pub previous_suites: Vec<serde_json::Value>,
 }
 
 impl CtrfState {
@@ -382,6 +475,8 @@ impl CtrfState {
             pending_tests: HashMap::new(),
             pending_stops: HashMap::new(),
             start: None,
+            suite_attempt: 0,
+            previous_suites: Vec::new(),
         }
     }
 }
