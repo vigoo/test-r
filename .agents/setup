@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ! -x "$HOME/.cargo/bin/rustup" ]]; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+        sh -s -- -y --profile minimal --component rustfmt --component clippy
+fi
+source "$HOME/.cargo/env"
+rustup component add rustfmt clippy
+
+if ! command -v mdbook >/dev/null; then
+    mkdir -p "$HOME/.local/bin"
+    curl -fsSL https://github.com/rust-lang/mdBook/releases/download/v0.5.4/mdbook-v0.5.4-x86_64-unknown-linux-gnu.tar.gz |
+        tar -xz -C "$HOME/.local/bin" mdbook
+fi
