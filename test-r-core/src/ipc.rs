@@ -94,6 +94,28 @@ pub enum IpcCommand {
         request_id: u64,
         body: HostedRpcReplyBody,
     },
+    /// Tells an IPC worker that its owning parent scheduler thread will not
+    /// send any more commands. Worker lifetime is parent-controlled rather
+    /// than inferred from the worker's private execution plan, whose
+    /// `remaining_count` can reach zero before the parent is done dispatching.
+    Shutdown,
+}
+
+/// Returns whether a test loop should stop based on its execution plan.
+///
+/// An in-process runner owns its scheduler and stops when that scheduler is
+/// done. An IPC worker must ignore its private scheduler's completion state:
+/// only an explicit [`IpcCommand::Shutdown`] from its owning parent proves
+/// that no future [`IpcCommand::RunTest`] will arrive. Conversely, a parent
+/// scheduler thread must retire when its owned worker reports that its private
+/// plan is exhausted, even if the shared parent plan still has tests for other
+/// workers.
+pub(crate) fn test_loop_should_exit(
+    is_ipc_worker: bool,
+    execution_done: bool,
+    owned_worker_exhausted: bool,
+) -> bool {
+    owned_worker_exhausted || (!is_ipc_worker && execution_done)
 }
 
 /// Body of a [`IpcCommand::HostedRpcReply`]. Either the serialized return
@@ -192,6 +214,11 @@ pub enum IpcResponse {
     TestFinished {
         result: SerializableTestResult,
         finish_marker: String,
+        /// Whether the worker's private execution plan was exhausted while
+        /// locating this test. The owning parent scheduler thread must retire
+        /// after this response because the worker cannot accept another
+        /// `RunTest`, but the worker process remains alive until `Shutdown`.
+        worker_exhausted: bool,
     },
     /// Acknowledges a [`IpcCommand::ProvideCloneable`]. Echoes back the
     /// fully-qualified `dep_id` the command carried.
@@ -270,6 +297,14 @@ mod tests {
         let mut cursor = Cursor::new(&buf);
         let err = read_frame(&mut cursor).expect_err("must fail on empty");
         assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn worker_lifetime_and_parent_scheduler_capacity_are_distinct() {
+        assert!(test_loop_should_exit(false, true, false));
+        assert!(!test_loop_should_exit(true, true, false));
+        assert!(!test_loop_should_exit(true, false, false));
+        assert!(test_loop_should_exit(false, false, true));
     }
 
     #[cfg(feature = "tokio")]

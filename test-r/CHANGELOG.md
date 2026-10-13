@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.12](https://github.com/vigoo/test-r/compare/test-r-v3.0.11...test-r-v3.0.12) - 2026-08-24
+
+### Other
+
+- Fix IPC worker lifetime race ([#184](https://github.com/vigoo/test-r/pull/184))
+
 ## [3.0.11](https://github.com/vigoo/test-r/compare/test-r-v3.0.10...test-r-v3.0.11) - 2026-07-01
 
 ### Other

@@ -20,6 +20,109 @@ fn registered_test_in_module(name: &str, module_path: &str, deps: Vec<String>) -
     }
 }
 
+/// `remaining_count` counts tests that have not yet been reserved; it does
+/// not prove that a scheduler thread (or its IPC child) has finished. In
+/// particular, reserving the final test makes `is_done()` true while the
+/// owning parent can still send that test to its child.
+///
+/// This is deterministic coverage for the worker-lifetime race: an IPC child
+/// must remain alive in this state and wait for the parent's explicit
+/// `Shutdown` command rather than treating `is_done()` as a lifetime signal.
+#[test]
+fn reserving_final_test_does_not_end_ipc_worker_lifetime() {
+    let (mut execution, _filtered) = TestSuiteExecution::construct(
+        &Arguments::default(),
+        &[],
+        &[registered_test("final_test", Vec::new())],
+        &[],
+    );
+
+    let reserved = execution
+        .pick_next_sync()
+        .expect("the final test should be reserved");
+    assert!(
+        execution.is_done(),
+        "remaining_count reaches zero as soon as the final test is reserved"
+    );
+    assert!(
+        !crate::ipc::test_loop_should_exit(true, execution.is_done(), false),
+        "an IPC worker must await explicit parent shutdown while a reserved test can still be sent"
+    );
+
+    drop(reserved);
+}
+
+/// An IPC worker intentionally advances its private execution plan through
+/// the normal picker until it reaches the parent's commanded test. This keeps
+/// dependency materialization, sequential locks, and subtree cleanup exactly
+/// the same as in-process execution, but can exhaust that worker's plan before
+/// the shared parent plan is done. The owning parent thread must then retire,
+/// leaving another worker whose plan still contains the locked test to finish
+/// the suite.
+#[test]
+fn exhausted_worker_retires_without_stranding_locked_sequential_test() {
+    let ordinary = registered_test_in_module("ordinary", "ordinary", Vec::new());
+    let sequential_a = registered_test_in_module("sequential_a", "sequential", Vec::new());
+    let sequential_b = registered_test_in_module("sequential_b", "sequential", Vec::new());
+    let sequential_prop = RegisteredTestSuiteProperty::Sequential {
+        name: "sequential".to_string(),
+        crate_name: "tcrate".to_string(),
+        module_path: String::new(),
+    };
+    // Construction reverses this list before building the tree, so the
+    // sequential subtree is visited before the ordinary sibling.
+    let tests = [ordinary, sequential_b, sequential_a];
+
+    let (mut parent, _filtered) = TestSuiteExecution::construct(
+        &Arguments::default(),
+        &[],
+        &tests,
+        std::slice::from_ref(&sequential_prop),
+    );
+    let (mut worker, _filtered) =
+        TestSuiteExecution::construct(&Arguments::default(), &[], &tests, &[sequential_prop]);
+
+    let parent_sequential = parent
+        .pick_next_sync()
+        .expect("one parent worker should reserve the first sequential test");
+    assert_eq!(parent_sequential.test.module_path, "sequential");
+
+    let parent_ordinary = parent
+        .pick_next_sync()
+        .expect("another parent worker should bypass the locked subtree");
+    assert_eq!(parent_ordinary.test.module_path, "ordinary");
+
+    let worker_ordinary = loop {
+        let candidate = worker
+            .pick_next_sync()
+            .expect("ordinary test must remain in the worker plan");
+        if candidate.test.module_path == "ordinary" {
+            break candidate;
+        }
+        drop(candidate);
+    };
+    assert!(
+        worker.is_done(),
+        "locating the ordinary command consumes the worker's remaining private plan"
+    );
+    assert!(
+        crate::ipc::test_loop_should_exit(false, parent.is_done(), worker.is_done()),
+        "the parent thread owning this exhausted worker must retire even though the shared plan is not done"
+    );
+    assert!(!parent.is_done());
+
+    drop(worker_ordinary);
+    drop(parent_ordinary);
+    drop(parent_sequential);
+
+    let remaining = parent
+        .pick_next_sync()
+        .expect("the worker that held the sequential lock must be able to finish the subtree");
+    assert_eq!(remaining.test.module_path, "sequential");
+    drop(remaining);
+    assert!(parent.is_done());
+}
+
 /// A Cloneable dep whose constructor increments a counter (so we can
 /// assert it ran exactly once), encodes via simple little-endian bytes.
 fn registered_cloneable_dep(name: &str, counter: Arc<AtomicUsize>) -> RegisteredDependency {
