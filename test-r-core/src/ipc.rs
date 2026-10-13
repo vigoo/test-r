@@ -295,6 +295,14 @@ impl From<SerializableTestResult> for TestResult {
     }
 }
 
+/// A performed repetition, replayed by the parent reporter before completion.
+#[derive(Debug, BinaryCodec)]
+pub struct TestRetry {
+    pub attempt: usize,
+    pub max_attempts: usize,
+    pub reason: String,
+}
+
 /// Responses sent from the spawned worker processes to the primary test
 /// runner.
 #[derive(Debug, BinaryCodec)]
@@ -302,6 +310,8 @@ pub enum IpcResponse {
     TestFinished {
         result: SerializableTestResult,
         finish_marker: String,
+        /// Repetitions of this test only; workers drain these after each test.
+        retries: Vec<TestRetry>,
         /// Whether the worker's private execution plan was exhausted while
         /// locating this test. The owning parent scheduler thread must retire
         /// after this response because the worker cannot accept another

@@ -1,5 +1,5 @@
 mod ctrf;
-mod ipc;
+pub(crate) mod ipc;
 mod json;
 mod junit;
 mod pretty;

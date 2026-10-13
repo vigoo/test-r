@@ -286,6 +286,171 @@ mod cargo_tests {
 
     #[test]
     #[serial]
+    fn worker_retry_reporting_matches_direct_execution() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for tokio in [false, true] {
+            for (threads, capture) in [(1, false), (1, true), (3, true)] {
+                for show_output in [false, true] {
+                    let mut command = std::process::Command::new("cargo");
+                    command.args(["test", "--quiet", "--test", "retry_fixture"]);
+                    if !tokio {
+                        command.arg("--no-default-features");
+                    }
+                    command.args([
+                        "--",
+                        "--include-ignored",
+                        "--format",
+                        "ctrf",
+                        "--test-threads",
+                        &threads.to_string(),
+                    ]);
+                    if !capture {
+                        command.arg("--nocapture");
+                    }
+                    if show_output {
+                        command.arg("--show-output");
+                    }
+                    let process = command.current_dir(root).output().unwrap();
+                    let stdout = String::from_utf8(process.stdout).unwrap();
+                    let stderr = String::from_utf8_lossy(&process.stderr);
+                    let context = format!(
+                        "tokio={tokio}, threads={threads}, capture={capture}, show_output={show_output}\n{stdout}\n{stderr}"
+                    );
+                    assert_eq!(process.status.code(), Some(101), "{context}");
+                    let report: serde_json::Value = serde_json::from_str(&stdout)
+                        .unwrap_or_else(|error| panic!("{error}: {context}"));
+                    let results = &report["results"];
+                    let tests = results["tests"].as_array().unwrap();
+                    let factor = if tokio { 2 } else { 1 };
+                    assert_eq!(tests.len(), 7 * factor, "{context}");
+                    assert_eq!(results["summary"]["passed"], 5 * factor, "{context}");
+                    assert_eq!(results["summary"]["failed"], 2 * factor, "{context}");
+                    for test in tests {
+                        let name = test["name"].as_str().unwrap();
+                        let case = name.rsplit("::").next().unwrap();
+                        if case.ends_with("recovers") {
+                            assert_eq!(test["status"], "passed", "{context}");
+                            assert_eq!(test["retries"], 1, "{context}");
+                            assert_eq!(test["flaky"], true, "{context}");
+                        } else if case.ends_with("exhausts") {
+                            assert_eq!(test["status"], "failed", "{context}");
+                            assert_eq!(test["retries"], 2, "{context}");
+                            assert_eq!(test["flaky"], true, "{context}");
+                        } else if case.ends_with("proves") {
+                            assert_eq!(test["status"], "passed", "{context}");
+                            assert_eq!(test["retries"], 2, "{context}");
+                            assert_eq!(test["flaky"], false, "{context}");
+                        } else {
+                            assert!(case.ends_with("immediate"), "{context}");
+                            assert_eq!(test["status"], "passed", "{context}");
+                            assert!(test["retries"].is_null(), "{context}");
+                            assert!(test["flaky"].is_null(), "{context}");
+                        }
+                    }
+                }
+            }
+
+            // Pretty output consumes the same callbacks, including attempt
+            // numbers and reasons rather than only CTRF's aggregate count.
+            let mut command = std::process::Command::new("cargo");
+            command.args(["test", "--quiet", "--test", "retry_fixture"]);
+            if !tokio {
+                command.arg("--no-default-features");
+            }
+            let process = command
+                .args([
+                    "--",
+                    "--include-ignored",
+                    "--format",
+                    "pretty",
+                    "--color",
+                    "never",
+                    "--test-threads",
+                    "3",
+                ])
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert_eq!(process.status.code(), Some(101));
+            let stdout = String::from_utf8(process.stdout).unwrap();
+            let repeats: Vec<_> = stdout
+                .lines()
+                .filter(|line| line.contains("Retrying test:"))
+                .collect();
+            assert_eq!(repeats.len(), if tokio { 16 } else { 8 }, "{stdout}");
+            for line in repeats {
+                assert!(!line.contains("immediate"), "{line}");
+                assert!(line.contains("[2/3]") || line.contains("[3/3]"), "{line}");
+                assert!(
+                    line.contains("because test is known to be flaky")
+                        || line.contains("to ensure test is not flaky"),
+                    "{line}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn listing_respects_filters_in_both_runners() {
+        let cwd = std::env::current_dir().unwrap();
+        for (example, crate_name, third_test) in [
+            (
+                "example",
+                "test_r_example",
+                "inner::tests::inner_test_works",
+            ),
+            (
+                "example-tokio",
+                "test_r_example_tokio",
+                "tests::panic_test_1",
+            ),
+        ] {
+            let root = cwd.parent().unwrap().join(example);
+            let tagged_tests = vec![
+                format!("{crate_name}::tests::it_does_work"),
+                format!("{crate_name}::tests::this_too"),
+                format!("{crate_name}::{third_test}"),
+            ];
+            for (filters, mut expected) in [
+                (vec![":tag:output_capture_test"], tagged_tests.clone()),
+                (
+                    vec![":tag:output_capture_test", "--skip", "this_too"],
+                    vec![tagged_tests[0].clone(), tagged_tests[2].clone()],
+                ),
+                (vec![":tag:nonexistent_tag"], vec![]),
+                (
+                    vec!["tests::this_too", "--exact"],
+                    vec![tagged_tests[1].clone()],
+                ),
+            ] {
+                let process = std::process::Command::new("cargo")
+                    .args(["test", "--lib", "--", "--list"])
+                    .args(&filters)
+                    .current_dir(&root)
+                    .output()
+                    .unwrap();
+                assert!(
+                    process.status.success(),
+                    "{example} {filters:?}: {}",
+                    String::from_utf8_lossy(&process.stderr)
+                );
+                let stdout = String::from_utf8(process.stdout).unwrap();
+                let mut listed: Vec<_> = stdout
+                    .lines()
+                    .filter(|line| line.starts_with(&format!("{crate_name}::")))
+                    .map(str::to_owned)
+                    .collect();
+                listed.sort();
+                expected.sort();
+                assert_eq!(listed, expected, "{example} {filters:?}: {stdout}");
+                assert!(stdout.contains(&format!("{} tests", expected.len())));
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
     fn flaky_returned_errors_are_retried() {
         for tokio in [false, true] {
             for nocapture in [false, true] {
@@ -357,14 +522,11 @@ mod cargo_tests {
                         if passed { "passed" } else { "failed" },
                         "{context}"
                     );
-                    // Captured worker runs currently do not forward retry metadata over IPC.
-                    if nocapture {
-                        assert_eq!(
-                            test["retries"].as_u64().unwrap_or(0),
-                            attempts - 1,
-                            "{context}"
-                        );
-                    }
+                    assert_eq!(
+                        test["retries"].as_u64().unwrap_or(0),
+                        attempts - 1,
+                        "{context}"
+                    );
                     let output = if nocapture {
                         stdout.clone()
                     } else {

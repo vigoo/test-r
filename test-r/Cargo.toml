@@ -20,6 +20,11 @@ serde_json = "1"
 serial_test = "3"
 
 [[test]]
+name = "retry_fixture"
+path = "tests/fixtures/retry_fixture.rs"
+harness = false
+
+[[test]]
 name = "flaky_fixture"
 harness = false
 
