@@ -73,6 +73,13 @@ mod inner {
 
 Test dependency constructors can depend on other dependencies just like tests are. This allows defining a complex **dependency graph**, where each shared dependency is created in the correct order, and only when needed, and they got dropped as soon as no other test needs them.
 
+The graph must be acyclic. When compiling tests, `#[test_dep]` rejects direct or
+indirect constructor cycles at compile time, including cycles between tagged
+dependencies. Rust reports `cycle detected` and identifies the generated
+`test_r_check_dep_...` constants corresponding to the dependencies involved.
+This check also applies to unused constructors and works with both sync and async
+constructors. Inherited dependencies retain their outer suite's dependency graph.
+
 The following example defines a third dependency (based on the above examples) which requires the other two to get constructed:
 
 ```rust
