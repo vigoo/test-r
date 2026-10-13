@@ -24,6 +24,10 @@ name = "retry_fixture"
 path = "tests/fixtures/retry_fixture.rs"
 harness = false
 
+[[test]]
+name = "flaky_fixture"
+harness = false
+
 [features]
 default = ["tokio"]
 tokio = ["dep:tokio", "test-r-core/tokio"]
