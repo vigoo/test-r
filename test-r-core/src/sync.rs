@@ -347,7 +347,7 @@ fn test_thread(
     // this command loop, then send and drain it with the matching result.
     let ipc_output = connection_arc
         .as_ref()
-        .map(|_| Arc::new(crate::output::ipc::IpcWorkerOutput::new()));
+        .map(|_| Arc::new(crate::output::ipc::IpcWorkerOutput::new(!args.nocapture)));
     let output: Arc<dyn TestRunnerOutput> = ipc_output
         .as_ref()
         .map(|output| output.clone() as Arc<dyn TestRunnerOutput>)
@@ -498,9 +498,7 @@ fn test_thread(
                 output.start_running_test(&next.test, next.index, count);
 
                 let result = if next.test.props.is_ignored && !args.include_ignored {
-                    TestResult::Ignored {
-                        captured: Vec::new(),
-                    }
+                    TestResult::ignored()
                 } else if let Some(worker) = worker.as_mut() {
                     worker.run_test(args.nocapture, &next.test, &*output, next.index, count)
                 } else {
@@ -880,13 +878,38 @@ fn run_with_flakiness_control(
     idx: usize,
     count: usize,
     test: impl Fn(Instant) -> Result<Result<(), FailureCause>, Box<dyn Any + Send>>,
-) -> Result<Result<(), FailureCause>, Box<dyn Any + Send>> {
-    match &test_description.props.flakiness_control {
-        FlakinessControl::None => {
-            let start = Instant::now();
-            test(start)
-        }
+) -> TestResult {
+    let suite_start = Instant::now();
+    let mut attempts = Vec::new();
+    let mut invoke = || {
+        let start = Instant::now();
+        let raw = test(start);
+        // Preserve the current policy: test-body panics and returned errors
+        // are retryable, but harness errors are not.
+        let retryable = matches!(
+            &raw,
+            Err(_)
+                | Ok(Err(
+                    FailureCause::ReturnedError { .. } | FailureCause::ReturnedMessage(_)
+                ))
+        );
+        let succeeded = matches!(&raw, Ok(Ok(())));
+        let result =
+            TestResult::from_result(&test_description.props.should_panic, start.elapsed(), raw);
+        attempts.push(internal::TestAttempt {
+            result: Box::new(result.clone()),
+            finish_marker: output.finish_test_attempt(test_description),
+        });
+        (result, retryable, succeeded)
+    };
+    let mut result = match &test_description.props.flakiness_control {
+        FlakinessControl::None => invoke().0,
         FlakinessControl::ProveNonFlaky(tries) => {
+            let mut result = TestResult::from_result(
+                &test_description.props.should_panic,
+                std::time::Duration::ZERO,
+                Ok(Ok(())),
+            );
             for n in 0..*tries {
                 if n > 0 {
                     output.repeat_running_test(
@@ -898,28 +921,19 @@ fn run_with_flakiness_control(
                         "to ensure test is not flaky",
                     );
                 }
-                let start = Instant::now();
-                match test(start) {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => return Ok(Err(e)),
-                    Err(e) => return Err(e),
-                };
+                let (attempt_result, _, succeeded) = invoke();
+                result = attempt_result;
+                if !succeeded {
+                    break;
+                }
             }
-            Ok(Ok(()))
+            result
         }
         FlakinessControl::RetryKnownFlaky(max_retries) => {
             let mut tries = 1;
             loop {
-                let start = Instant::now();
-                let result = test(start);
+                let (result, retryable, _) = invoke();
 
-                let retryable = matches!(
-                    &result,
-                    Err(_)
-                        | Ok(Err(
-                            FailureCause::ReturnedError { .. } | FailureCause::ReturnedMessage(_)
-                        ))
-                );
                 if retryable && tries < *max_retries {
                     tries += 1;
                     output.repeat_running_test(
@@ -935,7 +949,15 @@ fn run_with_flakiness_control(
                 }
             }
         }
+    };
+    match &mut result {
+        TestResult::Passed { exec_time, .. } | TestResult::Failed { exec_time, .. } => {
+            *exec_time = suite_start.elapsed()
+        }
+        _ => {}
     }
+    result.set_attempts(attempts);
+    result
 }
 
 #[allow(unreachable_patterns)]
@@ -951,7 +973,7 @@ pub(crate) fn run_sync_test_function(
     match test_description.run.clone() {
         TestFunction::Sync(test_fn) => {
             let detached_panic_policy = test_description.props.detached_panic_policy.clone();
-            let result =
+            let mut test_result =
                 run_with_flakiness_control(output, test_description, idx, count, move |start| {
                     let dependency_view = dependency_view.clone();
                     let test_fn = test_fn.clone();
@@ -971,11 +993,6 @@ pub(crate) fn run_sync_test_function(
                         Ok(())
                     }))
                 });
-            let mut test_result = TestResult::from_result(
-                &test_description.props.should_panic,
-                start.elapsed(),
-                result,
-            );
             if let Some(test_id) = crate::panic_hook::current_test_id() {
                 if let Some(collector) = crate::panic_hook::take_detached_collector(test_id) {
                     let panics = match collector.lock() {
@@ -987,17 +1004,23 @@ pub(crate) fn run_sync_test_function(
                         && test_result.is_passed()
                     {
                         let messages: Vec<String> = panics.iter().map(|p| p.render()).collect();
-                        test_result = TestResult::failed(
-                            start.elapsed(),
-                            FailureCause::Panic(internal::PanicCause {
-                                message: Some(format!(
-                                    "Detached task(s) panicked:\n{}",
-                                    messages.join("\n---\n")
-                                )),
-                                location: panics.first().and_then(|p| p.location.clone()),
-                                backtrace: panics.first().and_then(|p| p.backtrace.clone()),
-                            }),
-                        );
+                        let mut attempts = test_result.attempts().clone();
+                        let cause = FailureCause::Panic(internal::PanicCause {
+                            message: Some(format!(
+                                "Detached task(s) panicked:\n{}",
+                                messages.join("\n---\n")
+                            )),
+                            location: panics.first().and_then(|p| p.location.clone()),
+                            backtrace: panics.first().and_then(|p| p.backtrace.clone()),
+                        });
+                        test_result = TestResult::failed(start.elapsed(), cause.clone());
+                        if let Some(last) = attempts.last_mut() {
+                            let TestResult::Passed { exec_time, .. } = last.result.as_ref() else {
+                                unreachable!("a passed logical test has a passed final invocation");
+                            };
+                            *last.result = TestResult::failed(*exec_time, cause);
+                        }
+                        test_result.set_attempts(attempts);
                     }
                 }
             }

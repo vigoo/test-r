@@ -1,6 +1,286 @@
 use serial_test::serial;
 use std::time::{Duration, Instant};
 
+mod ctrf_retry_tests {
+    use super::*;
+    use serde_json::Value;
+
+    #[test]
+    #[serial]
+    fn ctrf_preserves_retry_evidence() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        for example in ["example", "example-tokio"] {
+            for nocapture in [false, true] {
+                for show_output in [false, true] {
+                    for scenario in [
+                        "pass", "recover", "partial", "fail", "nested", "suite", "mixed",
+                        "detached", "prove",
+                    ] {
+                        if scenario == "nested" && nocapture {
+                            continue;
+                        }
+                        let dir = std::env::temp_dir().join(format!(
+                            "test-r-retries-{}-{}",
+                            std::process::id(),
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_nanos()
+                        ));
+                        std::fs::create_dir(&dir).unwrap();
+                        let mut cmd = std::process::Command::new("cargo");
+                        cmd.current_dir(root.join(example))
+                            .args([
+                                "test",
+                                "--test",
+                                "tests",
+                                "--",
+                                if scenario == "suite" {
+                                    "retry_suite_evidence"
+                                } else if scenario == "prove" {
+                                    "retry_non_flaky_evidence"
+                                } else {
+                                    "retry_evidence"
+                                },
+                                "--include-ignored",
+                                "--test-threads",
+                                "1",
+                                "--format",
+                                "ctrf",
+                                "--logfile",
+                            ])
+                            .arg(dir.join("report.json"))
+                            .env("TEST_R_RETRY_SCENARIO", scenario)
+                            .env("TEST_R_RETRY_MARKER", dir.join("marker"));
+                        if scenario == "mixed" {
+                            cmd.arg("retry_forced_capture");
+                        }
+                        if nocapture {
+                            cmd.arg("--nocapture");
+                        }
+                        if show_output {
+                            cmd.arg("--show-output");
+                        }
+                        if scenario == "nested" || scenario == "suite" {
+                            cmd.args(["--flaky-run", "2"]);
+                        }
+                        let output = cmd.output().unwrap();
+                        assert_eq!(
+                            output.status.success(),
+                            !matches!(scenario, "fail" | "detached" | "prove"),
+                            "{example} {scenario} nocapture={nocapture} show_output={show_output}: status={}\nstdout:\n{}\nstderr:\n{}",
+                            output.status,
+                            String::from_utf8_lossy(&output.stdout),
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                        let report_path = std::fs::read_dir(&dir)
+                            .unwrap()
+                            .map(|entry| entry.unwrap().path())
+                            .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+                            .unwrap();
+                        let report: Value =
+                            serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+                        let results = &report["results"];
+                        let logical_count = if scenario == "mixed" { 2 } else { 1 };
+                        assert_eq!(results["summary"]["tests"], logical_count);
+                        assert_eq!(results["tests"].as_array().unwrap().len(), logical_count);
+                        assert_eq!(
+                            results["summary"]["failed"],
+                            usize::from(matches!(scenario, "fail" | "detached" | "prove"))
+                        );
+                        let test = results["tests"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|test| {
+                                !test["name"]
+                                    .as_str()
+                                    .unwrap()
+                                    .ends_with("::retry_forced_capture")
+                            })
+                            .unwrap();
+                        if scenario == "pass" || scenario == "suite" {
+                            assert!(test["extra"].is_null());
+                        } else {
+                            let attempts = test["extra"]["testR"]["attempts"].as_array().unwrap();
+                            assert_eq!(attempts.len(), 2);
+                            assert_eq!(test["retries"], 1);
+                            for (index, attempt) in attempts.iter().enumerate() {
+                                assert_eq!(attempt["attempt"], index + 1);
+                                let failed = if scenario == "prove" {
+                                    index == 1
+                                } else {
+                                    index == 0 || matches!(scenario, "fail" | "detached")
+                                };
+                                assert_eq!(
+                                    attempt["status"],
+                                    if failed { "failed" } else { "passed" }
+                                );
+                                assert!(attempt["duration"].is_number());
+                                if failed {
+                                    assert!(
+                                        attempt["message"]
+                                            .as_str()
+                                            .unwrap()
+                                            .contains(&format!("failure invocation {}", index + 1))
+                                    );
+                                }
+                                if !nocapture && (failed || show_output) {
+                                    assert_eq!(
+                                        attempt["stdout"],
+                                        serde_json::json!([format!(
+                                            "stdout invocation {}",
+                                            index + 1
+                                        )])
+                                    );
+                                    assert!(
+                                        attempt["stderr"]
+                                            .as_array()
+                                            .unwrap()
+                                            .iter()
+                                            .any(|line| line
+                                                == &format!("stderr invocation {}", index + 1))
+                                    );
+                                    assert!(
+                                        !attempt["stdout"]
+                                            .to_string()
+                                            .contains(&format!("stdout invocation {}", 2 - index))
+                                    );
+                                } else {
+                                    assert!(
+                                        attempt["stdout"]
+                                            .as_array()
+                                            .is_none_or(|lines| lines.is_empty())
+                                    );
+                                }
+                            }
+                            if scenario == "detached" {
+                                let first = attempts[0]["duration"].as_f64().unwrap();
+                                let last = attempts[1]["duration"].as_f64().unwrap();
+                                assert!(first >= 350.0);
+                                assert!(
+                                    last < first,
+                                    "final invocation includes prior duration: {first} then {last}"
+                                );
+                                assert!(test["duration"].as_f64().unwrap() >= first + last);
+                            }
+                            if scenario == "prove" && !nocapture {
+                                let expected = if show_output {
+                                    serde_json::json!([
+                                        "stdout invocation 1",
+                                        "stdout invocation 2"
+                                    ])
+                                } else {
+                                    serde_json::json!(["stdout invocation 2"])
+                                };
+                                assert_eq!(test["stdout"], expected);
+                                assert_eq!(
+                                    test["stderr"].to_string().contains("stderr invocation 1"),
+                                    show_output
+                                );
+                            }
+                        }
+                        if scenario == "mixed" {
+                            for stream in [&output.stdout, &output.stderr] {
+                                let output = String::from_utf8_lossy(stream);
+                                let markers = output
+                                    .lines()
+                                    .filter(|line| {
+                                        line.len() == 36
+                                            && line.bytes().enumerate().all(|(index, byte)| {
+                                                if [8, 13, 18, 23].contains(&index) {
+                                                    byte == b'-'
+                                                } else {
+                                                    byte.is_ascii_hexdigit()
+                                                }
+                                            })
+                                    })
+                                    .count();
+                                // Uncaptured workers already print one logical-test finish
+                                // marker. Invocation markers must not add terminal noise.
+                                assert_eq!(markers, usize::from(nocapture), "{example}: {output}");
+                            }
+                            let sibling = results["tests"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .find(|test| {
+                                    test["name"]
+                                        .as_str()
+                                        .unwrap()
+                                        .ends_with("::retry_forced_capture")
+                                })
+                                .unwrap();
+                            let attempts =
+                                sibling["extra"]["testR"]["attempts"].as_array().unwrap();
+                            assert_eq!(attempts.len(), 2);
+                            assert_eq!(
+                                attempts[0]["stdout"],
+                                serde_json::json!(["captured sibling invocation 1"])
+                            );
+                            if show_output {
+                                assert_eq!(
+                                    attempts[1]["stdout"],
+                                    serde_json::json!(["captured sibling invocation 2"])
+                                );
+                            } else {
+                                assert!(
+                                    attempts[1]["stdout"]
+                                        .as_array()
+                                        .is_none_or(|lines| lines.is_empty())
+                                );
+                            }
+                            if show_output {
+                                assert_eq!(
+                                    sibling["stdout"],
+                                    serde_json::json!([
+                                        "captured sibling invocation 1",
+                                        "captured sibling invocation 2"
+                                    ])
+                                );
+                            }
+                        }
+                        if scenario == "nested" || scenario == "suite" {
+                            let history = &results["extra"]["testR"];
+                            assert_eq!(history["suiteAttempt"], 2);
+                            assert_eq!(history["complete"], true);
+                            let previous = history["previousSuiteAttempts"].as_array().unwrap();
+                            assert_eq!(previous.len(), 1);
+                            assert_eq!(previous[0]["suiteAttempt"], 1);
+                            assert_eq!(previous[0]["summary"]["failed"], 1);
+                            if scenario == "nested" {
+                                assert_eq!(
+                                    previous[0]["tests"][0]["extra"]["testR"]["attempts"][1]["status"],
+                                    "failed"
+                                );
+                            } else {
+                                let failed = &previous[0]["tests"][0];
+                                assert!(
+                                    failed["message"]
+                                        .as_str()
+                                        .unwrap()
+                                        .contains("first suite failure")
+                                );
+                                if !nocapture {
+                                    assert_eq!(
+                                        failed["stderr"],
+                                        serde_json::json!(["failed suite diagnostic"])
+                                    );
+                                }
+                            }
+                        }
+                        std::fs::remove_dir_all(dir).unwrap();
+                    }
+                }
+            }
+        }
+    }
+}
+
 mod cargo_tests {
     use super::*;
 

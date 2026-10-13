@@ -42,6 +42,11 @@ pub trait TestRunnerOutput: Send + Sync {
     );
     fn test_list(&self, registered_tests: &[RegisteredTest]);
 
+    /// Delimits worker output for an individual invocation, if capture is active.
+    fn finish_test_attempt(&self, _test: &RegisteredTest) -> Option<String> {
+        None
+    }
+
     fn warning(&self, message: &str) {
         let mut err = TerminalStderr;
         let _ = writeln!(err, "{message}");
@@ -93,7 +98,7 @@ pub(crate) fn write_failure_summary_to_stderr(
 
 pub fn test_runner_output(args: &Arguments) -> Arc<dyn TestRunnerOutput> {
     if args.ipc.is_some() {
-        Arc::new(ipc::IpcWorkerOutput::new())
+        Arc::new(ipc::IpcWorkerOutput::new(!args.nocapture))
     } else if args.quiet {
         Arc::new(terse::Terse::new())
     } else {
@@ -149,11 +154,17 @@ impl LogFile {
         let mut err = TerminalStderr;
         let _ = writeln!(err, "Logging to {}", path.to_string_lossy());
 
-        let file = std::fs::OpenOptions::new()
+        // These files have one formatter writer. Open with ordinary write
+        // access so snapshot formats can truncate on Windows; append-only
+        // handles there deliberately lack FILE_WRITE_DATA.
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
-            .append(true)
+            .write(true)
+            .truncate(false)
             .open(path.clone())
             .unwrap_or_else(|_| panic!("Failed to open log file {}", path.to_string_lossy()));
+        file.seek(SeekFrom::End(0))
+            .expect("Failed to seek log file");
         LogFile { file }
     }
 }
