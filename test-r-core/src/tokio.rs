@@ -77,7 +77,8 @@ async fn async_test_runner() -> ExitCode {
         // with their `<test>_<case>` names and `:tag:`-selectable auto-tags.
         let tests_with_props =
             internal::apply_suite_props_to_tests(&all_tests, &registered_testsuite_props);
-        output.test_list(&tests_with_props);
+        let filtered_tests = internal::filter_registered_tests(&args, &tests_with_props);
+        output.test_list(&filtered_tests);
         ExitCode::SUCCESS
     } else {
         let mut remaining_retries = args.flaky_run.unwrap_or(1);
