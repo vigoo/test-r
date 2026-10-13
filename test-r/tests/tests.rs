@@ -6,6 +6,126 @@ mod cargo_tests {
 
     #[test]
     #[serial]
+    fn dependency_cycles_fail_at_compile_time() {
+        let root = std::env::current_dir().unwrap();
+        let fixture = std::env::temp_dir().join(format!("test-r-cycles-{}", std::process::id()));
+        std::fs::create_dir_all(fixture.join("src")).unwrap();
+        std::fs::copy(
+            root.parent().unwrap().join("Cargo.lock"),
+            fixture.join("Cargo.lock"),
+        )
+        .unwrap();
+        std::fs::write(
+            fixture.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"dependency-cycle-check\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
+                 [workspace]\n[dependencies]\ntest-r = {{ path = {:?}, default-features = false }}\n\
+                 [features]\ntokio = [\"test-r/tokio\"]\n",
+                root
+            ),
+        )
+        .unwrap();
+
+        let cases = [
+            ("self", "#[test_r::test_dep] fn a(_: &A) -> A { A }", false),
+            (
+                "indirect",
+                "#[test_r::test_dep] fn a(_: &B) -> A { A }\n#[test_r::test_dep] fn b(_: &C) -> B { B }\n#[test_r::test_dep] fn c(_: &A) -> C { C }",
+                false,
+            ),
+            (
+                "tagged",
+                "#[test_r::test_dep(tagged_as = \"one\")] fn a(#[tagged_as(\"two\")] _: &A) -> A { A }\n#[test_r::test_dep(tagged_as = \"two\")] fn b(#[tagged_as(\"one\")] _: &A) -> A { A }",
+                false,
+            ),
+            (
+                "acyclic",
+                "#[test_r::test_dep(tagged_as = \"one\")] fn a() -> A { A }\n#[test_r::test_dep(tagged_as = \"two\")] fn b(#[tagged_as(\"one\")] _: &A) -> A { A }\nmod inner { use super::{A, C}; test_r::inherit_test_dep!(#[tagged_as(\"two\")] A); #[test_r::test_dep] fn c(#[tagged_as(\"two\")] _: &A) -> C { C } }",
+                true,
+            ),
+            (
+                "inherited_inputs_are_not_rebound",
+                "#[test_r::test_dep] fn b() -> B { B }\n#[test_r::test_dep] fn a(_: &B) -> A { A }\nmod inner { use super::{A, B}; test_r::inherit_test_dep!(A); #[test_r::test_dep] fn b(_: &A) -> B { B } }",
+                true,
+            ),
+            (
+                "rpc_stub_cycle",
+                "#[test_r::test_dep(scope = Hosted, worker = rpc(Control))] fn a(_: &ControlStub) -> A { A }",
+                false,
+            ),
+            (
+                "both_owner_cycle",
+                "#[test_r::test_dep(scope = Hosted, worker = both(Control))] fn a(_: &A) -> A { A }",
+                false,
+            ),
+            (
+                "both_stub_cycle",
+                "#[test_r::test_dep(scope = Hosted, worker = both(Control))] fn a(_: &ControlStub) -> A { A }",
+                false,
+            ),
+            (
+                "hosted_acyclic",
+                "#[test_r::test_dep(tagged_as = \"input\")] fn b() -> B { B }\n#[test_r::test_dep(scope = Hosted, worker = both(Control), tagged_as = \"owner\")] fn a(#[tagged_as(\"input\")] _: &B) -> A { A }\n#[test_r::test_dep] fn c(#[tagged_as(\"owner\")] _: &A, #[tagged_as(\"owner\")] _: &ControlStub) -> C { C }",
+                true,
+            ),
+        ];
+        let types = r#"
+            struct A; struct B; struct C;
+            #[test_r::hosted_rpc]
+            pub trait Control { fn value(&self) -> u64; }
+            impl Control for A { fn value(&self) -> u64 { 0 } }
+            impl test_r::core::HostedDep for A {
+                fn descriptor(&self) -> Vec<u8> { vec![] }
+                fn from_descriptor(_: &[u8]) -> Self { A }
+            }
+            impl test_r::core::HostedRpcDep for A {
+                type Stub = ControlStub;
+                fn dispatch(&mut self, method_idx: u32, args: &[u8]) -> Result<Vec<u8>, String> {
+                    ControlDispatch::dispatch_control(self, method_idx, args)
+                }
+                fn build_stub(channel: test_r::core::HostedRpcChannel) -> Self::Stub {
+                    ControlStub::new(channel)
+                }
+            }
+        "#;
+        for tokio in [false, true] {
+            for (name, source, succeeds) in cases {
+                let source = if tokio {
+                    source.replace("fn ", "async fn ")
+                } else {
+                    source.to_string()
+                };
+                std::fs::write(
+                    fixture.join("src/lib.rs"),
+                    format!("#![allow(dead_code)]\n{types}\n{source}"),
+                )
+                .unwrap();
+                let mut command = std::process::Command::new("cargo");
+                command.args(["check", "--tests", "--offline"]);
+                if tokio {
+                    command.args(["--features", "tokio"]);
+                }
+                let output = command
+                    .current_dir(&fixture)
+                    .env("CARGO_TARGET_DIR", root.parent().unwrap().join("target"))
+                    .output()
+                    .unwrap();
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert_eq!(
+                    output.status.success(),
+                    succeeds,
+                    "{name}, tokio={tokio}: {stderr}"
+                );
+                if !succeeds {
+                    assert!(stderr.contains("cycle detected"), "{name}: {stderr}");
+                }
+            }
+        }
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    #[serial]
     fn worker_retry_reporting_matches_direct_execution() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         for tokio in [false, true] {

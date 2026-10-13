@@ -473,6 +473,7 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !_dep_dimensions.is_empty() {
         panic!("Matrix dimensions are not supported on #[test_dep] constructor parameters");
     }
+    let dependency_check = dependency_cycle_check(&ast, &dep_name_str);
     filter_custom_parameter_attributes(&mut ast);
 
     // `worker = ...` is fully wired above (translated into the existing
@@ -760,6 +761,8 @@ pub fn test_dep(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let result = quote! {
+        #dependency_check
+
         #[cfg(test)]
         #[test_r::ctor::ctor(crate_path=::test_r::ctor)]
         fn #register_ident() {
@@ -904,8 +907,6 @@ fn expand_hosted_both_dep(args: &TestDepArgs, mut ast: ItemFn, trait_path: &Path
         quote! {}
     };
 
-    filter_custom_parameter_attributes(&mut ast);
-
     let dep_tag = DependencyTag::from(args.tagged_as.clone());
     let owner_dep_name = type_path_to_string(&dep_type, dep_tag.clone());
     let stub_path = WorkerView::stub_path_from_trait(trait_path);
@@ -914,6 +915,9 @@ fn expand_hosted_both_dep(args: &TestDepArgs, mut ast: ItemFn, trait_path: &Path
         path: stub_path.clone(),
     };
     let stub_dep_name = type_path_to_string(&stub_type_path, dep_tag);
+    let owner_dependency_check = dependency_cycle_check(&ast, &owner_dep_name);
+    let stub_dependency_check = dependency_cycle_check(&ast, &stub_dep_name);
+    filter_custom_parameter_attributes(&mut ast);
     // Path to the `<Trait>Dispatch` helper trait emitted by
     // `#[hosted_rpc]`. Used so the macro can route shared-owner RPC
     // dispatch through the trait's `&self`-receiver dispatcher helper
@@ -1132,6 +1136,9 @@ fn expand_hosted_both_dep(args: &TestDepArgs, mut ast: ItemFn, trait_path: &Path
     };
 
     let result = quote! {
+        #owner_dependency_check
+        #stub_dependency_check
+
         // Shared parent-side acquisition for the `worker = both(...)`
         // lowering. Both the Hosted-view and the HostedRpc-view
         // registrations call into this function, so they always see
@@ -1296,6 +1303,29 @@ fn expand_hosted_both_dep(args: &TestDepArgs, mut ast: ItemFn, trait_path: &Path
     result.into()
 }
 
+// Rust evaluates each constant even when the constructor is unused. Referencing
+// the input constants makes a constructor cycle a compile-time query cycle,
+// without needing a proc macro to see other constructors or modules.
+fn dependency_cycle_check(ast: &ItemFn, dep_name: &str) -> proc_macro2::TokenStream {
+    let check_ident = Ident::new(&format!("test_r_check_dep_{dep_name}"), Span::call_site());
+    let inputs = ast.sig.inputs.iter().map(|param| {
+        let FnArg::Typed(param) = param else {
+            unreachable!("dependency parameters already validated")
+        };
+        let typ = get_dependency_param_from_pat_type(param);
+        let tag = get_lit_str_attr(&param.attrs, "tagged_as").into();
+        let name = type_path_to_string(&typ, tag);
+        Ident::new(&format!("test_r_check_dep_{name}"), Span::call_site())
+    });
+    quote! {
+        #[cfg(test)]
+        #[allow(non_upper_case_globals, dead_code)]
+        const #check_ident: () = {
+            #(let () = #inputs;)*
+        };
+    }
+}
+
 pub fn inherit_test_dep(item: TokenStream) -> TokenStream {
     let def: InheritTestDep = parse_macro_input!(item as InheritTestDep);
     let dep_type = match &def.typ {
@@ -1313,8 +1343,16 @@ pub fn inherit_test_dep(item: TokenStream) -> TokenStream {
 
     let dep_name_str = type_path_to_string(&dep_type, tag);
     let getter_ident = Ident::new(&format!("test_r_get_dep_{dep_name_str}"), Span::call_site());
+    let check_ident = Ident::new(
+        &format!("test_r_check_dep_{dep_name_str}"),
+        Span::call_site(),
+    );
 
     let result = quote! {
+        #[cfg(test)]
+        #[allow(non_upper_case_globals, dead_code)]
+        const #check_ident: () = super::#check_ident;
+
         fn #getter_ident<'a>(dependency_view: &'a impl test_r::core::DependencyView) -> std::sync::Arc<#dep_type> {
             super::#getter_ident(dependency_view)
         }
