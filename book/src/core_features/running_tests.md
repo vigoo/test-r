@@ -85,12 +85,17 @@ It is possible to just list all the available tests, without executing anything 
 cargo test -- --list
 ```
 
+Listing applies the same name, tag, and skip filters as running tests. For example, to verify which tests have a tag without running them:
+
+```sh
+cargo test ':tag:expensive' -- --list
+```
+
 ## Test output
 There are various options controlling the **output** of the test runner. See the [test output chapter](/core_features/test_output.md) for more details.
 
 ## Debugging
 Output capturing is implemented by forking one or more child processes and attaching to their standard output and error channels. This means that attaching a **debugger** to the parent process will not work as expected. When using a debugger, always pass the `--nocapture` flag to the test runner to disable output capturing, which guarantees that all the tests are executed in the single root process. 
-
 
 
 

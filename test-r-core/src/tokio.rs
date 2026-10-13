@@ -77,7 +77,8 @@ async fn async_test_runner() -> ExitCode {
         // with their `<test>_<case>` names and `:tag:`-selectable auto-tags.
         let tests_with_props =
             internal::apply_suite_props_to_tests(&all_tests, &registered_testsuite_props);
-        output.test_list(&tests_with_props);
+        let filtered_tests = internal::filter_registered_tests(&args, &tests_with_props);
+        output.test_list(&filtered_tests);
         ExitCode::SUCCESS
     } else {
         let mut remaining_retries = args.flaky_run.unwrap_or(1);
@@ -374,6 +375,15 @@ async fn test_thread(
         None
     };
 
+    // The buffer belongs to this worker command loop, not the whole suite.
+    let ipc_output = connection_arc
+        .as_ref()
+        .map(|_| Arc::new(crate::output::ipc::IpcWorkerOutput::new()));
+    let output: Arc<dyn TestRunnerOutput> = ipc_output
+        .as_ref()
+        .map(|output| output.clone() as Arc<dyn TestRunnerOutput>)
+        .unwrap_or(output);
+
     if let Some(worker) = worker.as_mut() {
         for (dep_id, wire_bytes) in cloneable_wire_bytes.iter() {
             worker
@@ -554,6 +564,7 @@ async fn test_thread(
                     let response = IpcResponse::TestFinished {
                         result: (&result).into(),
                         finish_marker,
+                        retries: ipc_output.as_ref().unwrap().take_retries(),
                         worker_exhausted: is_done(&execution).await,
                     };
                     let msg =
@@ -803,7 +814,7 @@ async fn run_test(
     if test.props.is_ignored && !include_ignored {
         TestResult::ignored()
     } else if let Some(worker) = worker.as_mut() {
-        worker.run_test(nocapture, test).await
+        worker.run_test(nocapture, test, &*output, idx, count).await
     } else {
         let start = Instant::now();
         let test = test.clone();
@@ -1014,7 +1025,14 @@ impl Worker {
             .await;
     }
 
-    pub async fn run_test(&mut self, nocapture: bool, test: &RegisteredTest) -> TestResult {
+    pub async fn run_test(
+        &mut self,
+        nocapture: bool,
+        test: &RegisteredTest,
+        output: &dyn TestRunnerOutput,
+        idx: usize,
+        count: usize,
+    ) -> TestResult {
         let mut capture_enabled = self.capture_enabled.lock().await;
         *capture_enabled = test.props.capture_control.requires_capturing(!nocapture);
         drop(capture_enabled);
@@ -1064,12 +1082,24 @@ impl Worker {
         let IpcResponse::TestFinished {
             result,
             finish_marker,
+            retries,
             worker_exhausted,
         } = response
         else {
             unreachable!("loop only breaks on TestFinished")
         };
         self.exhausted = worker_exhausted;
+
+        for retry in retries {
+            output.repeat_running_test(
+                test,
+                idx,
+                count,
+                retry.attempt,
+                retry.max_attempts,
+                &retry.reason,
+            );
+        }
 
         if test.props.capture_control.requires_capturing(!nocapture) {
             let out_lines: Vec<_> =
