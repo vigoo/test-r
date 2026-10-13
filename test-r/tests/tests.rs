@@ -126,6 +126,121 @@ mod cargo_tests {
 
     #[test]
     #[serial]
+    fn flaky_returned_errors_are_retried() {
+        for tokio in [false, true] {
+            for nocapture in [false, true] {
+                let mut cases = vec![
+                    ("attribute_sync", 2, true),
+                    ("sync_transient", 2, true),
+                    ("sync_persistent", 3, false),
+                    ("sync_success", 1, true),
+                    ("sync_unmarked", 1, false),
+                    ("sync_panic", 2, true),
+                ];
+                if tokio {
+                    cases.extend([
+                        ("attribute_async", 2, true),
+                        ("async_transient", 2, true),
+                        ("async_persistent", 3, false),
+                        ("async_success", 1, true),
+                        ("async_unmarked", 1, false),
+                        ("async_panic", 2, true),
+                        ("async_timeout", 1, false),
+                    ]);
+                }
+                for (name, attempts, passed) in cases {
+                    let mut command = std::process::Command::new("cargo");
+                    command.args(["test", "-p", "test-r", "--test", "flaky_fixture"]);
+                    command.arg(if tokio {
+                        "--all-features"
+                    } else {
+                        "--no-default-features"
+                    });
+                    let full_name = if name.starts_with("attribute_") {
+                        name.to_string()
+                    } else {
+                        format!("generated::{name}")
+                    };
+                    command.args([
+                        "--",
+                        &full_name,
+                        "--exact",
+                        "--include-ignored",
+                        "--test-threads",
+                        "1",
+                        "--format",
+                        "ctrf",
+                        "--show-output",
+                    ]);
+                    if nocapture {
+                        command.arg("--nocapture");
+                    }
+                    let process = command.output().unwrap();
+                    let stdout = String::from_utf8(process.stdout).unwrap();
+                    let stderr = String::from_utf8(process.stderr).unwrap();
+                    let context =
+                        format!("{name}, tokio={tokio}, nocapture={nocapture}\n{stdout}\n{stderr}");
+                    assert_eq!(
+                        process.status.code(),
+                        Some(if passed { 0 } else { 101 }),
+                        "{context}"
+                    );
+                    let report = stdout
+                        .lines()
+                        .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                        .expect(&context);
+                    let tests = report["results"]["tests"].as_array().unwrap();
+                    assert_eq!(tests.len(), 1, "{context}");
+                    let test = &tests[0];
+                    assert_eq!(
+                        test["status"],
+                        if passed { "passed" } else { "failed" },
+                        "{context}"
+                    );
+                    // Captured worker runs currently do not forward retry metadata over IPC.
+                    if nocapture {
+                        assert_eq!(
+                            test["retries"].as_u64().unwrap_or(0),
+                            attempts - 1,
+                            "{context}"
+                        );
+                    }
+                    let output = if nocapture {
+                        stdout.clone()
+                    } else {
+                        test["stdout"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|line| line.as_str().unwrap())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    };
+                    assert_eq!(
+                        output
+                            .lines()
+                            .filter(|line| line.starts_with("ATTEMPT "))
+                            .count() as u64,
+                        attempts,
+                        "{context}"
+                    );
+                    assert!(output.contains(&format!("ATTEMPT {attempts}")), "{context}");
+                    if name.ends_with("persistent") || name.ends_with("unmarked") {
+                        assert_eq!(
+                            test["message"],
+                            format!("error on attempt {attempts}"),
+                            "{context}"
+                        );
+                    } else if name.ends_with("timeout") {
+                        assert_eq!(test["message"], "Test timed out", "{context}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
     fn can_run_sync_examples() {
         let cwd = std::env::current_dir().unwrap();
         let root = cwd.parent().unwrap().join("example");

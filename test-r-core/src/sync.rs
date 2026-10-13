@@ -901,7 +901,14 @@ fn run_with_flakiness_control(
                 let start = Instant::now();
                 let result = test(start);
 
-                if result.is_err() && tries < *max_retries {
+                let retryable = matches!(
+                    &result,
+                    Err(_)
+                        | Ok(Err(
+                            FailureCause::ReturnedError { .. } | FailureCause::ReturnedMessage(_)
+                        ))
+                );
+                if retryable && tries < *max_retries {
                     tries += 1;
                     output.repeat_running_test(
                         test_description,
