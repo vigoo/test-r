@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-6badfa3c.js";
+            window.path_to_searchindex_js = "../searchindex-469866ec.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-16c0bd11.js"></script>
@@ -220,6 +220,9 @@ It is also possible to run <strong>only the ignored tests</strong> with the <cod
 <h2 id="listing-tests"><a class="header" href="#listing-tests">Listing tests</a></h2>
 <p>It is possible to just list all the available tests, without executing anything with the –list command:</p>
 <pre><code class="language-sh">cargo test -- --list
+</code></pre>
+<p>Listing applies the same name, tag, and skip filters as running tests. For example, to verify which tests have a tag without running them:</p>
+<pre><code class="language-sh">cargo test ':tag:expensive' -- --list
 </code></pre>
 <h2 id="test-output"><a class="header" href="#test-output">Test output</a></h2>
 <p>There are various options controlling the <strong>output</strong> of the test runner. See the <a href="/core_features/test_output.html">test output chapter</a> for more details.</p>
