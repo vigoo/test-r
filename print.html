@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-df1c4860.js";
+            window.path_to_searchindex_js = "searchindex-fd4343e2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-16c0bd11.js"></script>
@@ -437,12 +437,13 @@ It is also possible to run <strong>only the ignored tests</strong> with the <cod
 <h1 id="test-output-1"><a class="header" href="#test-output-1">Test output</a></h1>
 <p>The default setting of <code>test-r</code> is to use the <strong>pretty</strong> format and capture test outputs.</p>
 <h2 id="output-format"><a class="header" href="#output-format">Output format</a></h2>
-<p>There are four supported output formats in <code>test-r</code>, which can be selected with the <code>--format</code> flag:</p>
+<p>There are five supported output formats in <code>test-r</code>, which can be selected with the <code>--format</code> flag:</p>
 <ul>
 <li><code>pretty</code> (default) - human-readable output showing the progress and the final results in a verbose way</li>
 <li><code>terse</code> - human-readable output, only emitting a single character for each test during the test run</li>
 <li><code>json</code> - emits JSON messages during the test run, useful for integration with other tools like IDEs</li>
 <li><code>junit</code> - writes a JUnit XML test report, useful for generating browsable test reports</li>
+<li><code>ctrf</code> - writes a Common Test Report Format JSON report, including structured retry evidence</li>
 </ul>
 <p>When using the <code>pretty</code> (default) mode, the <code>--color</code> flag can be used to control whether the output should use colors or not:</p>
 <ul>
@@ -482,6 +483,40 @@ Output capturing, parallel execution and shared test dependencies cannot be used
 <p>Note that <code>test-r</code> provides a nicer way to fail long running tests (but only if the <code>tokio</code> feature is enabled) using the <code>#[timeout(ms)]</code> attribute, as explained in the <a href="/advanced_features/per_test_configuration.html">per-test configuration chapter</a>.</p>
 <h2 id="saving-the-output-to-a-log-file"><a class="header" href="#saving-the-output-to-a-log-file">Saving the output to a log file</a></h2>
 <p>The test output can be saved into a log file using the <code>--logfile &lt;path&gt;</code> flag. Because of the <a href="https://github.com/rust-lang/rust/issues/105424">issue described in the Rust issue tracker</a>, the test runner cannot directly use the provided path as other test harnesses would overwrite it. Instead, <code>test-r</code> interprets the provided path as a template, and appends a random UUID to its file name part for each generated log file. This allows saving multiple JUnit test reports, for example, into a single directory, where a test browser can pick them up from.</p>
+<h3 id="ctrf-retry-evidence"><a class="header" href="#ctrf-retry-evidence">CTRF retry evidence</a></h3>
+<p>CTRF keeps one logical entry per test in <code>results.tests</code>; summary counts describe only
+the current suite attempt, not the number of invocations. A test’s standard <code>duration</code>
+continues to cover its entire execution, including per-test retries (milliseconds).
+The standard <code>retries</code> field counts additional invocations within that suite attempt.</p>
+<p>When a test runs more than once, its <code>extra.testR.attempts</code> array contains ordered
+invocation records. Each has a one-based <code>attempt</code>, CTRF <code>status</code>, <code>duration</code> in
+milliseconds for that invocation, failure <code>message</code> when applicable, and captured
+<code>stdout</code>/<code>stderr</code> arrays when available. A first-invocation pass has no attempt-history
+extension. Failed-invocation diagnostics are retained even after eventual success,
+without <code>--show-output</code>; successful-invocation output requires <code>--show-output</code>.
+This policy applies both to invocation records and to the logical test’s standard
+<code>stdout</code>/<code>stderr</code>: a repeated test that ultimately fails includes only its failed
+invocations’ worker output unless <code>--show-output</code> is set.
+Under <code>--nocapture</code> (or <code>#[never_capture]</code>) no captured logs are fabricated.</p>
+<p>For <code>--flaky-run</code>, the second and later suite reports also have
+<code>results.extra.testR</code> with a one-based <code>suiteAttempt</code>, <code>complete</code> boolean, and
+<code>previousSuiteAttempts</code> array. Each prior suite record contains its <code>suiteAttempt</code>,
+<code>summary</code>, and <code>tests</code>, including any nested per-test invocation records. Thus
+invocation numbers restart within each suite attempt and never inflate final counts.
+Suite summary start/stop timestamps describe that suite, not cumulative retry time.</p>
+<p>With <code>--logfile</code>, each snapshot is a single JSON document. At suite restart a partial
+snapshot (<code>complete: false</code>) preserves prior completed suites, even if the new suite
+never finishes a test. Subsequent partial snapshots include the current suite’s
+completed tests. Without a logfile, reports are emitted at suite end on stdout;
+later reports include earlier suite evidence. History has no separate size limit;
+its size grows with the configured attempt count and captured diagnostics.</p>
+<p>Output attribution uses flushed worker stream boundaries between invocations.
+Output from background work that outlives an invocation may appear in a later
+invocation’s window. Host-side output is attributed only to the logical test;
+for repeated tests it is retained separately in <code>extra.testR.hostOutput</code> when
+any invocation failed or <code>--show-output</code> is set, rather than assigned to a
+fictitious invocation. Existing <code>[host]</code> rendering in the standard output remains
+unchanged. These extensions have the same semantics in sync and async runners.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="advanced-features"><a class="header" href="#advanced-features">Advanced features</a></h1>
 <p>This chapter covers the advanced features of <code>test-r</code>, which are either not available at all using the built-in test harness,
