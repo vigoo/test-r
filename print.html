@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-469866ec.js";
+            window.path_to_searchindex_js = "searchindex-bab0436d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-16c0bd11.js"></script>
@@ -1705,6 +1705,18 @@ fn flaky_test() {
     assert!(false); // This test will fail 3 times before being marked as failed
 }
 <span class="boring">}</span></code></pre>
+<h3 id="retry-reporting"><a class="header" href="#retry-reporting">Retry reporting</a></h3>
+<p>Retry notifications are reported in both direct and captured worker execution,
+including parallel runs. <code>--show-output</code> only controls captured log visibility;
+it does not change retry accounting.</p>
+<p>In CTRF reports, <code>retries</code> counts performed repetitions after the first attempt,
+not the configured budget. A known-flaky test that passes immediately has no
+<code>retries</code> or <code>flaky</code> field. Once retried, it has <code>flaky: true</code>, even if all
+attempts fail: this indicates that a known-flaky test was retried, not that it
+eventually recovered. With <code>#[flaky(3)]</code>, a persistent failure makes three
+attempts and reports <code>retries: 2</code> while remaining failed.</p>
+<p>Worker retry notifications are delivered with the final test result, so plain
+output displays them at completion rather than while an attempt is running.</p>
 <h2 id="ensuring-tests-are-not-flaky"><a class="header" href="#ensuring-tests-are-not-flaky">Ensuring tests are not flaky</a></h2>
 <p>The opposite appraoch is to ensure that a test is not flaky by running it multiple times. This can help in diagnosing flakiness and reproducing issues locally. The <code>#[non_flaky(n)]</code> attribute will run a test <code>n</code> times before marking it as succeeded.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -1717,6 +1729,8 @@ fn non_flaky_test() {
     assert!(true); // This test will pass 3 times before being marked as succeeded
 }
 <span class="boring">}</span></code></pre>
+<p>CTRF also counts these verification repetitions in <code>retries</code>, but records
+<code>flaky: false</code> for them.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="dynamic-test-generation"><a class="header" href="#dynamic-test-generation">Dynamic test generation</a></h1>
 <p>Normally the test tree is static, defined compile time using <strong>modules</strong> representing test suites and <strong>functions</strong> annotated with <code>#[test]</code> defining test cases. Sometimes however it is useful to generate test cases runtime. <code>test-r</code> supports this using the <code>#[test_gen]</code> attribute.</p>
