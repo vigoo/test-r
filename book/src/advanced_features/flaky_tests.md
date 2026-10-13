@@ -5,7 +5,13 @@ Tests can be sometimes flaky, and only fail sporadically or depending on the env
 `test-r` provides two ways to handle flaky tests:
 
 ## Marking tests as known to be flaky
-By using the `#[flaky(n)]` attribute, where `n` is a number, we acknowledge that a test is known to be flaky, and the test runner will retry it up to `n` times before marking it as failed.
+By using the `#[flaky(n)]` attribute, where `n` is a number, we acknowledge that a test is known to be flaky. The test runner allows up to `n` total attempts (the initial execution plus at most `n - 1` retries), stopping at the first successful attempt.
+
+Both synchronous and asynchronous tests retry test-body panics and returned `Result::Err` values. Dynamically registered tests using `FlakinessControl::RetryKnownFlaky(n)` follow the same rules. Reported retry counts reflect additional executions, not the configured attempt budget.
+
+Harness failures, including asynchronous timeouts and critical run-time threshold violations, are not retried. An asynchronous timeout applies to each attempt separately, not to the entire retry sequence. Dependency-construction failures and worker crashes are not retried by this attribute either.
+
+`should_panic` is evaluated after the retry loop; this attribute does not change the existing expected-panic behavior.
 
 ```rust
 use test_r::{flaky, test};
