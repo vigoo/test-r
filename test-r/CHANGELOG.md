@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.13](https://github.com/vigoo/test-r/compare/test-r-v3.0.12...test-r-v3.0.13) - 2026-10-13
+
+### Fixed
+
+- preserve CTRF retry attempt diagnostics ([#195](https://github.com/vigoo/test-r/pull/195))
+- preserve captured worker retry reporting ([#193](https://github.com/vigoo/test-r/pull/193))
+
+### Other
+
+- Reject cyclic test dependencies at compile time ([#194](https://github.com/vigoo/test-r/pull/194))
+- Fix --list ignoring test filters ([#191](https://github.com/vigoo/test-r/pull/191))
+- Fix known-flaky retries for returned Result errors ([#192](https://github.com/vigoo/test-r/pull/192))
+
 ## [3.0.12](https://github.com/vigoo/test-r/compare/test-r-v3.0.11...test-r-v3.0.12) - 2026-08-24
 
 ### Other
