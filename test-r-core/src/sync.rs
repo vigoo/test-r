@@ -477,92 +477,81 @@ fn test_thread(
             }
         }
 
-        if let Some(next) = pick_next(&execution) {
-            let skip = if let Some((name, crate_name, module_path)) = &expected_test {
-                next.test.name != *name
-                    || next.test.crate_name != *crate_name
-                    || next.test.module_path != *module_path
+        if let Some(next) = pick_next(&execution, expected_test.as_ref()) {
+            expected_test = None;
+
+            // Snapshot the parent's monotonic-clock view of the
+            // test start. The matching end-instant is captured
+            // after `finished_running_test`, and the pair becomes
+            // a `HostWindow` for record attribution.
+            let window_start = Instant::now();
+
+            output.start_running_test(&next.test, next.index, count);
+
+            let result = if next.test.props.is_ignored && !args.include_ignored {
+                TestResult::ignored()
+            } else if let Some(worker) = worker.as_mut() {
+                worker.run_test(args.nocapture, &next.test, &*output, next.index, count)
             } else {
-                false
-            };
-
-            if !skip {
-                expected_test = None;
-
-                // Snapshot the parent's monotonic-clock view of the
-                // test start. The matching end-instant is captured
-                // after `finished_running_test`, and the pair becomes
-                // a `HostWindow` for record attribution.
-                let window_start = Instant::now();
-
-                output.start_running_test(&next.test, next.index, count);
-
-                let result = if next.test.props.is_ignored && !args.include_ignored {
-                    TestResult::ignored()
-                } else if let Some(worker) = worker.as_mut() {
-                    worker.run_test(args.nocapture, &next.test, &*output, next.index, count)
-                } else {
-                    let ensure_time = get_ensure_time(&args, &next.test);
-                    run_sync_test_function(
-                        output.clone(),
-                        &next.test,
-                        next.index,
-                        count,
-                        ensure_time,
-                        next.deps.clone(),
-                    )
-                };
-                owned_worker_exhausted = worker
-                    .as_ref()
-                    .map(|worker| worker.exhausted)
-                    .unwrap_or(false);
-
-                output.finished_running_test(&next.test, next.index, count, &result);
-                let window_end = Instant::now();
-
-                if let Some(connection) = connection_arc.as_ref() {
-                    let finish_marker = Uuid::new_v4().to_string();
-                    let finish_marker_line = format!("{finish_marker}\n");
-                    std::io::stdout()
-                        .write_all(finish_marker_line.as_bytes())
-                        .unwrap();
-                    std::io::stderr()
-                        .write_all(finish_marker_line.as_bytes())
-                        .unwrap();
-
-                    std::io::stdout().flush().unwrap();
-                    std::io::stderr().flush().unwrap();
-
-                    let response = IpcResponse::TestFinished {
-                        result: (&result).into(),
-                        finish_marker,
-                        retries: ipc_output.as_ref().unwrap().take_retries(),
-                        worker_exhausted: is_done(&execution),
-                    };
-
-                    let msg =
-                        serialize_to_byte_vec(&response).expect("Failed to encode IPC response");
-                    let mut conn = connection.lock().unwrap();
-                    write_frame(&mut *conn, &msg).expect("Failed to write IPC response frame");
-                }
-
-                results.push((next.test.clone(), result));
-                // Always push a window, even when no host capture is
-                // installed (epoch is `None`): a zero-width default
-                // keeps `results` and `host_windows` in lock-step so
-                // the suite-runner can attribute-or-ignore without
-                // index arithmetic.
-                let window = crate::host_capture::HostWindow::from_instants(
-                    host_capture_epoch,
-                    window_start,
-                    window_end,
+                let ensure_time = get_ensure_time(&args, &next.test);
+                run_sync_test_function(
+                    output.clone(),
+                    &next.test,
+                    next.index,
+                    count,
+                    ensure_time,
+                    next.deps.clone(),
                 )
-                .unwrap_or(crate::host_capture::HostWindow {
-                    start: std::time::Duration::ZERO,
-                    end: std::time::Duration::ZERO,
-                });
-                host_windows.push(window);
+            };
+            owned_worker_exhausted = worker
+                .as_ref()
+                .map(|worker| worker.exhausted)
+                .unwrap_or(false);
+
+            output.finished_running_test(&next.test, next.index, count, &result);
+            let window_end = Instant::now();
+
+            if let Some(connection) = connection_arc.as_ref() {
+                let finish_marker = Uuid::new_v4().to_string();
+                let finish_marker_line = format!("{finish_marker}\n");
+                std::io::stdout()
+                    .write_all(finish_marker_line.as_bytes())
+                    .unwrap();
+                std::io::stderr()
+                    .write_all(finish_marker_line.as_bytes())
+                    .unwrap();
+
+                std::io::stdout().flush().unwrap();
+                std::io::stderr().flush().unwrap();
+
+                let response = IpcResponse::TestFinished {
+                    result: (&result).into(),
+                    finish_marker,
+                    retries: ipc_output.as_ref().unwrap().take_retries(),
+                    worker_exhausted: is_done(&execution),
+                };
+
+                let msg = serialize_to_byte_vec(&response).expect("Failed to encode IPC response");
+                let mut conn = connection.lock().unwrap();
+                write_frame(&mut *conn, &msg).expect("Failed to write IPC response frame");
             }
+
+            results.push((next.test.clone(), result));
+            // Always push a window, even when no host capture is
+            // installed (epoch is `None`): a zero-width default
+            // keeps `results` and `host_windows` in lock-step so
+            // the suite-runner can attribute-or-ignore without
+            // index arithmetic.
+            let window = crate::host_capture::HostWindow::from_instants(
+                host_capture_epoch,
+                window_start,
+                window_end,
+            )
+            .unwrap_or(crate::host_capture::HostWindow {
+                start: std::time::Duration::ZERO,
+                end: std::time::Duration::ZERO,
+            });
+            host_windows.push(window);
         }
     }
 
@@ -867,9 +856,12 @@ impl HostedRpcTransport for IpcHostedRpcTransport {
     }
 }
 
-fn pick_next(execution: &Arc<Mutex<TestSuiteExecution>>) -> Option<TestExecution> {
+fn pick_next(
+    execution: &Arc<Mutex<TestSuiteExecution>>,
+    expected_test: Option<&(String, String, String)>,
+) -> Option<TestExecution> {
     let mut execution = execution.lock().unwrap();
-    execution.pick_next_sync()
+    execution.pick_next_sync(expected_test)
 }
 
 fn run_with_flakiness_control(
