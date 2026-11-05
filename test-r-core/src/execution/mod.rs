@@ -647,12 +647,15 @@ impl TestSuiteExecution {
     }
 
     #[cfg(feature = "tokio")]
-    pub async fn pick_next(&mut self) -> Option<TestExecution> {
+    pub async fn pick_next(
+        &mut self,
+        expected_test: Option<&(String, String, String)>,
+    ) -> Option<TestExecution> {
         if self.is_empty() {
             None
         } else {
             match self
-                .pick_next_internal(&self.create_dependency_map(&HashMap::new()))
+                .pick_next_internal(&self.create_dependency_map(&HashMap::new()), expected_test)
                 .await
             {
                 Some((test, deps, seq_lock, in_progress_counter)) => {
@@ -671,8 +674,11 @@ impl TestSuiteExecution {
         }
     }
 
-    pub fn pick_next_sync(&mut self) -> Option<TestExecution> {
-        match self.pick_next_internal_sync(&HashMap::new()) {
+    pub fn pick_next_sync(
+        &mut self,
+        expected_test: Option<&(String, String, String)>,
+    ) -> Option<TestExecution> {
+        match self.pick_next_internal_sync(&HashMap::new(), expected_test) {
             Some((test, deps, seq_lock, in_progress_counter)) => {
                 let index = self.idx;
                 self.idx += 1;
@@ -688,18 +694,39 @@ impl TestSuiteExecution {
         }
     }
 
+    fn test_position(&self, expected_test: Option<&(String, String, String)>) -> Option<usize> {
+        self.tests.iter().rposition(|test| {
+            expected_test.is_none_or(|(name, crate_name, module_path)| {
+                test.name == *name
+                    && test.crate_name == *crate_name
+                    && test.module_path == *module_path
+            })
+        })
+    }
+
+    fn contains_test(&self, expected_test: &(String, String, String)) -> bool {
+        self.test_position(Some(expected_test)).is_some()
+            || self
+                .inner
+                .iter()
+                .any(|inner| inner.contains_test(expected_test))
+    }
+
     #[cfg(feature = "tokio")]
     #[allow(clippy::type_complexity)]
     async fn pick_next_internal(
         &mut self,
         materialized_parent_deps: &HashMap<String, Arc<dyn Any + Send + Sync>>,
+        expected_test: Option<&(String, String, String)>,
     ) -> Option<(
         RegisteredTest,
         HashMap<String, Arc<dyn Any + Send + Sync>>,
         SequentialExecutionLockGuard,
         Arc<AtomicUsize>,
     )> {
-        if self.is_empty() {
+        // A worker must reserve only the parent's commanded test. Consuming
+        // other tests to reach it loses them if the parent assigns them later.
+        if self.is_empty() || expected_test.is_some_and(|test| !self.contains_test(test)) {
             None
         } else {
             let dependency_map = if !self.is_materialized() {
@@ -709,26 +736,29 @@ impl TestSuiteExecution {
             };
 
             let locked = self.sequential_lock.is_locked().await;
-            let result = if self.tests.is_empty() || locked {
-                let current = self.inner.iter_mut();
-                let mut result = None;
-                for inner in current {
-                    if let Some((test, deps, seq_lock, in_progress_counter)) =
-                        Box::pin(inner.pick_next_internal(&dependency_map)).await
-                    {
-                        result = Some((test, deps, seq_lock, in_progress_counter));
-                        break;
+            let position = self.test_position(expected_test);
+            let result = match position.filter(|_| !locked) {
+                None => {
+                    let current = self.inner.iter_mut();
+                    let mut result = None;
+                    for inner in current {
+                        if let Some((test, deps, seq_lock, in_progress_counter)) =
+                            Box::pin(inner.pick_next_internal(&dependency_map, expected_test)).await
+                        {
+                            result = Some((test, deps, seq_lock, in_progress_counter));
+                            break;
+                        }
                     }
-                }
-                self.inner.retain(|inner| !inner.is_empty());
+                    self.inner.retain(|inner| !inner.is_empty());
 
-                result
-            } else {
-                let guard = self.sequential_lock.lock(self.is_sequential).await;
-                self.in_progress.fetch_add(1, Ordering::Release);
-                self.tests
-                    .pop()
-                    .map(|test| (test, dependency_map, guard, self.in_progress.clone()))
+                    result
+                }
+                Some(position) => {
+                    let guard = self.sequential_lock.lock(self.is_sequential).await;
+                    self.in_progress.fetch_add(1, Ordering::Release);
+                    let test = self.tests.remove(position);
+                    Some((test, dependency_map, guard, self.in_progress.clone()))
+                }
             };
             if result.is_none()
                 && self.is_empty()
@@ -749,13 +779,14 @@ impl TestSuiteExecution {
     fn pick_next_internal_sync(
         &mut self,
         materialized_parent_deps: &HashMap<String, Arc<dyn Any + Send + Sync>>,
+        expected_test: Option<&(String, String, String)>,
     ) -> Option<(
         RegisteredTest,
         HashMap<String, Arc<dyn Any + Send + Sync>>,
         SequentialExecutionLockGuard,
         Arc<AtomicUsize>,
     )> {
-        if self.is_empty() {
+        if self.is_empty() || expected_test.is_some_and(|test| !self.contains_test(test)) {
             None
         } else {
             let dependency_map = if !self.is_materialized() {
@@ -765,26 +796,29 @@ impl TestSuiteExecution {
             };
 
             let locked = self.sequential_lock.is_locked_sync();
-            let result = if self.tests.is_empty() || locked {
-                let current = self.inner.iter_mut();
-                let mut result = None;
-                for inner in current {
-                    if let Some((test, deps, seq_lock, in_progress_counter)) =
-                        inner.pick_next_internal_sync(&dependency_map)
-                    {
-                        result = Some((test, deps, seq_lock, in_progress_counter));
-                        break;
+            let position = self.test_position(expected_test);
+            let result = match position.filter(|_| !locked) {
+                None => {
+                    let current = self.inner.iter_mut();
+                    let mut result = None;
+                    for inner in current {
+                        if let Some((test, deps, seq_lock, in_progress_counter)) =
+                            inner.pick_next_internal_sync(&dependency_map, expected_test)
+                        {
+                            result = Some((test, deps, seq_lock, in_progress_counter));
+                            break;
+                        }
                     }
-                }
 
-                self.inner.retain(|inner| !inner.is_empty());
-                result
-            } else {
-                let guard = self.sequential_lock.lock_sync(self.is_sequential);
-                self.in_progress.fetch_add(1, Ordering::Release);
-                self.tests
-                    .pop()
-                    .map(|test| (test, dependency_map, guard, self.in_progress.clone()))
+                    self.inner.retain(|inner| !inner.is_empty());
+                    result
+                }
+                Some(position) => {
+                    let guard = self.sequential_lock.lock_sync(self.is_sequential);
+                    self.in_progress.fetch_add(1, Ordering::Release);
+                    let test = self.tests.remove(position);
+                    Some((test, dependency_map, guard, self.in_progress.clone()))
+                }
             };
             // `is_empty()` matches `pick_next_internal`: a `None` result
             // can mean "descendant is temporarily locked", not "subtree
