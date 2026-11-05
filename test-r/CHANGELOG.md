@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.14](https://github.com/vigoo/test-r/compare/test-r-v3.0.13...test-r-v3.0.14) - 2026-11-05
+
+### Other
+
+- Fix captured worker hangs with sequential suites ([#207](https://github.com/vigoo/test-r/pull/207))
+
 ## [3.0.13](https://github.com/vigoo/test-r/compare/test-r-v3.0.12...test-r-v3.0.13) - 2026-10-13
 
 ### Fixed
