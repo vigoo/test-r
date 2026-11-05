@@ -1,6 +1,103 @@
 use serial_test::serial;
 use std::time::{Duration, Instant};
 
+#[test]
+#[serial]
+fn sequential_suites_finish_with_idle_workers() {
+    let mut build = std::process::Command::new("cargo");
+    build.current_dir(env!("CARGO_MANIFEST_DIR")).args([
+        "test",
+        "--test",
+        "scheduler_fixture",
+        "--no-run",
+        "--message-format=json",
+    ]);
+    if !cfg!(feature = "tokio") {
+        build.arg("--no-default-features");
+    }
+    let build = build.output().unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let executable = String::from_utf8(build.stdout)
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find_map(|message| message["executable"].as_str().map(str::to_owned))
+        .expect("scheduler fixture executable");
+
+    for (threads, nocapture) in [(14, false), (14, true), (1, false)] {
+        for filtered in [false, true] {
+            // Repeat the captured, concurrent case to expose the scheduling race.
+            let attempts = if threads == 14 && !nocapture { 10 } else { 1 };
+            for attempt in 0..attempts {
+                let mut command = std::process::Command::new(&executable);
+                command
+                    .args([
+                        "--include-ignored",
+                        "--color",
+                        "never",
+                        "--test-threads",
+                        &threads.to_string(),
+                    ])
+                    .env("TOKIO_WORKER_THREADS", "14")
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+                if nocapture {
+                    command.arg("--nocapture");
+                }
+                if filtered {
+                    command.args(["sequential::", "parallel::"]);
+                }
+                let mut child = command.spawn().unwrap();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let timed_out = loop {
+                    if child.try_wait().unwrap().is_some() {
+                        break false;
+                    }
+                    if Instant::now() >= deadline {
+                        child.kill().unwrap();
+                        break true;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                let output = child.wait_with_output().unwrap();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let context = format!(
+                    "threads={threads}, nocapture={nocapture}, filtered={filtered}, attempt={attempt}\n{stdout}\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(!timed_out, "scheduler hung: {context}");
+                assert!(output.status.success(), "{context}");
+                assert!(stdout.contains("7 passed"), "{context}");
+
+                let mut sequential_running = false;
+                let mut sequential_finished = 0;
+                for line in stdout
+                    .lines()
+                    .filter(|line| line.contains("::sequential::"))
+                {
+                    if line.contains("Running test:") {
+                        assert!(
+                            !sequential_running,
+                            "sequential tests overlapped: {context}"
+                        );
+                        sequential_running = true;
+                    } else if line.contains("Finished test:") {
+                        assert!(sequential_running, "{context}");
+                        sequential_running = false;
+                        sequential_finished += 1;
+                    }
+                }
+                assert_eq!(sequential_finished, 4, "{context}");
+                assert!(!sequential_running, "{context}");
+            }
+        }
+    }
+}
+
 mod ctrf_retry_tests {
     use super::*;
     use serde_json::Value;
