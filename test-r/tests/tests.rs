@@ -988,26 +988,53 @@ mod timing_tests {
         let cwd = std::env::current_dir().unwrap();
         let root = cwd.parent().unwrap().join("example-tokio");
 
+        // Keep compilation and Cargo lock waits outside the execution deadline.
+        let build = std::process::Command::new("cargo")
+            .args(["test", "--lib", "--no-run", "--message-format=json"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(
+            build.status.success(),
+            "Example build failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let executable = String::from_utf8(build.stdout)
+            .unwrap()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find_map(|message| {
+                (message["reason"] == "compiler-artifact" && message["profile"]["test"] == true)
+                    .then(|| message["executable"].as_str().map(std::path::PathBuf::from))
+                    .flatten()
+            })
+            .expect("Cargo did not report the example library test executable");
+
         let start = Instant::now();
-        let process = std::process::Command::new("cargo")
-            .arg("test")
+        let process = std::process::Command::new(&executable)
             .arg("suite_timeout_tests::suite_timeout_exceeds")
-            .arg("--")
             .arg("--exact")
             .current_dir(&root)
-            .status()
+            .output()
             .unwrap();
         let elapsed = start.elapsed();
+        let stdout = String::from_utf8_lossy(&process.stdout);
+        let stderr = String::from_utf8_lossy(&process.stderr);
 
         // The test should fail due to timeout, and it should complete quickly (not wait 30s)
-        assert_ne!(process.code(), Some(0));
-        assert!(elapsed < Duration::from_secs(15));
+        assert!(
+            !process.status.success() && stdout.contains("suite_timeout_exceeds (Test timed out)"),
+            "Expected the suite timeout to fail the test: {}\n{stdout}\n{stderr}",
+            process.status
+        );
+        assert!(
+            elapsed < Duration::from_secs(15),
+            "Suite timeout took {elapsed:?}\n{stdout}\n{stderr}"
+        );
 
         // A short test in the same suite should pass
-        let process = std::process::Command::new("cargo")
-            .arg("test")
+        let process = std::process::Command::new(&executable)
             .arg("suite_timeout_tests::suite_timeout_short_test")
-            .arg("--")
             .arg("--exact")
             .current_dir(&root)
             .status()
@@ -1015,10 +1042,8 @@ mod timing_tests {
         assert_eq!(process.code(), Some(0));
 
         // A test with its own per-test timeout should use the per-test timeout (override)
-        let process = std::process::Command::new("cargo")
-            .arg("test")
+        let process = std::process::Command::new(&executable)
             .arg("suite_timeout_tests::suite_timeout_overridden")
-            .arg("--")
             .arg("--exact")
             .current_dir(&root)
             .status()
