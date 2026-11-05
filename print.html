@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-fd4343e2.js";
+            window.path_to_searchindex_js = "searchindex-3bbcfbbc.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-16c0bd11.js"></script>
@@ -1642,6 +1642,7 @@ mod suite {
 }
 <span class="boring">}</span></code></pre>
 <p>The rest of the tests in the crate will still be parallelized based on the <code>--test-threads</code> argument.</p>
+<p>Sequential suites can run alongside parallel suites with output capture enabled or with <code>--nocapture</code>, including when multiple test filters are passed.</p>
 <p>When <code>#[sequential]</code> is applied to a module that contains <strong>nested sub-modules</strong>, the sequential behavior propagates to the entire subtree. All tests in the module and its descendants are guaranteed to run one at a time, gated by a single lock.</p>
 <p>The <code>#[sequential]</code> attribute can only be used on <em>inline modules</em> due to a limitation in the current stable Rust compiler.
 For non-inline modules, you can use the <code>sequential_suite!</code> macro instead in the following way:</p>
