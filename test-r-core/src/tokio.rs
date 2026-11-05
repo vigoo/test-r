@@ -501,97 +501,86 @@ async fn test_thread(
             }
         }
 
-        if let Some(next) = pick_next(&execution).await {
-            let skip = if let Some((name, crate_name, module_path)) = &expected_test {
-                next.test.name != *name
-                    || next.test.crate_name != *crate_name
-                    || next.test.module_path != *module_path
-            } else {
-                false
-            };
+        if let Some(next) = pick_next(&execution, expected_test.as_ref()).await {
+            expected_test = None;
 
-            if !skip {
-                expected_test = None;
+            let ensure_time = get_ensure_time(&args, &next.test);
 
-                let ensure_time = get_ensure_time(&args, &next.test);
+            // Snapshot the parent's monotonic-clock view of the
+            // test start. The matching end-instant is captured
+            // after `finished_running_test`, and the pair becomes
+            // a `HostWindow` for record attribution. Uses
+            // `std::time::Instant` because the host-capture epoch
+            // is `std::time::Instant` (tokio's `Instant` is a
+            // different type without `From` interop).
+            let window_start = std::time::Instant::now();
 
-                // Snapshot the parent's monotonic-clock view of the
-                // test start. The matching end-instant is captured
-                // after `finished_running_test`, and the pair becomes
-                // a `HostWindow` for record attribution. Uses
-                // `std::time::Instant` because the host-capture epoch
-                // is `std::time::Instant` (tokio's `Instant` is a
-                // different type without `From` interop).
-                let window_start = std::time::Instant::now();
+            output.start_running_test(&next.test, next.index, count);
+            let result = run_test(
+                output.clone(),
+                next.index,
+                count,
+                args.nocapture,
+                args.include_ignored,
+                ensure_time,
+                next.deps.clone(),
+                &next.test,
+                &mut worker,
+            )
+            .await;
+            owned_worker_exhausted = worker
+                .as_ref()
+                .map(|worker| worker.exhausted)
+                .unwrap_or(false);
+            output.finished_running_test(&next.test, next.index, count, &result);
+            let window_end = std::time::Instant::now();
 
-                output.start_running_test(&next.test, next.index, count);
-                let result = run_test(
-                    output.clone(),
-                    next.index,
-                    count,
-                    args.nocapture,
-                    args.include_ignored,
-                    ensure_time,
-                    next.deps.clone(),
-                    &next.test,
-                    &mut worker,
-                )
-                .await;
-                owned_worker_exhausted = worker
-                    .as_ref()
-                    .map(|worker| worker.exhausted)
-                    .unwrap_or(false);
-                output.finished_running_test(&next.test, next.index, count, &result);
-                let window_end = std::time::Instant::now();
+            if let Some(connection) = connection_arc.as_ref() {
+                let finish_marker = Uuid::new_v4().to_string();
+                let finish_marker_line = format!("{finish_marker}\n");
+                let mut stdout = tokio::io::stdout();
+                stdout
+                    .write_all(finish_marker_line.as_bytes())
+                    .await
+                    .unwrap();
+                stdout.flush().await.unwrap();
 
-                if let Some(connection) = connection_arc.as_ref() {
-                    let finish_marker = Uuid::new_v4().to_string();
-                    let finish_marker_line = format!("{finish_marker}\n");
-                    let mut stdout = tokio::io::stdout();
-                    stdout
-                        .write_all(finish_marker_line.as_bytes())
-                        .await
-                        .unwrap();
-                    stdout.flush().await.unwrap();
+                let mut stderr = tokio::io::stderr();
+                stderr
+                    .write_all(finish_marker_line.as_bytes())
+                    .await
+                    .unwrap();
+                stderr.flush().await.unwrap();
 
-                    let mut stderr = tokio::io::stderr();
-                    stderr
-                        .write_all(finish_marker_line.as_bytes())
-                        .await
-                        .unwrap();
-                    stderr.flush().await.unwrap();
-
-                    let response = IpcResponse::TestFinished {
-                        result: (&result).into(),
-                        finish_marker,
-                        retries: ipc_output.as_ref().unwrap().take_retries(),
-                        worker_exhausted: is_done(&execution).await,
-                    };
-                    let msg =
-                        serialize_to_byte_vec(&response).expect("Failed to encode IPC response");
-                    let mut conn = connection.lock().await;
-                    write_frame_async(&mut *conn, &msg)
-                        .await
-                        .expect("Failed to write IPC response frame");
-                }
-
-                // Push the result and its window under the same
-                // critical section so the two vecs stay aligned in the
-                // face of concurrent pushes from sibling test_threads.
-                let window = crate::host_capture::HostWindow::from_instants(
-                    host_capture_epoch,
-                    window_start,
-                    window_end,
-                )
-                .unwrap_or(crate::host_capture::HostWindow {
-                    start: std::time::Duration::ZERO,
-                    end: std::time::Duration::ZERO,
-                });
-                let mut results_guard = results.lock().await;
-                let mut windows_guard = host_windows.lock().await;
-                results_guard.push((next.test.clone(), result));
-                windows_guard.push(window);
+                let response = IpcResponse::TestFinished {
+                    result: (&result).into(),
+                    finish_marker,
+                    retries: ipc_output.as_ref().unwrap().take_retries(),
+                    worker_exhausted: is_done(&execution).await,
+                };
+                let msg = serialize_to_byte_vec(&response).expect("Failed to encode IPC response");
+                let mut conn = connection.lock().await;
+                write_frame_async(&mut *conn, &msg)
+                    .await
+                    .expect("Failed to write IPC response frame");
             }
+
+            // Push the result and its window under the same
+            // critical section so the two vecs stay aligned in the
+            // face of concurrent pushes from sibling test_threads.
+            let window = crate::host_capture::HostWindow::from_instants(
+                host_capture_epoch,
+                window_start,
+                window_end,
+            )
+            .unwrap_or(crate::host_capture::HostWindow {
+                start: std::time::Duration::ZERO,
+                end: std::time::Duration::ZERO,
+            });
+            let mut results_guard = results.lock().await;
+            let mut windows_guard = host_windows.lock().await;
+            results_guard.push((next.test.clone(), result));
+            windows_guard.push(window);
         }
     }
 
@@ -722,9 +711,12 @@ async fn apply_hosted_descriptors_locally(
     }
 }
 
-async fn pick_next(execution: &Arc<Mutex<TestSuiteExecution>>) -> Option<TestExecution> {
+async fn pick_next(
+    execution: &Arc<Mutex<TestSuiteExecution>>,
+    expected_test: Option<&(String, String, String)>,
+) -> Option<TestExecution> {
     let mut execution = execution.lock().await;
-    execution.pick_next().await
+    execution.pick_next(expected_test).await
 }
 
 async fn run_with_flakiness_control<F>(

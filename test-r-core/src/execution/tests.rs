@@ -38,7 +38,7 @@ fn reserving_final_test_does_not_end_ipc_worker_lifetime() {
     );
 
     let reserved = execution
-        .pick_next_sync()
+        .pick_next_sync(None)
         .expect("the final test should be reserved");
     assert!(
         execution.is_done(),
@@ -52,13 +52,9 @@ fn reserving_final_test_does_not_end_ipc_worker_lifetime() {
     drop(reserved);
 }
 
-/// An IPC worker intentionally advances its private execution plan through
-/// the normal picker until it reaches the parent's commanded test. This keeps
-/// dependency materialization, sequential locks, and subtree cleanup exactly
-/// the same as in-process execution, but can exhaust that worker's plan before
-/// the shared parent plan is done. The owning parent thread must then retire,
-/// leaving another worker whose plan still contains the locked test to finish
-/// the suite.
+/// An exhausted worker's owning parent thread must retire even if another
+/// thread still holds a sequential lock and the shared plan is not done.
+/// Model that lifetime boundary independently of worker-side test selection.
 #[test]
 fn exhausted_worker_retires_without_stranding_locked_sequential_test() {
     let ordinary = registered_test_in_module("ordinary", "ordinary", Vec::new());
@@ -83,18 +79,18 @@ fn exhausted_worker_retires_without_stranding_locked_sequential_test() {
         TestSuiteExecution::construct(&Arguments::default(), &[], &tests, &[sequential_prop]);
 
     let parent_sequential = parent
-        .pick_next_sync()
+        .pick_next_sync(None)
         .expect("one parent worker should reserve the first sequential test");
     assert_eq!(parent_sequential.test.module_path, "sequential");
 
     let parent_ordinary = parent
-        .pick_next_sync()
+        .pick_next_sync(None)
         .expect("another parent worker should bypass the locked subtree");
     assert_eq!(parent_ordinary.test.module_path, "ordinary");
 
     let worker_ordinary = loop {
         let candidate = worker
-            .pick_next_sync()
+            .pick_next_sync(None)
             .expect("ordinary test must remain in the worker plan");
         if candidate.test.module_path == "ordinary" {
             break candidate;
@@ -103,7 +99,7 @@ fn exhausted_worker_retires_without_stranding_locked_sequential_test() {
     };
     assert!(
         worker.is_done(),
-        "locating the ordinary command consumes the worker's remaining private plan"
+        "the synthetic worker plan has been exhausted"
     );
     assert!(
         crate::ipc::test_loop_should_exit(false, parent.is_done(), worker.is_done()),
@@ -116,11 +112,244 @@ fn exhausted_worker_retires_without_stranding_locked_sequential_test() {
     drop(parent_sequential);
 
     let remaining = parent
-        .pick_next_sync()
+        .pick_next_sync(None)
         .expect("the worker that held the sequential lock must be able to finish the subtree");
     assert_eq!(remaining.test.module_path, "sequential");
     drop(remaining);
     assert!(parent.is_done());
+}
+
+#[test]
+fn exact_selection_preserves_unmatched_tests_and_their_order() {
+    for asynchronous in [false, true] {
+        if asynchronous && !cfg!(feature = "tokio") {
+            continue;
+        }
+        #[cfg(feature = "tokio")]
+        let runtime = asynchronous.then(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+        });
+        let pick = |execution: &mut TestSuiteExecution,
+                    expected: Option<&(String, String, String)>| {
+            #[cfg(feature = "tokio")]
+            if let Some(runtime) = &runtime {
+                return runtime.block_on(execution.pick_next(expected));
+            }
+            execution.pick_next_sync(expected)
+        };
+
+        let mut other_crate = registered_test_in_module("same", "right", Vec::new());
+        other_crate.crate_name = "other_crate".to_string();
+        let tests = [
+            registered_test("first", Vec::new()),
+            registered_test("middle", Vec::new()),
+            registered_test("last", Vec::new()),
+            registered_test_in_module("same", "left", Vec::new()),
+            registered_test_in_module("same", "right", Vec::new()),
+            other_crate,
+        ];
+        let (mut execution, _) =
+            TestSuiteExecution::construct(&Arguments::default(), &[], &tests, &[]);
+        let missing = (
+            "same".to_string(),
+            "missing_crate".to_string(),
+            "right".to_string(),
+        );
+        assert!(pick(&mut execution, Some(&missing)).is_none());
+        assert_eq!(execution.remaining(), 6);
+
+        // Reserve a non-tail test, then visit sibling modules and crates out of
+        // plan order. All three components of the identity must match exactly.
+        for (index, (name, crate_name, module_path, qualified_name)) in [
+            ("middle", "tcrate", "", "tcrate::middle"),
+            ("same", "tcrate", "left", "tcrate::left::same"),
+            ("same", "other_crate", "right", "other_crate::right::same"),
+            ("same", "tcrate", "right", "tcrate::right::same"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let expected = (
+                name.to_string(),
+                crate_name.to_string(),
+                module_path.to_string(),
+            );
+            let selected =
+                pick(&mut execution, Some(&expected)).expect("commanded test remains available");
+            assert_eq!(selected.test.fully_qualified_name(), qualified_name);
+            assert_eq!(execution.remaining(), 5 - index);
+            assert!(!execution.is_done());
+            drop(selected);
+
+            assert!(
+                pick(&mut execution, Some(&expected)).is_none(),
+                "a test must not be reserved twice"
+            );
+            assert_eq!(execution.remaining(), 5 - index);
+        }
+
+        for (name, remaining) in [("first", 1), ("last", 0)] {
+            let selected =
+                pick(&mut execution, None).expect("unmatched tests must not be consumed");
+            assert_eq!(selected.test.name, name);
+            assert_eq!(execution.remaining(), remaining);
+            assert_eq!(execution.is_done(), remaining == 0);
+            drop(selected);
+        }
+        assert!(pick(&mut execution, None).is_none());
+    }
+}
+
+#[test]
+fn exact_selection_preserves_dependency_lifetimes() {
+    for asynchronous in [false, true] {
+        if asynchronous && !cfg!(feature = "tokio") {
+            continue;
+        }
+        #[cfg(feature = "tokio")]
+        let runtime = asynchronous.then(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+        });
+        let pick = |execution: &mut TestSuiteExecution,
+                    expected: Option<&(String, String, String)>| {
+            #[cfg(feature = "tokio")]
+            if let Some(runtime) = &runtime {
+                return runtime.block_on(execution.pick_next(expected));
+            }
+            execution.pick_next_sync(expected)
+        };
+
+        let parent_calls = Arc::new(AtomicUsize::new(0));
+        let child_calls = Arc::new(AtomicUsize::new(0));
+        let sibling_calls = Arc::new(AtomicUsize::new(0));
+        let dependencies = [
+            registered_perworker_counting_dep("parent_dep", "parent", parent_calls.clone()),
+            registered_perworker_counting_dep(
+                "sibling_dep",
+                "parent::sibling",
+                sibling_calls.clone(),
+            ),
+            registered_perworker_counting_dep("child_dep", "parent::child", child_calls.clone()),
+        ];
+        let tests = [
+            registered_test_in_module(
+                "one",
+                "parent::child",
+                vec!["parent_dep".to_string(), "child_dep".to_string()],
+            ),
+            registered_test_in_module(
+                "two",
+                "parent::child",
+                vec!["parent_dep".to_string(), "child_dep".to_string()],
+            ),
+            registered_test_in_module(
+                "one",
+                "parent::sibling",
+                vec!["parent_dep".to_string(), "sibling_dep".to_string()],
+            ),
+        ];
+        // Properties establish subtree order before dependencies or tests.
+        // Visit the nonmatching sibling first to detect eager construction.
+        let sequential = [
+            RegisteredTestSuiteProperty::Sequential {
+                name: "sibling".to_string(),
+                crate_name: "tcrate".to_string(),
+                module_path: "parent".to_string(),
+            },
+            RegisteredTestSuiteProperty::Sequential {
+                name: "child".to_string(),
+                crate_name: "tcrate".to_string(),
+                module_path: "parent".to_string(),
+            },
+        ];
+        let (mut execution, _) = TestSuiteExecution::construct(
+            &Arguments::default(),
+            &dependencies,
+            &tests,
+            &sequential,
+        );
+        let child_two = (
+            "two".to_string(),
+            "tcrate".to_string(),
+            "parent::child".to_string(),
+        );
+        let child_one = (
+            "one".to_string(),
+            "tcrate".to_string(),
+            "parent::child".to_string(),
+        );
+        let sibling_one = (
+            "one".to_string(),
+            "tcrate".to_string(),
+            "parent::sibling".to_string(),
+        );
+
+        let first = pick(&mut execution, Some(&child_two)).unwrap();
+        let parent_value = Arc::downgrade(&first.deps.get("parent_dep").unwrap());
+        let child_value = Arc::downgrade(&first.deps.get("child_dep").unwrap());
+        assert_eq!(parent_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(child_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sibling_calls.load(Ordering::SeqCst),
+            0,
+            "nonmatching sibling must stay unmaterialized"
+        );
+
+        // Exact selection must not bypass the lock or consume the locked test.
+        assert!(pick(&mut execution, Some(&child_one)).is_none());
+        assert_eq!(execution.remaining(), 2);
+        let sibling = pick(&mut execution, Some(&sibling_one)).unwrap();
+        let sibling_value = Arc::downgrade(&sibling.deps.get("sibling_dep").unwrap());
+        assert!(Arc::ptr_eq(
+            &parent_value.upgrade().unwrap(),
+            &sibling.deps.get("parent_dep").unwrap()
+        ));
+        assert_eq!(parent_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(child_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(sibling_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(execution.remaining(), 1);
+
+        drop(sibling);
+        assert!(
+            sibling_value.upgrade().is_none(),
+            "completed sibling must release its dependency"
+        );
+        drop(first);
+        assert!(parent_value.upgrade().is_some());
+        assert!(
+            child_value.upgrade().is_some(),
+            "queued child test still needs the same dependency"
+        );
+
+        let last = pick(&mut execution, Some(&child_one)).unwrap();
+        assert!(Arc::ptr_eq(
+            &parent_value.upgrade().unwrap(),
+            &last.deps.get("parent_dep").unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &child_value.upgrade().unwrap(),
+            &last.deps.get("child_dep").unwrap()
+        ));
+        assert_eq!(parent_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(child_calls.load(Ordering::SeqCst), 1);
+        assert!(execution.is_done());
+
+        drop(execution);
+        assert!(
+            parent_value.upgrade().is_some(),
+            "running test owns its dependencies even after the plan is dropped"
+        );
+        assert!(child_value.upgrade().is_some());
+        drop(last);
+        assert!(parent_value.upgrade().is_none());
+        assert!(child_value.upgrade().is_none());
+    }
 }
 
 /// A Cloneable dep whose constructor increments a counter (so we can
@@ -258,7 +487,7 @@ fn perworker_dep_not_rematerialised_when_descendant_subtree_is_locked() {
     // models the "another worker thread is still running this test"
     // state during a concurrent `pick_next_sync` call.
     let first = execution
-        .pick_next_sync()
+        .pick_next_sync(None)
         .expect("first test should be picked");
     assert_eq!(
         counter.load(Ordering::SeqCst),
@@ -270,7 +499,7 @@ fn perworker_dep_not_rematerialised_when_descendant_subtree_is_locked() {
     // Internally `parent::child` is locked, so `pick_next_sync`
     // returns `None`. Under the bug, this is where `parent` would
     // release its materialised deps.
-    let none = execution.pick_next_sync();
+    let none = execution.pick_next_sync(None);
     assert!(
         none.is_none(),
         "no test should be picked while the sequential lock is held"
@@ -282,7 +511,7 @@ fn perworker_dep_not_rematerialised_when_descendant_subtree_is_locked() {
     // would bump to 2.
     drop(first);
     let second = execution
-        .pick_next_sync()
+        .pick_next_sync(None)
         .expect("second test should be picked");
     drop(second);
 
@@ -333,7 +562,7 @@ fn perworker_dep_not_rematerialised_when_descendant_subtree_is_locked_async() {
 
         // Step 1: pick first test (holds the child's sequential lock).
         let first = execution
-            .pick_next()
+            .pick_next(None)
             .await
             .expect("first test should be picked");
         assert_eq!(
@@ -346,7 +575,7 @@ fn perworker_dep_not_rematerialised_when_descendant_subtree_is_locked_async() {
         // subtree is locked, so the call returns `None`. The
         // `is_empty()` guard must prevent the parent from releasing
         // its materialised deps here.
-        let none = execution.pick_next().await;
+        let none = execution.pick_next(None).await;
         assert!(
             none.is_none(),
             "no test should be picked while the sequential lock is held"
@@ -356,7 +585,7 @@ fn perworker_dep_not_rematerialised_when_descendant_subtree_is_locked_async() {
         // the counter must still be 1.
         drop(first);
         let second = execution
-            .pick_next()
+            .pick_next(None)
             .await
             .expect("second test should be picked");
         drop(second);
@@ -518,7 +747,9 @@ fn provide_cloneable_value_short_circuits_constructor() {
 
     // Pick the test — materialize_deps_sync must reuse the pre-populated
     // value instead of running the original constructor.
-    let next = execution.pick_next_sync().expect("test should be picked");
+    let next = execution
+        .pick_next_sync(None)
+        .expect("test should be picked");
     assert_eq!(next.test.name, "t1");
 
     let view = next.deps.get("clone_dep").expect("dep available");
@@ -552,7 +783,9 @@ fn provided_shared_value_is_a_worker_side_leaf() {
     let applied = execution.provide_cloneable_value("tcrate::clone_dep", pre_value);
     assert!(applied);
 
-    let next = execution.pick_next_sync().expect("test should be picked");
+    let next = execution
+        .pick_next_sync(None)
+        .expect("test should be picked");
     let view = next.deps.get("clone_dep").expect("dep available");
     let value: Arc<u64> = view.downcast::<u64>().unwrap();
     assert_eq!(*value, 99);
@@ -690,8 +923,8 @@ fn cloneable_value_routing_uses_qualified_id_across_modules() {
     );
 
     // Pick both tests and confirm the per-module values stayed separate.
-    let first = execution_a.pick_next_sync().expect("first test");
-    let second = execution_a.pick_next_sync().expect("second test");
+    let first = execution_a.pick_next_sync(None).expect("first test");
+    let second = execution_a.pick_next_sync(None).expect("second test");
 
     let pairs: Vec<(String, u64)> = [first, second]
         .into_iter()
@@ -862,7 +1095,9 @@ fn hosted_descriptor_roundtrips_to_worker_value_via_provide_cloneable_value() {
 
     // Pick the test — the owner constructor must NOT run on the worker
     // side (we provided a value directly).
-    let next = execution.pick_next_sync().expect("test should be picked");
+    let next = execution
+        .pick_next_sync(None)
+        .expect("test should be picked");
     let view = next.deps.get("hosted_dep").expect("dep available");
     let value: Arc<u64> = view.downcast::<u64>().unwrap();
     assert_eq!(*value, 0x1234_5678);
@@ -969,8 +1204,8 @@ fn hosted_descriptor_routing_uses_qualified_id_across_modules() {
         "unknown qualified id must not be applied to any dep"
     );
 
-    let first = execution.pick_next_sync().expect("first test");
-    let second = execution.pick_next_sync().expect("second test");
+    let first = execution.pick_next_sync(None).expect("first test");
+    let second = execution.pick_next_sync(None).expect("second test");
     let pairs: Vec<(String, u64)> = [first, second]
         .into_iter()
         .map(|n| {
@@ -1090,7 +1325,7 @@ fn hosted_no_spawn_workers_uses_worker_side_handle() {
 
     // Pick the test — it must see the WORKER handle (~owner), NOT the owner
     // constructor's return value.
-    let next = execution.pick_next_sync().expect("test picked");
+    let next = execution.pick_next_sync(None).expect("test picked");
     let view = next.deps.get("hosted_dep").expect("dep available");
     let value: Arc<u64> = view.clone().downcast::<u64>().unwrap();
     assert_eq!(
@@ -1256,7 +1491,9 @@ fn no_spawn_lifecycle_runs_transitive_perworker_constructor_exactly_once() {
         assert!(applied, "pre-install must find dep {dep_id}");
     }
 
-    let next = execution.pick_next_sync().expect("test should be picked");
+    let next = execution
+        .pick_next_sync(None)
+        .expect("test should be picked");
     drop(next);
 
     assert_eq!(

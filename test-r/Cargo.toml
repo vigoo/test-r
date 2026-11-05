@@ -28,6 +28,11 @@ harness = false
 name = "flaky_fixture"
 harness = false
 
+[[test]]
+name = "scheduler_fixture"
+path = "tests/fixtures/scheduler_fixture.rs"
+harness = false
+
 [features]
 default = ["tokio"]
 tokio = ["dep:tokio", "test-r-core/tokio"]
