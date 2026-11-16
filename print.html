@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3bbcfbbc.js";
+            window.path_to_searchindex_js = "searchindex-fff54a18.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-16c0bd11.js"></script>
@@ -433,6 +433,14 @@ It is also possible to run <strong>only the ignored tests</strong> with the <cod
 <p>There are various options controlling the <strong>output</strong> of the test runner. See the <a href="/core_features/test_output.html">test output chapter</a> for more details.</p>
 <h2 id="debugging"><a class="header" href="#debugging">Debugging</a></h2>
 <p>Output capturing is implemented by forking one or more child processes and attaching to their standard output and error channels. This means that attaching a <strong>debugger</strong> to the parent process will not work as expected. When using a debugger, always pass the <code>--nocapture</code> flag to the test runner to disable output capturing, which guarantees that all the tests are executed in the single root process.</p>
+<h2 id="running-prebuilt-test-binaries-with-cargo-test-r"><a class="header" href="#running-prebuilt-test-binaries-with-cargo-test-r">Running prebuilt test binaries with <code>cargo-test-r</code></a></h2>
+<p><code>cargo test-r run</code> accepts the same arguments as <code>cargo test</code>. With <code>--binaries-metadata &lt;PATH&gt;</code> it runs test binaries that were already built instead of invoking Cargo. <code>PATH</code> is the JSON written by:</p>
+<pre><code>cargo nextest list --list-type binaries-only --message-format json [--cargo-profile &lt;PROFILE&gt;] &gt; binaries.json
+</code></pre>
+<p>The binaries run from the absolute paths recorded in that file, in their package’s directory. <code>-p</code>/<code>--package</code>, <code>--exclude</code>, <code>--test</code> and <code>--lib</code> select which binaries to run. Test name filters and arguments after <code>--</code> are passed to each binary:</p>
+<pre><code>cargo test-r run --binaries-metadata binaries.json -p my-crate --test integration -- --retry-failed 2
+</code></pre>
+<p>This mode never falls back to building with Cargo. It fails if the file is missing or invalid, if no listed binary matches the selection, or if a selected binary no longer exists. Build options such as <code>--profile</code> or <code>--features</code> are rejected, because the binaries are already built.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="test-output-1"><a class="header" href="#test-output-1">Test output</a></h1>
 <p>The default setting of <code>test-r</code> is to use the <strong>pretty</strong> format and capture test outputs.</p>
@@ -510,6 +518,12 @@ never finishes a test. Subsequent partial snapshots include the current suite’
 completed tests. Without a logfile, reports are emitted at suite end on stdout;
 later reports include earlier suite evidence. History has no separate size limit;
 its size grows with the configured attempt count and captured diagnostics.</p>
+<p>For <code>--retry-failed</code>, every suite attempt after the first reruns only the failed
+tests, and its report merges them into the earlier results: <code>results.tests</code> and the
+summary cover all selected tests, a test that passed earlier keeps its entry, and a
+rerun test’s <code>extra.testR.attempts</code> holds its invocations from every suite attempt,
+so the initial failure is kept. The last report of the run is the final result; the
+<code>suiteAttempt</code> and <code>previousSuiteAttempts</code> fields work as with <code>--flaky-run</code>.</p>
 <p>Output attribution uses flushed worker stream boundaries between invocations.
 Output from background work that outlives an invocation may appear in a later
 invocation’s window. Host-side output is attributed only to the logical test;
@@ -1759,6 +1773,30 @@ eventually recovered. With <code>#[flaky(3)]</code>, a persistent failure makes 
 attempts and reports <code>retries: 2</code> while remaining failed.</p>
 <p>Worker retry notifications are delivered with the final test result, so plain
 output displays them at completion rather than while an attempt is running.</p>
+<h2 id="retrying-failed-tests-from-the-command-line"><a class="header" href="#retrying-failed-tests-from-the-command-line">Retrying failed tests from the command line</a></h2>
+<p><code>--retry-failed &lt;COUNT&gt;</code> is an opt-in run-level policy, for example for CI. After a
+run with failures, the runner reruns only the failed tests, at most <code>COUNT</code> more
+times, and stops as soon as none fail. Tests that passed keep their result and are
+not run again. Each rerun is a new suite attempt, so the dependencies of the rerun
+tests are constructed again, and in capture mode the tests run in new worker
+processes.</p>
+<p>A rerun happens only when every failure is a test panic or returned error of a test
+without its own flakiness control. Otherwise the run stops, stays failed, and prints
+why. Such failures are never retried, and also block the retry of every other
+failure in the same run:</p>
+<ul>
+<li>harness failures: asynchronous timeouts, <code>--ensure-time</code> critical time violations,
+<code>should_panic</code> tests that did not panic, and other harness errors;</li>
+<li>failures of <code>#[flaky]</code> tests, which already used their own retry budget, and of
+<code>#[non_flaky]</code> tests, whose repetitions must all pass.</li>
+</ul>
+<p>Dependency construction failures, worker crashes and interrupted runs end the
+process without a complete result, so they are not retried either.</p>
+<p><code>--retry-failed</code> and <code>--flaky-run</code> cannot be combined, so a run has one budget of
+suite attempts. Without <code>--retry-failed</code> the runner behaves as before.</p>
+<p>In CTRF reports a recovered test has <code>flaky: true</code>, <code>retries</code> counts its reruns, and
+<code>extra.testR.attempts</code> lists every invocation, including the initial failure. See
+<a href="#ctrf-retry-evidence">CTRF retry evidence</a>.</p>
 <h2 id="ensuring-tests-are-not-flaky"><a class="header" href="#ensuring-tests-are-not-flaky">Ensuring tests are not flaky</a></h2>
 <p>The opposite appraoch is to ensure that a test is not flaky by running it multiple times. This can help in diagnosing flakiness and reproducing issues locally. The <code>#[non_flaky(n)]</code> attribute will run a test <code>n</code> times before marking it as succeeded.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
