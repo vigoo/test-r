@@ -77,6 +77,25 @@ impl TestReturnValue for () {
     }
 }
 
+/// Names the never type `!` on stable Rust, as the return type of `fn() -> !`.
+#[doc(hidden)]
+pub trait FnReturn {
+    type Output;
+}
+
+impl<T> FnReturn for fn() -> T {
+    type Output = T;
+}
+
+/// A test body that only panics has type `!`, for example
+/// `add_test!(r, name, props, || async { panic!("...") })`. Such a body
+/// never returns, so this conversion is never called.
+impl TestReturnValue for <fn() -> ! as FnReturn>::Output {
+    fn into_result(self: Box<Self>) -> Result<(), FailureCause> {
+        match *self {}
+    }
+}
+
 impl<T, E: Display + Debug + Send + Sync + 'static> TestReturnValue for Result<T, E> {
     fn into_result(self: Box<Self>) -> Result<(), FailureCause> {
         match *self {
@@ -170,6 +189,12 @@ impl FailureCause {
             FailureCause::Panic(p) => p.render(),
             FailureCause::HarnessError(s) => s.clone(),
         }
+    }
+
+    /// Whether the failure came from the test body itself (a panic or a
+    /// returned error) rather than from the harness.
+    pub(crate) fn is_test_failure(&self) -> bool {
+        !matches!(self, FailureCause::HarnessError(_))
     }
 
     /// Get the message string for ShouldPanic matching (without backtrace)
@@ -2455,6 +2480,105 @@ impl SuiteResult {
             ExitCode::SUCCESS
         }
     }
+}
+
+/// Applies the `--retry-failed` policy to the results of a failed suite
+/// attempt. When every failure is a test-body failure (panic or returned
+/// error) of a test without its own flakiness control, narrows `args` to
+/// exactly the failed tests and returns `true`. Otherwise reports why the
+/// run cannot be retried and returns `false`; any other failure (timeout,
+/// critical time, `should_panic` mismatch, or other harness error) keeps the
+/// whole run failed, so a mixed run is never retried into a pass.
+pub(crate) fn select_failed_tests_for_retry(
+    args: &mut Arguments,
+    results: &[(RegisteredTest, TestResult)],
+    retry: usize,
+    max_retries: usize,
+    output: &dyn crate::output::TestRunnerOutput,
+) -> bool {
+    let failed: Vec<&RegisteredTest> = results
+        .iter()
+        .filter(|(_, result)| result.is_failed())
+        .map(|(test, _)| test)
+        .collect();
+    let blocked: Vec<String> = results
+        .iter()
+        .filter_map(|(test, result)| {
+            let cause = result.failure_cause()?;
+            let reason = match &test.props.flakiness_control {
+                FlakinessControl::ProveNonFlaky(_) => "is marked non_flaky".to_string(),
+                FlakinessControl::RetryKnownFlaky(_) => {
+                    "exhausted its own flaky retries".to_string()
+                }
+                FlakinessControl::None if cause.is_test_failure() => return None,
+                FlakinessControl::None => format!(
+                    "failed outside the test body: {}",
+                    cause.render().lines().next().unwrap_or_default()
+                ),
+            };
+            Some(format!("{} {reason}", test.fully_qualified_name()))
+        })
+        .collect();
+    if !blocked.is_empty() {
+        output.warning(&format!(
+            "Not retrying failed tests:\n  {}",
+            blocked.join("\n  ")
+        ));
+        return false;
+    }
+    output.warning(&format!(
+        "Retrying {} failed test(s) (retry {retry}/{max_retries})",
+        failed.len()
+    ));
+    args.filter = failed.iter().map(|test| test.filterable_name()).collect();
+    args.exact = true;
+    args.skip.clear();
+    true
+}
+
+/// Combines the full results of the previous suite attempt with the results
+/// of rerunning its failed tests. Tests that passed before keep their result;
+/// each retried test gets its latest result, with every earlier invocation
+/// kept in its attempt history and captured output.
+pub(crate) fn merge_retried_results(
+    previous: Vec<(RegisteredTest, TestResult)>,
+    retried: Vec<(RegisteredTest, TestResult)>,
+) -> Vec<(RegisteredTest, TestResult)> {
+    fn invocations(result: &TestResult) -> Vec<TestAttempt> {
+        if result.attempts().is_empty() {
+            vec![TestAttempt {
+                result: Box::new(result.clone()),
+                finish_marker: None,
+            }]
+        } else {
+            result.attempts().clone()
+        }
+    }
+
+    let mut retried: HashMap<String, TestResult> = retried
+        .into_iter()
+        .map(|(test, result)| (test.fully_qualified_name(), result))
+        .collect();
+    previous
+        .into_iter()
+        .map(|(test, previous)| {
+            let retried = previous
+                .is_failed()
+                .then(|| retried.remove(&test.fully_qualified_name()))
+                .flatten();
+            let Some(mut result) = retried else {
+                return (test, previous);
+            };
+            let mut history = invocations(&previous);
+            history.extend(invocations(&result));
+            let mut captured = previous.captured_output().clone();
+            captured.extend(result.captured_output().iter().cloned());
+            captured.sort();
+            result.set_attempts(history);
+            result.set_captured_output(captured);
+            (test, result)
+        })
+        .collect()
 }
 
 pub trait DependencyView: Debug {

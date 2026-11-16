@@ -124,6 +124,17 @@ pub struct Arguments {
     #[arg(long = "flaky-run", value_name = "COUNT")]
     pub flaky_run: Option<usize>,
 
+    /// After a failed run, rerun only the failed tests up to COUNT more times,
+    /// keeping the results of tests that passed. Retries happen only when every
+    /// failure is a test panic or returned error of a test without `#[flaky]` or
+    /// `#[non_flaky]`; timeouts and other harness failures are never retried.
+    #[arg(
+        long = "retry-failed",
+        value_name = "COUNT",
+        conflicts_with = "flaky_run"
+    )]
+    pub retry_failed: Option<usize>,
+
     /// Run the test suite in worker IPC mode - listening on the given local socket waiting
     /// for the test runner to connect and send test execution requests. The only stdout/stderr
     /// output will be the one emitted by the actual test runs so the test runner can capture them.
@@ -268,6 +279,11 @@ impl Arguments {
         if let Some(flaky_run) = &self.flaky_run {
             result.push(OsString::from("--flaky-run"));
             result.push(OsString::from(flaky_run.to_string()));
+        }
+
+        if let Some(retry_failed) = &self.retry_failed {
+            result.push(OsString::from("--retry-failed"));
+            result.push(OsString::from(retry_failed.to_string()));
         }
 
         if let Some(ipc) = &self.ipc {

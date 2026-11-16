@@ -81,9 +81,15 @@ async fn async_test_runner() -> ExitCode {
         output.test_list(&filtered_tests);
         ExitCode::SUCCESS
     } else {
-        let mut remaining_retries = args.flaky_run.unwrap_or(1);
+        let mut remaining_retries = args
+            .flaky_run
+            .or(args.retry_failed.map(|retries| retries + 1))
+            .unwrap_or(1);
 
         let mut exit_code = ExitCode::from(101);
+        // See `sync::test_runner`: the full results of the previous suite
+        // attempt while `--retry-failed` reruns its failed tests.
+        let mut previous_results: Option<Vec<(RegisteredTest, TestResult)>> = None;
         while remaining_retries > 0 {
             let (mut execution, filtered_tests) = TestSuiteExecution::construct(
                 &args,
@@ -325,6 +331,10 @@ async fn async_test_runner() -> ExitCode {
                     &mut results,
                 );
             }
+            let mut results = std::mem::take(&mut *results);
+            if let Some(previous) = previous_results.take() {
+                results = internal::merge_retried_results(previous, results);
+            }
             output.finished_suite(&all_tests, &results, start.elapsed());
             exit_code = SuiteResult::exit_code(&results);
 
@@ -334,8 +344,21 @@ async fn async_test_runner() -> ExitCode {
             // to the same listener for an independent retry attempt.
             if !is_top_level_parent || exit_code == ExitCode::SUCCESS {
                 break;
-            } else {
-                remaining_retries -= 1;
+            }
+            remaining_retries -= 1;
+            if let Some(max_retries) = args.retry_failed {
+                if remaining_retries == 0
+                    || !internal::select_failed_tests_for_retry(
+                        &mut args,
+                        &results,
+                        max_retries + 1 - remaining_retries,
+                        max_retries,
+                        &*output,
+                    )
+                {
+                    break;
+                }
+                previous_results = Some(results);
             }
         }
         exit_code

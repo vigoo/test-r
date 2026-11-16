@@ -378,6 +378,233 @@ mod ctrf_retry_tests {
     }
 }
 
+mod retry_failed_tests {
+    use super::*;
+
+    /// Runs `retry_failed_fixture` with `args` and returns its exit code, the
+    /// invocation count of every fixture function, and its CTRF report.
+    fn run(
+        tokio: bool,
+        nocapture: bool,
+        args: &[&str],
+    ) -> (Option<i32>, Vec<(String, usize)>, serde_json::Value, String) {
+        let dir = std::env::temp_dir().join(format!(
+            "test-r-retry-failed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut command = std::process::Command::new("cargo");
+        command.args([
+            "test",
+            "--quiet",
+            "-p",
+            "test-r",
+            "--test",
+            "retry_failed_fixture",
+        ]);
+        if !tokio {
+            command.arg("--no-default-features");
+        }
+        command
+            .args([
+                "--",
+                "--include-ignored",
+                "--exact",
+                "--test-threads",
+                "1",
+                "--format",
+                "ctrf",
+            ])
+            .args(args)
+            .env("TEST_R_RETRY_FAILED_DIR", dir.join("calls"));
+        if nocapture {
+            command.arg("--nocapture");
+        }
+        let process = command.output().unwrap();
+        let stdout = String::from_utf8_lossy(&process.stdout).into_owned();
+        let context = format!(
+            "tokio={tokio} nocapture={nocapture} {args:?}\n{stdout}\n{}",
+            String::from_utf8_lossy(&process.stderr)
+        );
+        let mut calls: Vec<_> = std::fs::read_dir(dir.join("calls"))
+            .map(|entries| {
+                entries
+                    .map(|entry| {
+                        let path = entry.unwrap().path();
+                        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                        (name, std::fs::read_to_string(path).unwrap().len())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        calls.sort();
+        let report = stdout
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .next_back()
+            .unwrap_or_default();
+        let _ = std::fs::remove_dir_all(dir);
+        (process.status.code(), calls, report, context)
+    }
+
+    fn calls(expected: &[(&str, usize)]) -> Vec<(String, usize)> {
+        let mut expected: Vec<_> = expected.iter().map(|(n, c)| (n.to_string(), *c)).collect();
+        expected.sort();
+        expected
+    }
+
+    #[test]
+    #[serial]
+    fn retry_failed_reruns_only_retryable_failures() {
+        for tokio in [false, true] {
+            for nocapture in [false, true] {
+                // Recovery: passing tests run once; failed tests rerun until they
+                // pass, with a fresh dependency per rerun.
+                let (code, actual, report, context) = run(
+                    tokio,
+                    nocapture,
+                    &[
+                        "--retry-failed",
+                        "2",
+                        "passes",
+                        "panics_once",
+                        "errs_once",
+                        "fails_twice",
+                        "needs_fresh_dep",
+                    ],
+                );
+                assert_eq!(code, Some(0), "{context}");
+                assert_eq!(
+                    actual,
+                    calls(&[
+                        ("passes", 1),
+                        ("panics_once", 2),
+                        ("errs_once", 2),
+                        ("fails_twice", 3),
+                        ("needs_fresh_dep", 2),
+                        ("fresh_dep", 2)
+                    ]),
+                    "{context}"
+                );
+                let results = &report["results"];
+                assert_eq!(results["summary"]["tests"], 5, "{context}");
+                assert_eq!(results["summary"]["passed"], 5, "{context}");
+                for test in results["tests"].as_array().unwrap() {
+                    let name = test["name"].as_str().unwrap().rsplit("::").next().unwrap();
+                    let failures = match name {
+                        "passes" => 0,
+                        "fails_twice" => 2,
+                        _ => 1,
+                    };
+                    if failures == 0 {
+                        assert!(test["extra"].is_null(), "{context}");
+                        continue;
+                    }
+                    assert_eq!(test["retries"], failures, "{context}");
+                    assert_eq!(test["flaky"], true, "{context}");
+                    let attempts = test["extra"]["testR"]["attempts"].as_array().unwrap();
+                    assert_eq!(attempts.len(), failures + 1, "{context}");
+                    for (index, attempt) in attempts.iter().enumerate() {
+                        let failed = index < failures;
+                        assert_eq!(
+                            attempt["status"],
+                            if failed { "failed" } else { "passed" },
+                            "{context}"
+                        );
+                        if failed {
+                            assert!(
+                                attempt["message"]
+                                    .as_str()
+                                    .unwrap()
+                                    .contains(&format!("failure invocation {}", index + 1)),
+                                "{context}"
+                            );
+                        }
+                    }
+                }
+
+                // Budget: a persistent failure runs 1 + COUNT times and stays failed.
+                let (code, actual, report, context) = run(
+                    tokio,
+                    nocapture,
+                    &["--retry-failed", "2", "passes", "always_fails"],
+                );
+                assert_eq!(code, Some(101), "{context}");
+                assert_eq!(
+                    actual,
+                    calls(&[("passes", 1), ("always_fails", 3)]),
+                    "{context}"
+                );
+                assert_eq!(report["results"]["summary"]["failed"], 1, "{context}");
+
+                // Fail closed: a harness failure or a test with its own flakiness
+                // control blocks every retry, including of retryable failures.
+                for (blocker, runs) in [
+                    ("should_panic_once", 1),
+                    ("flaky_exhausts", 2),
+                    ("non_flaky_fails", 2),
+                ] {
+                    let (code, actual, _, context) = run(
+                        tokio,
+                        nocapture,
+                        &["--retry-failed", "2", "panics_once", blocker],
+                    );
+                    assert_eq!(code, Some(101), "{context}");
+                    assert_eq!(
+                        actual,
+                        calls(&[("panics_once", 1), (blocker, runs)]),
+                        "{context}"
+                    );
+                }
+                if tokio {
+                    let (code, actual, _, context) = run(
+                        tokio,
+                        nocapture,
+                        &[
+                            "--retry-failed",
+                            "2",
+                            "asynchronous::async_panics_once",
+                            "asynchronous::async_times_out_once",
+                        ],
+                    );
+                    assert_eq!(code, Some(101), "{context}");
+                    assert_eq!(
+                        actual,
+                        calls(&[("async_panics_once", 1), ("async_times_out_once", 1)]),
+                        "{context}"
+                    );
+                }
+
+                // Dependency setup failures abort the run instead of retrying.
+                let (code, actual, _, context) = run(
+                    tokio,
+                    nocapture,
+                    &["--retry-failed", "2", "needs_broken_dep"],
+                );
+                assert_ne!(code, Some(0), "{context}");
+                assert_eq!(actual, calls(&[("broken_dep", 1)]), "{context}");
+
+                // Without the opt-in nothing is retried.
+                let (code, actual, _, context) = run(tokio, nocapture, &["panics_once"]);
+                assert_eq!(code, Some(101), "{context}");
+                assert_eq!(actual, calls(&[("panics_once", 1)]), "{context}");
+            }
+
+            // One total budget: suite-level retries cannot be combined.
+            let (code, _, _, context) = run(
+                tokio,
+                false,
+                &["--retry-failed", "2", "--flaky-run", "2", "passes"],
+            );
+            assert_eq!(code, Some(2), "{context}");
+            assert!(context.contains("cannot be used with"), "{context}");
+        }
+    }
+}
+
 mod cargo_tests {
     use super::*;
 

@@ -20,5 +20,7 @@ test-r = { version = "3.0.14", path = "../test-r" }
 
 rand = "0.10"
 tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
 tracing = "0.1"
 tracing-subscriber = "0.3"

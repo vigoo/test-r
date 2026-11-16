@@ -4,7 +4,6 @@ version = "3.0.14"
 edition = "2024"
 license = "Apache-2.0"
 description = "Test framework for Rust"
-homepage = "https://github.com/vigoo/test-r"
 repository = "https://github.com/vigoo/test-r"
 readme = "../README.md"
 
@@ -22,6 +21,11 @@ serial_test = "3"
 [[test]]
 name = "retry_fixture"
 path = "tests/fixtures/retry_fixture.rs"
+harness = false
+
+[[test]]
+name = "retry_failed_fixture"
+path = "tests/fixtures/retry_failed_fixture.rs"
 harness = false
 
 [[test]]
