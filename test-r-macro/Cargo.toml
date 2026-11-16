@@ -4,7 +4,6 @@ edition = "2024"
 version = "1.4.14"
 license = "Apache-2.0"
 description = "Test framework for Rust (macros)"
-homepage = "https://github.com/vigoo/test-r"
 repository = "https://github.com/vigoo/test-r"
 readme = "../README.md"
 
