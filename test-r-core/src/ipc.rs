@@ -1,4 +1,4 @@
-use crate::internal::{CapturedOutput, FailureCause, TestResult};
+use crate::internal::{CapturedOutput, FailureCause, PanicCause, TestResult};
 use crate::stats::Summary;
 use desert_rust::BinaryCodec;
 use interprocess::local_socket::{
@@ -140,12 +140,22 @@ pub enum SerializableTestResult {
     Failed {
         exec_time: Duration,
         rendered_failure_cause: String,
+        kind: SerializableFailureKind,
     },
     Ignored,
     WithAttempts {
         result: Box<SerializableTestResult>,
         attempts: Vec<SerializableTestAttempt>,
     },
+}
+
+/// The class of a [`FailureCause`] that crosses the worker boundary, so the
+/// parent can still tell test failures from harness failures.
+#[derive(Debug, BinaryCodec)]
+pub enum SerializableFailureKind {
+    Returned,
+    Panic,
+    Harness,
 }
 
 #[derive(Debug, BinaryCodec)]
@@ -265,6 +275,13 @@ impl SerializableTestResult {
             } => SerializableTestResult::Failed {
                 exec_time: *exec_time,
                 rendered_failure_cause: cause.render(),
+                kind: match cause {
+                    FailureCause::ReturnedError { .. } | FailureCause::ReturnedMessage(_) => {
+                        SerializableFailureKind::Returned
+                    }
+                    FailureCause::Panic(_) => SerializableFailureKind::Panic,
+                    FailureCause::HarnessError(_) => SerializableFailureKind::Harness,
+                },
             },
             TestResult::Ignored { .. } => SerializableTestResult::Ignored,
         }
@@ -281,9 +298,22 @@ impl From<SerializableTestResult> for TestResult {
             SerializableTestResult::Failed {
                 exec_time,
                 rendered_failure_cause,
+                kind,
             } => TestResult::failed(
                 exec_time,
-                FailureCause::HarnessError(rendered_failure_cause),
+                match kind {
+                    SerializableFailureKind::Returned => {
+                        FailureCause::ReturnedMessage(rendered_failure_cause)
+                    }
+                    SerializableFailureKind::Panic => FailureCause::Panic(PanicCause {
+                        message: Some(rendered_failure_cause),
+                        location: None,
+                        backtrace: None,
+                    }),
+                    SerializableFailureKind::Harness => {
+                        FailureCause::HarnessError(rendered_failure_cause)
+                    }
+                },
             ),
             SerializableTestResult::Ignored => TestResult::ignored(),
             SerializableTestResult::Benchmarked {

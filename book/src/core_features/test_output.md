@@ -94,6 +94,13 @@ completed tests. Without a logfile, reports are emitted at suite end on stdout;
 later reports include earlier suite evidence. History has no separate size limit;
 its size grows with the configured attempt count and captured diagnostics.
 
+For `--retry-failed`, every suite attempt after the first reruns only the failed
+tests, and its report merges them into the earlier results: `results.tests` and the
+summary cover all selected tests, a test that passed earlier keeps its entry, and a
+rerun test's `extra.testR.attempts` holds its invocations from every suite attempt,
+so the initial failure is kept. The last report of the run is the final result; the
+`suiteAttempt` and `previousSuiteAttempts` fields work as with `--flaky-run`.
+
 Output attribution uses flushed worker stream boundaries between invocations.
 Output from background work that outlives an invocation may appear in a later
 invocation's window. Host-side output is attributed only to the logical test;

@@ -25,6 +25,11 @@ path = "tests/fixtures/retry_fixture.rs"
 harness = false
 
 [[test]]
+name = "retry_failed_fixture"
+path = "tests/fixtures/retry_failed_fixture.rs"
+harness = false
+
+[[test]]
 name = "flaky_fixture"
 harness = false
 

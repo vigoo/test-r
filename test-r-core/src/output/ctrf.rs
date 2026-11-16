@@ -38,12 +38,12 @@ impl TestRunnerOutput for Ctrf {
         // from a previous attempt. Without this, intermediate CTRF
         // logfile snapshots during a retry would include the previous
         // attempt's `tests`/`summary` until the suite-end rebuild
-        // clears them.
+        // clears them. Per-test start/stop times stay: every rerun test
+        // overwrites its own, and `--retry-failed` keeps the times of the
+        // tests that passed in an earlier attempt and are not rerun.
         state.tests.clear();
         state.summary = SummaryCounts::default();
         state.suites.clear();
-        state.pending_tests.clear();
-        state.pending_stops.clear();
         state.suite_attempt += 1;
         write_ctrf_snapshot(&mut state, false);
         drop(state);
@@ -285,6 +285,9 @@ fn build_test_value(
         match registered_test.props.flakiness_control {
             FlakinessControl::RetryKnownFlaky(_) => Some(true),
             FlakinessControl::ProveNonFlaky(_) => Some(false),
+            // Only `--retry-failed` reruns an unmarked test; one that
+            // recovered passed after retries, which CTRF calls flaky.
+            FlakinessControl::None if result.is_passed() => Some(true),
             FlakinessControl::None => flaky,
         }
     } else {

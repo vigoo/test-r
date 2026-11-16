@@ -39,6 +39,35 @@ attempts and reports `retries: 2` while remaining failed.
 Worker retry notifications are delivered with the final test result, so plain
 output displays them at completion rather than while an attempt is running.
 
+## Retrying failed tests from the command line
+
+`--retry-failed <COUNT>` is an opt-in run-level policy, for example for CI. After a
+run with failures, the runner reruns only the failed tests, at most `COUNT` more
+times, and stops as soon as none fail. Tests that passed keep their result and are
+not run again. Each rerun is a new suite attempt, so the dependencies of the rerun
+tests are constructed again, and in capture mode the tests run in new worker
+processes.
+
+A rerun happens only when every failure is a test panic or returned error of a test
+without its own flakiness control. Otherwise the run stops, stays failed, and prints
+why. Such failures are never retried, and also block the retry of every other
+failure in the same run:
+
+- harness failures: asynchronous timeouts, `--ensure-time` critical time violations,
+  `should_panic` tests that did not panic, and other harness errors;
+- failures of `#[flaky]` tests, which already used their own retry budget, and of
+  `#[non_flaky]` tests, whose repetitions must all pass.
+
+Dependency construction failures, worker crashes and interrupted runs end the
+process without a complete result, so they are not retried either.
+
+`--retry-failed` and `--flaky-run` cannot be combined, so a run has one budget of
+suite attempts. Without `--retry-failed` the runner behaves as before.
+
+In CTRF reports a recovered test has `flaky: true`, `retries` counts its reruns, and
+`extra.testR.attempts` lists every invocation, including the initial failure. See
+[CTRF retry evidence](../core_features/test_output.md#ctrf-retry-evidence).
+
 ## Ensuring tests are not flaky
 
 The opposite appraoch is to ensure that a test is not flaky by running it multiple times. This can help in diagnosing flakiness and reproducing issues locally. The `#[non_flaky(n)]` attribute will run a test `n` times before marking it as succeeded.
