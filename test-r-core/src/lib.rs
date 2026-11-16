@@ -678,7 +678,7 @@ mod hosted_helper_tests {
         {
             Arc::new(internal::HostedRpcOwnerCell::from_shared_owner_sync(
                 owner,
-                |o, idx, args| BothFixture::dispatch_shared(o, idx, args),
+                BothFixture::dispatch_shared,
             ))
         }
     }

@@ -77,6 +77,25 @@ impl TestReturnValue for () {
     }
 }
 
+/// Names the never type `!` on stable Rust, as the return type of `fn() -> !`.
+#[doc(hidden)]
+pub trait FnReturn {
+    type Output;
+}
+
+impl<T> FnReturn for fn() -> T {
+    type Output = T;
+}
+
+/// A test body that only panics has type `!`, for example
+/// `add_test!(r, name, props, || async { panic!("...") })`. Such a body
+/// never returns, so this conversion is never called.
+impl TestReturnValue for <fn() -> ! as FnReturn>::Output {
+    fn into_result(self: Box<Self>) -> Result<(), FailureCause> {
+        match *self {}
+    }
+}
+
 impl<T, E: Display + Debug + Send + Sync + 'static> TestReturnValue for Result<T, E> {
     fn into_result(self: Box<Self>) -> Result<(), FailureCause> {
         match *self {
