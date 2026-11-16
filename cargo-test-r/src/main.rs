@@ -140,6 +140,12 @@ struct RunSubcommand {
     /// Alias for --workspace
     #[clap(long)]
     all: bool,
+    /// Run the test binaries listed in this file, which is the output of
+    /// `cargo nextest list --list-type binaries-only --message-format json`,
+    /// from their original locations instead of building them. Never falls
+    /// back to `cargo test`: fails if the file or a selected binary is missing.
+    #[clap(long, value_name = "PATH")]
+    binaries_metadata: Option<Utf8PathBuf>,
 
     /// Test name filters
     testname: Vec<String>,
@@ -220,6 +226,39 @@ fn reuse_nextest_archive(
 }
 
 fn run(workspace_root: &Utf8Path, cmd: RunSubcommand) -> anyhow::Result<ExitStatus> {
+    if let Some(path) = &cmd.binaries_metadata {
+        validate_supported_test_args(&cmd)?;
+        let raw = std::fs::read_to_string(path)
+            .map_err(|err| anyhow!("Failed to read binaries metadata {path}: {err}"))?;
+        let binary_list: BinaryListSummary = serde_json::from_str(&raw)
+            .map_err(|err| anyhow!("Invalid binaries metadata {path}: {err}"))?;
+        let mut test_binaries = Vec::new();
+        for binary in select_binaries(binary_list, &cmd)?.rust_binaries.values() {
+            let working_directory = package_path(binary).ok_or_else(|| {
+                anyhow!(
+                    "Unsupported package id {} for test binary {}",
+                    binary.package_id,
+                    binary.binary_id
+                )
+            })?;
+            if !binary.binary_path.is_file() {
+                return Err(anyhow!(
+                    "Test binary {} does not exist at {}",
+                    binary.binary_id,
+                    binary.binary_path
+                ));
+            }
+            test_binaries.push(TestBinary {
+                binary_path: binary.binary_path.clone(),
+                working_directory,
+            });
+        }
+        if test_binaries.is_empty() {
+            return Err(anyhow!("No test binaries in {path} match the selection"));
+        }
+        return run_test_binaries(test_binaries, cmd.testname, cmd.test_args);
+    }
+
     let nextest_archive_target = nextest_archive_target(workspace_root, &cmd.target_dir);
     let binaries_metadata_path =
         nextest_archive_target.join("target/nextest/binaries-metadata.json");
@@ -234,23 +273,7 @@ fn run(workspace_root: &Utf8Path, cmd: RunSubcommand) -> anyhow::Result<ExitStat
         let test_binaries = filter_binaries(binary_list, workspace_root, &cmd)?;
         println!("{test_binaries:#?}"); // TODO: remove
 
-        let mut test_args = cmd.testname.clone();
-        test_args.extend(cmd.test_args);
-
-        println!("{test_args:?}"); // TODO: remove
-
-        for test_binary in test_binaries {
-            let mut test_process = std::process::Command::new(&test_binary.binary_path);
-            test_process.current_dir(&test_binary.working_directory);
-            test_process.args(&test_args);
-
-            let exit_code = test_process.status()?;
-            if !exit_code.success() {
-                return Ok(exit_code);
-            }
-        }
-
-        Ok(ExitStatus::default())
+        run_test_binaries(test_binaries, cmd.testname, cmd.test_args)
     } else {
         println!("No nexttest archive was found, forwarding to cargo test");
         let cargo_path: Utf8PathBuf =
@@ -266,6 +289,30 @@ fn run(workspace_root: &Utf8Path, cmd: RunSubcommand) -> anyhow::Result<ExitStat
 
         Ok(command.status()?)
     }
+}
+
+/// Runs each test binary in turn with the test name filters and test
+/// arguments, stopping at the first one that fails.
+fn run_test_binaries(
+    test_binaries: Vec<TestBinary>,
+    mut test_args: Vec<String>,
+    extra_test_args: Vec<String>,
+) -> anyhow::Result<ExitStatus> {
+    test_args.extend(extra_test_args);
+    println!("{test_args:?}"); // TODO: remove
+
+    for test_binary in test_binaries {
+        let mut test_process = std::process::Command::new(&test_binary.binary_path);
+        test_process.current_dir(&test_binary.working_directory);
+        test_process.args(&test_args);
+
+        let exit_code = test_process.status()?;
+        if !exit_code.success() {
+            return Ok(exit_code);
+        }
+    }
+
+    Ok(ExitStatus::default())
 }
 
 fn validate_supported_test_args(cmd: &RunSubcommand) -> anyhow::Result<()> {
@@ -419,8 +466,28 @@ fn filter_by_kind(
     Ok(binaries)
 }
 
-fn filter_binaries(
+/// Keeps the binaries selected by `--package`/`--exclude`, `--test` and `--lib`.
+fn select_binaries(
     mut binaries: BinaryListSummary,
+    cmd: &RunSubcommand,
+) -> anyhow::Result<BinaryListSummary> {
+    if !cmd.package.is_empty() {
+        binaries = filter_by_package(binaries, &cmd.package, &cmd.exclude)?;
+    }
+
+    if !cmd.test.is_empty() {
+        binaries = filter_by_test(binaries, &cmd.test)?;
+    }
+
+    if cmd.lib {
+        binaries = filter_by_kind(binaries, RustTestBinaryKind::LIB)?;
+    }
+
+    Ok(binaries)
+}
+
+fn filter_binaries(
+    binaries: BinaryListSummary,
     workspace_root: &Utf8Path,
     cmd: &RunSubcommand,
 ) -> anyhow::Result<Vec<TestBinary>> {
@@ -434,17 +501,7 @@ fn filter_binaries(
     })?;
     // TODO: this only works if the target directory was not customized when building the archive
 
-    if !cmd.package.is_empty() {
-        binaries = filter_by_package(binaries, &cmd.package, &cmd.exclude)?;
-    }
-
-    if !cmd.test.is_empty() {
-        binaries = filter_by_test(binaries, &cmd.test)?;
-    }
-
-    if cmd.lib {
-        binaries = filter_by_kind(binaries, RustTestBinaryKind::LIB)?;
-    }
+    let binaries = select_binaries(binaries, cmd)?;
 
     for binary in binaries.rust_binaries.values() {
         let relative_path = binary.binary_path.strip_prefix(original_workspace)?;
@@ -481,5 +538,77 @@ fn nextest_archive_target(workspace_root: &Utf8Path, target_dir: &Option<String>
         Utf8Path::new(target_dir).join("nextest-archive")
     } else {
         workspace_root.join("target/nextest-archive")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_with_metadata(metadata: &Utf8Path, extra: &[&str]) -> anyhow::Result<ExitStatus> {
+        let mut argv = vec![
+            "cargo-test-r",
+            "run",
+            "--binaries-metadata",
+            metadata.as_str(),
+        ];
+        argv.extend(extra);
+        let Command::Run(cmd) = Command::parse_from(argv) else {
+            unreachable!()
+        };
+        // An unusable `cargo` proves the metadata path never falls back to it.
+        unsafe { std::env::set_var("CARGO", "/nonexistent/cargo") };
+        run(Utf8Path::new("/nonexistent/workspace"), cmd)
+    }
+
+    #[test]
+    fn binaries_metadata_fails_closed() {
+        let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir())
+            .unwrap()
+            .join(format!("cargo-test-r-metadata-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let metadata = |binary_path: &str| {
+            serde_json::json!({
+                "rust-build-meta": {
+                    "target-directory": "/w/target",
+                    "base-output-directories": ["debug"],
+                    "non-test-binaries": {},
+                    "build-script-out-dirs": {},
+                    "linked-paths": [],
+                    "target-platforms": [],
+                    "target-platform": null
+                },
+                "rust-binaries": {
+                    "pkg": {
+                        "binary-id": "pkg",
+                        "binary-name": "pkg",
+                        "package-id": "path+file:///w/pkg#pkg@0.1.0",
+                        "kind": "lib",
+                        "binary-path": binary_path,
+                        "build-platform": "target"
+                    }
+                }
+            })
+            .to_string()
+        };
+
+        let error = |path: &Utf8Path, extra: &[&str]| {
+            run_with_metadata(path, extra).unwrap_err().to_string()
+        };
+        assert!(error(&dir.join("missing.json"), &[]).contains("Failed to read binaries metadata"));
+
+        let invalid = dir.join("invalid.json");
+        std::fs::write(&invalid, "{}").unwrap();
+        assert!(error(&invalid, &[]).contains("Invalid binaries metadata"));
+
+        let gone = dir.join("gone.json");
+        std::fs::write(&gone, metadata("/nonexistent/pkg-test-binary")).unwrap();
+        assert!(
+            error(&gone, &["-p", "pkg"]).contains("does not exist at /nonexistent/pkg-test-binary")
+        );
+        assert!(error(&gone, &["-p", "other"]).contains("match the selection"));
+        assert!(error(&gone, &["--profile", "dev-ci"]).contains("--profile is not supported"));
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
