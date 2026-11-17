@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.11](https://github.com/vigoo/test-r/compare/cargo-test-r-v2.2.10...cargo-test-r-v2.2.11) - 2026-11-17
+
+### Other
+
+- Add --retry-failed and cargo test-r run --binaries-metadata; support panic-only bodies on Rust 1.100 ([#213](https://github.com/vigoo/test-r/pull/213))
+
 ## [2.2.10](https://github.com/vigoo/test-r/compare/cargo-test-r-v2.2.9...cargo-test-r-v2.2.10) - 2026-11-05
 
 ### Other
