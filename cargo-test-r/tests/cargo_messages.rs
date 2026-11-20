@@ -159,17 +159,13 @@ fn real_cargo_inventory_duplicates_filters_and_saved_execution() {
     for binary in selection["binaries"].as_array().unwrap() {
         assert!(Path::new(binary["executable"].as_str().unwrap()).starts_with(&w.target));
         let package = binary["package-name"].as_str().unwrap();
+        // Compare as paths: Windows mixes separators in the joined expectation.
         assert_eq!(
-            binary["working-directory"],
+            Path::new(binary["working-directory"].as_str().unwrap()),
             w.dir
                 .path()
-                .join(if package == "alpha" {
-                    "a/same"
-                } else {
-                    "b/same"
-                })
-                .to_str()
-                .unwrap()
+                .join(if package == "alpha" { "a" } else { "b" })
+                .join("same")
         );
     }
     assert!(!w.dir.path().join("markers").exists());
@@ -237,8 +233,8 @@ fn real_cargo_inventory_duplicates_filters_and_saved_execution() {
         ("beta-shared", "b/same"),
     ] {
         assert_eq!(
-            std::fs::read_to_string(w.dir.path().join("markers").join(marker)).unwrap(),
-            w.dir.path().join(directory).to_str().unwrap()
+            Path::new(&std::fs::read_to_string(w.dir.path().join("markers").join(marker)).unwrap()),
+            w.dir.path().join(directory)
         );
     }
     let direct = w
