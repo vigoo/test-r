@@ -156,8 +156,9 @@ fn timeout_attr_to_duration(timeout_attr: Option<&Attribute>) -> proc_macro2::To
                     .base10_parse::<u64>()
                     .expect("timeout attribute's parameter must be an integer (timeout milliseconds) or a human-readable duration string")
             } else if let Ok(timeout) = attr.parse_args::<LitStr>() {
-                crate::helpers::parse_duration_millis(&timeout.value())
-                    .expect("timeout attribute's parameter must be an integer (timeout milliseconds) or a human-readable duration string")
+                let duration = crate::helpers::parse_timeout_duration(&timeout.value())
+                    .expect("timeout attribute's parameter must be an integer (timeout milliseconds) or a human-readable duration string");
+                duration.as_millis() as u64
             } else {
                 panic!("timeout attribute's parameter must be an integer (timeout milliseconds) or a human-readable duration string");
             };

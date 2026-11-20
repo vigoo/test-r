@@ -60,7 +60,7 @@ async fn test1() {
 }
 ```
 
-Alternatively a human-readable duration string can be used, such as `"1s"`, `"500ms"`, `"2 minutes"` or `"1h 30m"`. Days and weeks are accepted (as 24 hours and 7 days); months and years are not:
+Alternatively a human-readable duration string can be used, parsed by the `fundu` crate with the existing timeout units and aliases. Compound durations such as `"2h 37min"`, fractional values such as `"1.5s"` or `".5s"`, scientific notation such as `"1e3ms"`, and ASCII whitespace between numbers and units are supported. String values without a unit are interpreted as seconds (`"2"` means two seconds), while integer attributes remain milliseconds. Units are case-sensitive: `m` means minutes, while `M` means a fixed 30.44-day month; years are fixed at 365.25 days. Duration syntax and numeric rounding follow Fundu. Results are truncated to whole milliseconds and must fit the nonnegative `u64` millisecond range:
 
 ```rust
 use test_r::{test, timeout};
