@@ -113,7 +113,7 @@ Cancellation wins over the deadline, and the deadline wins over binary failures.
 
 ### Without prebuilt input
 
-Without `--selection`, `--binaries-metadata`, `--cargo-messages` or an extracted archive, `cargo test-r run` forwards its arguments to `cargo test`. Without `--deadline`, that is all it does: `cargo test` runs exactly as if called directly. With `--deadline`, the [deadline and cleanup rules](#deadlines-cancellation-and-cleanup) apply to the whole `cargo test` process, compilation included. `--events` and `--binary-id` need prebuilt input.
+Without `--selection`, `--binaries-metadata`, `--cargo-messages` or an extracted archive, `cargo test-r run` forwards its arguments to `cargo test`. Without `--deadline`, cargo-test-r prints the command and runs `cargo test` as a direct call would, with the same signals and terminal. With `--deadline`, the [deadline and cancellation rules](#deadlines-cancellation-and-cleanup) apply to the whole `cargo test` process, compilation included; processes left behind after `cargo test` finishes normally are not stopped. `--events` and `--binary-id` need prebuilt input.
 
 ## Snapshots: freezing binaries
 
@@ -164,7 +164,7 @@ The snapshot's `selection.json` is a normal version 1 selection with extra field
 - `--skip-library-hashes` still requires recorded libraries to exist, but allows their contents to change, for example after a system update. Binary hashes and the digest are still checked.
 - A file with snapshot fields but no `snapshot` marker, an unknown key inside `snapshot`, or a platform this version doesn't know is rejected rather than run unverified.
 
-Snapshot creation works on Linux with glibc only; macOS, Windows and musl report it as unsupported. Verification itself runs everywhere.
+Snapshot creation works on Linux with glibc only; macOS, Windows and musl report it as unsupported. Verify and run a snapshot on the same kind of system that created it: paths, file modes and libraries are platform-specific.
 
 **Trust assumptions.** Only the CI user should be able to write to the snapshot directory. Snapshot creation runs the system loader on the executables, so use it on your own build output. System libraries outside the build output are assumed stable while the snapshot is used. Keep the loader environment (such as `LD_LIBRARY_PATH`) and working directories the same between snapshot and run: verification checks the recorded files, it does not resolve libraries again. Without a separately kept digest, hashes detect accidents, not deliberate tampering. Verification is not a sandbox: a process changing files after the check is not detected.
 
@@ -177,16 +177,16 @@ cargo test-r run --selection selection.json --deadline 30m --kill-grace 10s
 ```
 
 - `--deadline` is a budget for the **whole invocation**, measured from when cargo-test-r starts. It covers loading and every binary, and is never reset between binaries. On the Cargo fallback it includes compilation. When it expires, no further binaries start and the running one is stopped. Durations are whole numbers with `ms`, `s`, `m` or `h`, such as `90s` or `30m`; `0s` stops before the first binary.
-- **Cancellation**: Ctrl+C, SIGTERM or SIGHUP while binaries run stops the run the same way. A second Ctrl+C skips the grace period. During loading and verification, before anything has started, these signals simply end cargo-test-r.
+- **Cancellation**: Ctrl+C, SIGTERM or SIGHUP while binaries run stops the run the same way. A second signal (Ctrl+C, SIGTERM or SIGHUP) skips the grace period. During loading and verification, before anything has started, these signals simply end cargo-test-r.
 - **Stopping**: on Unix the running binary and its descendants get SIGTERM, or the received signal when cancelled; after `--kill-grace` (default `10s`) they get SIGKILL. The grace period can extend past the deadline. Output and reports already written are kept.
 - **Leftover processes**: in prebuilt runs, processes a binary leaves behind (such as a server that keeps a port open) are stopped after **every** binary, even when it passed. `--keep-leftovers` turns this off for suites that start a daemon on purpose; a deadline or cancellation still cleans up. Cleanup after a binary can itself cross the deadline: the run then exits 124 even though every binary passed.
 - If cleanup fails, no further binaries start, and an otherwise passing run exits 1.
 
 ### Platform notes
 
-- **Linux:** each binary runs in its own process group, and cargo-test-r adopts orphaned descendants, so processes that start a new session are still found and stopped. This needs `/proc` (a kernel with child lists). It does not reach processes in other PID namespaces or ones started through a service manager such as systemd or Docker.
+- **Linux:** each binary runs in its own process group, and cargo-test-r adopts orphaned descendants, so processes that start a new session are still found and stopped. This needs `/proc` with child lists (`CONFIG_PROC_CHILDREN`); without them every supervised run fails before starting. It does not reach processes in other PID namespaces or ones started through a service manager such as systemd or Docker.
 - **macOS:** process groups only. A descendant that starts a new session or process group escapes cleanup. Don't rely on it to contain daemonizing or hostile programs.
-- **Windows:** cargo-test-r and all descendants share a Job Object. Cleanup terminates every member except cargo-test-r, **without** a grace period (`--kill-grace` has no effect). Ctrl+C counts as signal 2 (exit 130) and Ctrl+Break as signal 15 (exit 143). When cargo-test-r exits, or is killed, any processes still in the job are terminated, including ones kept with `--keep-leftovers`. Failing to create the job is an error before tests start.
+- **Windows:** cargo-test-r and all descendants share a Job Object. Cleanup terminates every member except cargo-test-r, **without** a grace period (`--kill-grace` has no effect). Ctrl+C counts as signal 2 (exit 130) and Ctrl+Break as signal 15 (exit 143). When cargo-test-r exits, or is killed, any processes still in the job are terminated: leftovers kept with `--keep-leftovers`, and processes left by `cargo test` on the fallback. A daemon that must outlive the run, such as a compiler cache server, can leave the job by starting itself with `CREATE_BREAKAWAY_FROM_JOB`. Failing to create the job is an error before tests start.
 - **Terminal (Unix):** because binaries run in their own process group, a test that reads from the terminal is stopped by the system (SIGTTIN), and Ctrl+Z or Ctrl+\ reach cargo-test-r, not the test. Give such tests input another way. The Cargo fallback without `--deadline` is not affected.
 
 ## Event log
@@ -226,6 +226,7 @@ Every record has these fields:
 - `selection-sha256` identifies what ran: the SHA-256 of the selection file's bytes, or of the resolved selection as compact JSON for other inputs.
 - Binary `outcome` is `passed`, `failed`, `crashed`, `timed-out` or `cancelled`. `exit-code` is set for `passed` and `failed`, `signal` for `crashed`; otherwise they are null. The invocation `outcome` is `passed`, `failed`, `timed-out` or `cancelled`, and matches the [exit code](#exit-code).
 - `attempt` is always 1: cargo-test-r does not rerun binaries. `leftovers-killed` is currently always null.
+- Each of `deadline-expired` and `cancel-requested` is written at most once. Both appear when a signal arrives after the deadline expired; cancellation then decides the outcome.
 - `invocation-finished` is written only after everything has stopped. **A log without it is incomplete**: cargo-test-r was killed or crashed. Never read a missing final record as success. Ignore a last line that has no newline.
 - If writing the log fails, tests keep running, a warning is printed, and an otherwise passing run exits 1.
 

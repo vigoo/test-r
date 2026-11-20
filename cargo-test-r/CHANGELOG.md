@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- Prebuilt runs stop processes left behind by each test binary; pass `--keep-leftovers` to keep them.
+- `-p`/`--exclude` match Cargo package names instead of directory names.
+
 ## [2.2.11](https://github.com/vigoo/test-r/compare/cargo-test-r-v2.2.10...cargo-test-r-v2.2.11) - 2026-11-17
 
 ### Other

@@ -663,10 +663,13 @@ and `desert_rust::BinaryDeserializer`. Common standard-library types
 `HashMap<K, V>` and N-ary tuples for `N >= 2`) already do.
 
 test-r uses `desert_rust` 0.2 with its default features disabled. Implement
-the traits for your own types with `desert_rust` 0.2. To pass types from
-`uuid`, `jiff`, `serde_json` or `bigdecimal`, depend on `desert_rust` 0.2
-yourself and enable the matching feature (`uuid`, `jiff`, `serde-json`,
-`bigdecimal`), for example:
+the traits for your own types with `desert_rust` 0.2. Types from other
+crates are supported only through `desert_rust` features. Earlier test-r
+versions enabled `bigdecimal`, `chrono`, `uuid`, `nonempty-collections` and
+`serde-json` implicitly; now none are enabled, and `chrono` support no longer
+exists (use `jiff` instead). To pass such types, depend on `desert_rust` 0.2
+yourself and enable the matching features (`uuid`, `jiff`, `serde-json`,
+`bigdecimal`, `nonempty-collections`, …), for example:
 
 ```toml
 [dev-dependencies]
