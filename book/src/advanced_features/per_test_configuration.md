@@ -60,7 +60,7 @@ async fn test1() {
 }
 ```
 
-Alternatively a human-readable duration string can be used, parsed by the `humantime` crate:
+Alternatively a human-readable duration string can be used, such as `"1s"`, `"500ms"`, `"2 minutes"` or `"1h 30m"`. Days and weeks are accepted (as 24 hours and 7 days); months and years are not:
 
 ```rust
 use test_r::{test, timeout};

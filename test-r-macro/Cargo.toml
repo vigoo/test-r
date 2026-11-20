@@ -14,7 +14,7 @@ proc-macro = true
 test-r-core = { version = "13.0.0", path = "../test-r-core" }
 
 darling = "0.21.3"
-humantime = "2.3.0"
+jiff = { version = "0.2", default-features = false, features = ["std"] }
 proc-macro2 = "1"
 quote = "1"
 rand = "0.10"

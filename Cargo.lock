@@ -798,12 +798,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "humantime"
-version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15cdd26707701c53297e2fa6afb323d55fbc1d0810c3aec078ae3ef0424c3c15"
-
-[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1815,7 +1809,7 @@ name = "test-r-macro"
 version = "1.4.15"
 dependencies = [
  "darling",
- "humantime",
+ "jiff",
  "proc-macro2",
  "quote",
  "rand",
