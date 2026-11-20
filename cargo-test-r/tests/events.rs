@@ -1,0 +1,568 @@
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+#[cfg(unix)]
+use std::time::{Duration, Instant};
+
+struct Suite {
+    dir: tempfile::TempDir,
+}
+
+impl Suite {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        // A portable, real executable with distinguishable outcomes. The index
+        // file is deliberately not touched: this also exercises older binaries.
+        let source = dir.path().join("fixture.rs");
+        std::fs::write(
+            &source,
+            r#"
+fn main() {
+    let mode = std::env::current_exe().unwrap().file_stem().unwrap().to_str().unwrap().to_owned();
+    let identity = ["TEST_R_INVOCATION_ID", "TEST_R_BINARY_ID", "TEST_R_ATTEMPT", "TEST_R_REPORT_INDEX"]
+        .map(|key| std::env::var(key).unwrap_or_default()).join("\n");
+    std::fs::write(format!("ran-{mode}"), identity).unwrap();
+    if mode == "fail" { std::process::exit(7); }
+    if mode == "crash" { std::process::abort(); }
+    if mode == "hung" { std::thread::sleep(std::time::Duration::from_secs(30)); }
+}
+"#,
+        )
+        .unwrap();
+        assert!(
+            Command::new("rustc")
+                .arg(source)
+                .arg("-o")
+                .arg(
+                    dir.path()
+                        .join(format!("ok{}", std::env::consts::EXE_SUFFIX))
+                )
+                .status()
+                .unwrap()
+                .success()
+        );
+        for name in ["fail", "hung", "crash"] {
+            std::fs::copy(
+                dir.path()
+                    .join(format!("ok{}", std::env::consts::EXE_SUFFIX)),
+                dir.path()
+                    .join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
+            )
+            .unwrap();
+        }
+        Self { dir }
+    }
+    fn path(&self) -> &Path {
+        self.dir.path()
+    }
+    fn selection(&self, executables: &[PathBuf]) {
+        let binaries: Vec<_> = executables.iter().enumerate().map(|(i, executable)| json!({
+            "binary-id": format!("pkg::{i}"), "package-id": "pkg@0.1.0", "package-name": "pkg",
+            "kind": "test", "name": format!("test-{i}"), "build-variant": "variant",
+            "executable": executable, "working-directory": self.path()
+        })).collect();
+        std::fs::write(
+            self.path().join("selection.json"),
+            json!({
+                "format": "cargo-test-r-selection", "version": 1, "inputs": [], "binaries": binaries
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+    fn command(&self, names: &[&str]) -> Command {
+        self.selection(
+            &names
+                .iter()
+                .map(|name| {
+                    self.path()
+                        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+                })
+                .collect::<Vec<_>>(),
+        );
+        self.run("events.jsonl")
+    }
+    fn run(&self, log: &str) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_cargo-test-r"));
+        command.current_dir(self.path()).args([
+            "run",
+            "--selection",
+            "selection.json",
+            "--events",
+            log,
+        ]);
+        command
+    }
+    fn records(&self, log: &str) -> Vec<Value> {
+        let raw = std::fs::read_to_string(self.path().join(log)).unwrap();
+        assert!(raw.ends_with('\n'));
+        let records: Vec<Value> = raw
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        for (i, record) in records.iter().enumerate() {
+            assert_eq!(record["v"], 1);
+            assert_eq!(record["seq"], i);
+            record["time"]
+                .as_str()
+                .unwrap()
+                .parse::<jiff::Timestamp>()
+                .unwrap();
+            if i > 0 {
+                assert!(record["elapsed-ms"].as_u64() >= records[i - 1]["elapsed-ms"].as_u64());
+            }
+        }
+        records
+    }
+}
+
+#[test]
+fn outcomes_order_identity_and_not_run_counts() {
+    for (names, flags, code, events) in [
+        (
+            vec!["ok"],
+            vec![],
+            0,
+            vec![
+                "invocation-started",
+                "binary-started",
+                "binary-finished",
+                "invocation-finished",
+            ],
+        ),
+        (
+            vec!["fail", "ok"],
+            vec![],
+            7,
+            vec![
+                "invocation-started",
+                "binary-started",
+                "binary-finished",
+                "invocation-finished",
+            ],
+        ),
+        (
+            vec!["fail", "ok"],
+            vec!["--no-fail-fast"],
+            7,
+            vec![
+                "invocation-started",
+                "binary-started",
+                "binary-finished",
+                "binary-started",
+                "binary-finished",
+                "invocation-finished",
+            ],
+        ),
+    ] {
+        let suite = Suite::new();
+        let output = suite
+            .command(&names)
+            .args(flags)
+            .args(["--invocation-id", "opaque / shard 3", "--", "harness-arg"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        let records = suite.records("events.jsonl");
+        assert_eq!(
+            records
+                .iter()
+                .map(|r| r["event"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            events
+        );
+        assert!(
+            records
+                .iter()
+                .all(|r| r["invocation-id"] == "opaque / shard 3")
+        );
+        use sha2::{Digest, Sha256};
+        let hash = Sha256::digest(std::fs::read(suite.path().join("selection.json")).unwrap())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        assert_eq!(records[0]["selection-sha256"], hash);
+        assert_eq!(records[1]["args"], json!(["harness-arg"]));
+        assert_eq!(records[1]["cwd"], json!(suite.path()));
+        assert_eq!(records[1]["package-id"], "pkg@0.1.0");
+        assert_eq!(records[1]["attempt"], 1);
+        let identity =
+            std::fs::read_to_string(suite.path().join(format!("ran-{}", names[0]))).unwrap();
+        let identity: Vec<_> = identity.lines().collect();
+        assert_eq!(&identity[..3], ["opaque / shard 3", "pkg::0", "1"]);
+        assert!(
+            !Path::new(identity[3]).parent().unwrap().exists(),
+            "private indexes must be cleaned up"
+        );
+        assert!(records[1]["pid"].as_u64().unwrap() > 0);
+        assert!(records[2]["reports"].is_null());
+        assert_eq!(
+            records[2]["exit-code"],
+            if names[0] == "fail" { 7 } else { 0 }
+        );
+        assert!(records[2]["duration-ms"].is_u64());
+        let last = records.last().unwrap();
+        assert_eq!(last["exit-code"], code);
+        assert_eq!(
+            last["not-run"],
+            usize::from(names.len() == 2 && records.len() == 4)
+        );
+        assert_eq!(last["failed"], usize::from(code == 7));
+    }
+}
+
+#[test]
+fn existing_log_and_cargo_fallback_are_rejected_without_execution() {
+    let suite = Suite::new();
+    std::fs::write(suite.path().join("events.jsonl"), "retain me").unwrap();
+    let output = suite.command(&["ok"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!suite.path().join("ran-ok").exists());
+    assert_eq!(
+        std::fs::read_to_string(suite.path().join("events.jsonl")).unwrap(),
+        "retain me"
+    );
+    std::fs::write(suite.path().join("Cargo.lock"), "").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-test-r"))
+        .current_dir(suite.path())
+        .args(["run", "--target-dir", "absent", "--events", "new.jsonl"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--events is supported only for prebuilt")
+    );
+    assert!(!suite.path().join("new.jsonl").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn launch_failure_and_crash_are_distinct() {
+    use std::os::unix::fs::PermissionsExt;
+    let suite = Suite::new();
+    let invalid = suite.path().join("invalid");
+    std::fs::write(&invalid, "#!/cargo-test-r-missing-interpreter\n").unwrap();
+    std::fs::set_permissions(&invalid, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = suite
+        .command(&["invalid", "ok"])
+        .arg("--no-fail-fast")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let records = suite.records("events.jsonl");
+    assert_eq!(records[1]["event"], "binary-launch-failed");
+    assert!(!records[1]["error"].as_str().unwrap().is_empty());
+    assert_eq!(records.last().unwrap()["launch-failed"], 1);
+    assert_eq!(records.last().unwrap()["passed"], 1);
+    suite.command(&["crash"]);
+    let output = suite.run("crash.jsonl").output().unwrap();
+    assert_eq!(output.status.code(), Some(128 + libc::SIGABRT));
+    let records = suite.records("crash.jsonl");
+    assert_eq!(records[2]["signal"], libc::SIGABRT);
+    assert!(records[2]["exit-code"].is_null());
+}
+
+#[cfg(unix)]
+fn wait_started(suite: &Suite, log: &str) -> u32 {
+    let start = Instant::now();
+    loop {
+        if let Ok(raw) = std::fs::read_to_string(suite.path().join(log)) {
+            for line in raw.lines() {
+                if let Ok(record) = serde_json::from_str::<Value>(line)
+                    && record["event"] == "binary-started"
+                {
+                    return record["pid"].as_u64().unwrap() as u32;
+                }
+            }
+        }
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn cancellation_and_abrupt_death_do_not_manufacture_completion() {
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGKILL] {
+        let suite = Suite::new();
+        let mut child = suite
+            .command(&["hung", "ok"])
+            .args(["--kill-grace", "0ms"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let binary_pid = wait_started(&suite, "events.jsonl");
+        assert_eq!(unsafe { libc::kill(child.id() as i32, signal) }, 0);
+        let status = child.wait().unwrap();
+        let records = suite.records("events.jsonl");
+        if signal == libc::SIGKILL {
+            assert!(records.iter().all(|r| r["event"] != "invocation-finished"));
+            unsafe {
+                libc::kill(-(binary_pid as i32), libc::SIGKILL);
+            }
+        } else {
+            assert_eq!(status.code(), Some(128 + signal));
+            assert!(
+                records
+                    .iter()
+                    .any(|r| r["event"] == "cancel-requested" && r["signal"] == signal)
+            );
+            assert_eq!(records.last().unwrap()["outcome"], "cancelled");
+            assert_eq!(records.last().unwrap()["exit-code"], 128 + signal);
+            assert_eq!(records.last().unwrap()["not-run"], 1);
+        }
+    }
+}
+
+#[test]
+fn deadline_records_stop_before_finish() {
+    let suite = Suite::new();
+    let output = suite
+        .command(&["hung", "ok"])
+        .args(["--deadline", "500ms", "--kill-grace", "0ms"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(124));
+    let records = suite.records("events.jsonl");
+    assert_eq!(records[2]["event"], "deadline-expired");
+    assert_eq!(records[3]["outcome"], "timed-out");
+    assert_eq!(records[4]["not-run"], 1);
+    assert_eq!(records[4]["exit-code"], 124);
+}
+
+#[cfg(unix)]
+#[test]
+fn later_log_write_failure_does_not_stop_tests_or_hide_failure() {
+    use std::os::unix::process::CommandExt;
+    for (binary_code, code) in [(0, 1), (7, 7)] {
+        let suite = Suite::new();
+        suite.selection(&[PathBuf::from("/bin/sh")]);
+        let mut command = suite.run("events.jsonl");
+        command.args(["--", "-c", &format!("printf executed; exit {binary_code}")]);
+        // Real kernel write failure, without a production test hook. The file
+        // can be created but no bytes can be written; SIGXFSZ must be ignored.
+        unsafe {
+            command.pre_exec(|| {
+                libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+                let limit = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        assert_eq!(output.stdout, b"executed");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Event log write failed"));
+    }
+}
+
+#[test]
+fn without_events_needs_no_temp_directory_or_report_index() {
+    let suite = Suite::new();
+    suite.command(&["ok"]);
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-test-r"))
+        .current_dir(suite.path())
+        .args([
+            "run",
+            "--selection",
+            "selection.json",
+            "--invocation-id",
+            "plain",
+        ])
+        .env("TMPDIR", suite.path().join("missing"))
+        .env("TMP", suite.path().join("missing"))
+        .env("TEMP", suite.path().join("missing"))
+        .env("TEST_R_REPORT_INDEX", suite.path().join("inherited-index"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let identity = std::fs::read_to_string(suite.path().join("ran-ok")).unwrap();
+    assert_eq!(identity, "plain\npkg::0\n1\n");
+    assert!(!suite.path().join("inherited-index").exists());
+}
+
+#[test]
+fn real_retry_reports_and_concurrent_invocations_are_attributed() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    for sync in [true, false] {
+        let mut build = Command::new("cargo");
+        build.current_dir(root).args([
+            "test",
+            "-p",
+            "test-r",
+            "--test",
+            "retry_failed_fixture",
+            "--no-run",
+            "--message-format=json",
+        ]);
+        if sync {
+            build.arg("--no-default-features");
+        }
+        let output = build.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let executable: PathBuf = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find_map(|v| {
+                if v["target"]["name"] == "retry_failed_fixture" {
+                    v["executable"].as_str().map(PathBuf::from)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        let suite = Suite::new();
+        suite.selection(std::slice::from_ref(&executable));
+        let mut children = Vec::new();
+        for id in ["a", "b"] {
+            let child = suite
+                .run(&format!("{id}.jsonl"))
+                .env("TEST_R_RETRY_FAILED_DIR", suite.path().join(id))
+                .args([
+                    "--",
+                    "panics_once",
+                    "--include-ignored",
+                    "--retry-failed",
+                    "1",
+                    "--format",
+                    "ctrf",
+                    "--logfile",
+                ])
+                .arg(format!("{id}/report.json"))
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            children.push((id, child));
+        }
+        let mut ids = Vec::new();
+        let mut paths = Vec::new();
+        for (id, child) in children {
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let records = suite.records(&format!("{id}.jsonl"));
+            let invocation = records[0]["invocation-id"].as_str().unwrap();
+            uuid::Uuid::parse_str(invocation).unwrap();
+            assert!(records.iter().all(|r| r["invocation-id"] == invocation));
+            ids.push(invocation.to_string());
+            assert_eq!(records[2]["outcome"], "passed");
+            let reports = records[2]["reports"].as_array().unwrap();
+            assert_eq!(reports.len(), 1);
+            let path = PathBuf::from(reports[0].as_str().unwrap());
+            assert!(path.is_absolute());
+            assert_eq!(
+                path.parent().unwrap().canonicalize().unwrap(),
+                suite.path().join(id).canonicalize().unwrap()
+            );
+            let stem = path.file_stem().unwrap().to_str().unwrap();
+            uuid::Uuid::parse_str(stem.strip_prefix("report-").unwrap()).unwrap();
+            let report: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(report["results"]["tests"][0]["status"], "passed");
+            assert_eq!(
+                std::fs::read_to_string(suite.path().join(id).join("panics_once")).unwrap(),
+                "xx"
+            );
+            paths.push(path);
+        }
+        assert_ne!(ids[0], ids[1]);
+        assert_ne!(paths[0], paths[1]);
+        // Current test-r with no logfile positively acknowledges no reports.
+        let output = suite
+            .run("none.jsonl")
+            .args(["--", "passes"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(suite.records("none.jsonl")[2]["reports"], json!([]));
+        // Auxiliary index errors must not break real tests or report creation.
+        let output = Command::new(&executable)
+            .current_dir(suite.path())
+            .env("TEST_R_RETRY_FAILED_DIR", suite.path().join("warning"))
+            .env("TEST_R_REPORT_INDEX", suite.path())
+            .args([
+                "passes",
+                "--include-ignored",
+                "--format",
+                "ctrf",
+                "--logfile",
+                "warning.json",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("Warning: cannot append TEST_R_REPORT_INDEX")
+        );
+        for nocapture in [false, true] {
+            let name = if nocapture {
+                "outer-nocapture"
+            } else {
+                "outer-capture"
+            };
+            let mut command = suite.run(&format!("{name}.jsonl"));
+            command
+                .env("TEST_R_RETRY_FAILED_DIR", suite.path().join(name))
+                .args([
+                    "--",
+                    "nested_report",
+                    "--include-ignored",
+                    "--format",
+                    "ctrf",
+                    "--logfile",
+                ])
+                .arg(format!("{name}.json"));
+            if nocapture {
+                command.arg("--nocapture");
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let records = suite.records(&format!("{name}.jsonl"));
+            let reports = records[2]["reports"].as_array().unwrap();
+            assert_eq!(
+                reports.len(),
+                1,
+                "nested reports must not be attributed to the outer binary: {reports:?}"
+            );
+            let outer = Path::new(reports[0].as_str().unwrap());
+            assert!(
+                outer
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with(&format!("{name}-"))
+            );
+            let nested: Vec<_> = std::fs::read_dir(suite.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("nested-")
+                        && path
+                            .extension()
+                            .is_some_and(|extension| extension == "json")
+                })
+                .collect();
+            assert_eq!(nested.len(), if nocapture { 2 } else { 1 });
+            for path in nested {
+                let report: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+                assert_eq!(report["results"]["tests"][0]["status"], "passed");
+            }
+        }
+    }
+}

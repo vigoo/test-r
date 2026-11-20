@@ -25,6 +25,24 @@ fn passes() {
     invocation("passes");
 }
 
+/// A nested test runner owns its report, not the outer runner's report index.
+#[test]
+#[ignore]
+fn nested_report() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "passes",
+            "--include-ignored",
+            "--format",
+            "ctrf",
+            "--logfile",
+            "nested.json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+}
+
 #[test]
 #[ignore]
 fn panics_once() {

@@ -4,6 +4,7 @@ use clap::{Args, Parser};
 use humansize::{BINARY, format_size};
 use selection::{Filters, Selection};
 
+mod events;
 mod run;
 mod selection;
 mod snapshot;
@@ -150,6 +151,12 @@ struct RunSubcommand {
     /// Keep daemons after normal prebuilt exits; cancellation/deadline still clean up.
     #[arg(long)]
     keep_leftovers: bool,
+    /// Write lifecycle JSON Lines to a new file (prebuilt runs only).
+    #[arg(long, value_name = "PATH")]
+    events: Option<std::path::PathBuf>,
+    /// Opaque invocation identity (defaults to a UUID).
+    #[arg(long, value_name = "ID")]
+    invocation_id: Option<String>,
     /// Test only the specified binary.
     #[arg(long)]
     bin: Option<String>,
@@ -366,17 +373,36 @@ fn run(
         }
     };
     if let Some(selection) = selection {
+        use sha2::{Digest, Sha256};
+        // For saved selections, identify the exact input bytes. For metadata and
+        // archive inputs, identify the resolved selection's compact JSON encoding.
+        let selection_bytes = match &cmd.selection {
+            Some(path) => std::fs::read(path)?,
+            None => serde_json::to_vec(&selection)?,
+        };
+        let mut events = events::Events::new(cmd.events.as_deref(), cmd.invocation_id, started)?;
+        events.record("invocation-started", serde_json::json!({
+            "pid": std::process::id(), "selection-sha256": Sha256::digest(selection_bytes).iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "no-fail-fast": cmd.no_fail_fast, "deadline-ms": cmd.deadline.map(|d| d.as_millis() as u64),
+            "kill-grace-ms": cmd.kill_grace.as_millis() as u64, "keep-leftovers": cmd.keep_leftovers
+        }));
         let mut args = cmd.testname;
         args.extend(cmd.test_args);
-        Ok(run::run(
+        let result = run::run(
             &selection,
             &args,
             cmd.no_fail_fast,
             !cmd.keep_leftovers,
             &mut supervisor,
-        )
-        .exit_code())
+            &mut events,
+        );
+        Ok(events.finish(&result))
     } else {
+        if cmd.events.is_some() {
+            bail!(
+                "--events is supported only for prebuilt runs; the Cargo fallback cannot write lifecycle events"
+            );
+        }
         if !cmd.selection_args.binary_id.is_empty() {
             bail!("--binary-id requires prebuilt metadata or an extracted archive");
         }
@@ -385,7 +411,11 @@ fn run(
         let mut args = run::cargo_args(cargo_args);
         args.insert(0, "test".into());
         println!("Executing {} {}", cargo_path, args.join(" "));
-        let outcome = supervisor.run(std::process::Command::new(cargo_path).args(args), false);
+        let outcome = supervisor.run(
+            std::process::Command::new(cargo_path).args(args),
+            false,
+            None,
+        );
         Ok(supervisor
             .stop_if_requested()
             .unwrap_or(outcome)

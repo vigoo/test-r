@@ -12,8 +12,22 @@ use crate::host_capture::{TerminalStderr, TerminalStdout};
 use crate::internal::{RegisteredTest, TestResult};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+
+static REPORT_INDEX: OnceLock<Option<std::ffi::OsString>> = OnceLock::new();
+
+pub(crate) fn capture_report_index() {
+    REPORT_INDEX.get_or_init(|| {
+        let index = std::env::var_os("TEST_R_REPORT_INDEX");
+        if index.is_some() {
+            // SAFETY: Called first in both runner entry points, before runtime
+            // or worker threads exist. Nested runners must not inherit this index.
+            std::env::remove_var("TEST_R_REPORT_INDEX");
+        }
+        index
+    });
+}
 
 pub trait TestRunnerOutput: Send + Sync {
     fn start_suite(&self, tests: &[RegisteredTest]);
@@ -97,6 +111,20 @@ pub(crate) fn write_failure_summary_to_stderr(
 }
 
 pub fn test_runner_output(args: &Arguments) -> Arc<dyn TestRunnerOutput> {
+    // An empty index is the capability handshake: new runners can distinguish
+    // known-no-reports from an older binary that never creates the index.
+    if let Some(index) = REPORT_INDEX.get().and_then(Option::as_ref) {
+        if let Err(error) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(index)
+        {
+            let _ = writeln!(
+                TerminalStderr,
+                "Warning: cannot initialize TEST_R_REPORT_INDEX: {error}"
+            );
+        }
+    }
     if args.ipc.is_some() {
         Arc::new(ipc::IpcWorkerOutput::new(!args.nocapture))
     } else if args.quiet {
@@ -165,6 +193,28 @@ impl LogFile {
             .unwrap_or_else(|_| panic!("Failed to open log file {}", path.to_string_lossy()));
         file.seek(SeekFrom::End(0))
             .expect("Failed to seek log file");
+        if let Some(index) = REPORT_INDEX.get().and_then(Option::as_ref) {
+            // JSON string lines also preserve paths containing newlines. One
+            // append-mode write keeps concurrent report writers independent.
+            let result = (|| -> std::io::Result<()> {
+                let mut line = serde_json::to_vec(&path)?;
+                line.push(b'\n');
+                let mut index = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(index)?;
+                if index.write(&line)? != line.len() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "partial report index write",
+                    ));
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                let _ = writeln!(err, "Warning: cannot append TEST_R_REPORT_INDEX: {error}");
+            }
+        }
         LogFile { file }
     }
 }

@@ -10,7 +10,8 @@ struct Workspace {
 
 impl Workspace {
     fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        // Cargo canonicalizes manifest paths (notably /var -> /private/var on macOS).
+        let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let root = dir.path();
         std::fs::write(
             root.join("Cargo.toml"),

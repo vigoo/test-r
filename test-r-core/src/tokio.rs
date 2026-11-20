@@ -35,6 +35,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 pub fn test_runner() -> ExitCode {
+    crate::output::capture_report_index();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

@@ -273,3 +273,59 @@ Platform containment and limits:
 - **Linux:** process groups plus `PR_SET_CHILD_SUBREAPER`. Orphans are adopted, terminated, and reaped, including descendants that changed session/process group. This requires readable `/proc` child information. It is not isolation against another PID namespace, a service manager such as systemd, Docker, or privileged processes. Cleanup polling after KILL is bounded; uninterruptible kernel waits cannot be made killable by a userspace runner.
 - **macOS:** process groups only. Descendants that call `setsid` or `setpgid` can escape; orphan zombies belong to the system reaper, not cargo-test-r. Do not use this as a containment boundary for daemonizing or hostile workloads.
 - **Windows:** cargo-test-r joins a Job Object before launching work; descendants inherit membership. Both normal cleanup and deadline/cancellation enumerate and terminate job members **except the runner**, with bounded waits and **without a grace period**. The runner stays alive to report the outcome and return the usual exit code. Console Ctrl+C maps to signal 2 (exit 130), and Ctrl+Break to signal 15 (exit 143). Console close/logoff and forcible termination of the supervisor are not graceful cancellation; use Ctrl+C, Ctrl+Break, or the deadline. Job assignment failure (for example, incompatible enclosing job restrictions) is an error before tests start. Job membership is not a sandbox or a guarantee against privileged external service managers.
+
+### Invocation lifecycle events and report identity
+
+For prebuilt selections, metadata, and extracted archives, add an optional event file:
+
+```sh
+cargo test-r run --selection selection.json --invocation-id ci-4711-shard-3 \
+  --events target/events.jsonl -- --format ctrf --logfile target/ctrf.json
+```
+
+The parent directory must exist. `--events` opens a **new** file with `create_new`: an existing path is an error, never overwritten. If creation fails, no binary runs and cargo-test-r exits 1. The Cargo fallback rejects `--events` before launching Cargo. `--invocation-id` is an opaque caller string, or a generated UUID if omitted. On the Cargo fallback it is stripped rather than forwarded; lifecycle events and report identity are prebuilt-only.
+
+#### JSON Lines schema v1
+
+Every record is one JSON object followed by a newline, with these common fields:
+
+| Field | Meaning |
+| --- | --- |
+| `v` | Schema version, currently `1` |
+| `seq` | Zero-based, strictly increasing record number within this file |
+| `time` | UTC wall-clock RFC 3339 timestamp, millisecond precision |
+| `elapsed-ms` | Monotonic milliseconds from the same startup Instant used for the invocation deadline |
+| `invocation-id` | Caller-provided identity or generated UUID |
+| `event` | One of the event names below |
+
+Event-specific fields:
+
+| Event | Fields |
+| --- | --- |
+| `invocation-started` | `pid`, `selection-sha256`, `no-fail-fast`, `deadline-ms` (null if unset), `kill-grace-ms`, `keep-leftovers` |
+| `binary-started` | `binary-id`, `package-id`, `attempt` (always 1), child `pid`, absolute `cwd`, harness `args` array |
+| `binary-launch-failed` | `binary-id`, `package-id`, `attempt`, `error` string; no start is emitted for a failed spawn |
+| `binary-finished` | `binary-id`, `attempt`, `outcome`, `exit-code`, `signal`, `duration-ms`, `leftovers-killed`, `reports` |
+| `deadline-expired` | `binary-id` (null if between binaries), `signal: null` |
+| `cancel-requested` | `binary-id` (null if between binaries), received `signal` |
+| `invocation-finished` | `outcome`, `exit-code`, and counts `passed`, `failed`, `crashed`, `launch-failed`, `timed-out`, `cancelled`, `not-run` |
+
+`selection-sha256` is 64 lowercase hexadecimal digits: the SHA-256 of the saved selection's file bytes, or of the resolved selection serialized as compact JSON for metadata/archive input. Do not modify a saved selection concurrently with loading it. `duration-ms` covers the binary attempt, including spawn and cleanup. `exit-code` is the observed process code for `passed`/`failed`; `signal` is the observed Unix crash signal. Otherwise these fields are null: a timeout or cancellation identifies why the supervisor stopped work, not an invented process status. `leftovers-killed` is currently null because the supervisor cannot provide a reliable count across supported platforms.
+
+Binary outcomes are `passed`, `failed`, `crashed`, `timed-out`, and `cancelled`. Launch failure has its own event and count, not a fabricated started/finished pair. Invocation outcomes are `passed`, `failed`, `timed-out`, and `cancelled`. Counts cover every selected binary, including `not-run`; they count binary attempts, not individual tests. The final exit code preserves cancellation, timeout, then first failing binary precedence. Cleanup or event-output failure contributes 1 only when the run would otherwise succeed.
+
+The first record is `invocation-started`. Binaries run in selection order, with each observed start followed by a finish, or a launch-failure record instead. A stop request is recorded when observed, before termination of an active binary, and may occur between binaries. `invocation-finished` is written only after the runner observes the run loop and cleanup finishing. If cargo-test-r itself is SIGKILLed, no final record is manufactured. A missing final record means **incomplete evidence**, never success or zero tests. The event log records what this runner saw; it is not an externally verified CI result.
+
+Records never share stdout/stderr with arbitrary test output. Each is serialized in memory, written with one `write_all`, and flushed; `invocation-finished` is additionally synced to disk. A reader must ignore any final line without a newline. A later write/flush/sync failure is reported on stderr, disables further event writes, and **does not stop tests**. It changes an otherwise successful exit to 1, never masks an existing failure. A final sync failure can leave a complete-looking final line but still cause exit 1: check the actual runner exit status too.
+
+#### Actual reports, binary attempts, and retries
+
+Each prebuilt binary attempt gets these identity environment variables, even without `--events`:
+
+- `TEST_R_INVOCATION_ID`: the invocation identity.
+- `TEST_R_BINARY_ID`: the selected binary id; `package-id` remains available in `binary-started`.
+- `TEST_R_ATTEMPT`: `1`. cargo-test-r does not rerun binaries. `--retry-failed` remains a **per-test** retry inside the harness, with evidence retained in CTRF.
+
+With `--events`, `TEST_R_REPORT_INDEX` points to an initially absent file inside a private per-invocation temporary directory. Without `--events`, no index directory is created and this variable is not passed to the binary, even if inherited by cargo-test-r. Updated test-r-core captures and removes the variable at the very start of the sync/tokio runner, before creating runtime or worker threads, so workers and nested test-r binaries do not inherit the outer index. It uses the stored path to initialize an empty index when selecting output, then appends each successfully opened report's final absolute, UUID-suffixed path as a JSON string plus newline, using one append-mode write. Failure to initialize or append warns on stderr but never fails a test run.
+
+`binary-finished.reports` is an array of actual report paths, not guessed filenames. An empty array means the index was created but lists no opened reports. Null means unknown: for example, an older binary never created the index, or the index could not be read/parsed. Report paths indicate files opened, not a promise that every report is complete. Concurrent invocations have separate indexes/logs and UUID-suffixed reports. Index directories are removed after ordinary completion, handled cancellation, or errors; forcible termination such as SIGKILL can leave temporary files behind. Reports themselves are never removed.

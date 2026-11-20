@@ -41,6 +41,18 @@ impl From<ExitStatus> for BinaryOutcome {
 }
 
 impl BinaryOutcome {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed { .. } => "failed",
+            Self::Crashed { .. } => "crashed",
+            Self::LaunchFailed { .. } => "launch-failed",
+            Self::TimedOut => "timed-out",
+            Self::Cancelled { .. } => "cancelled",
+            Self::NotRun => "not-run",
+        }
+    }
+
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::Passed | Self::NotRun => 0,
@@ -92,20 +104,21 @@ pub fn run(
     no_fail_fast: bool,
     cleanup: bool,
     supervisor: &mut Supervisor,
+    events: &mut crate::events::Events,
 ) -> RunResult {
     let mut outcomes = Vec::with_capacity(selection.binaries.len());
     let mut stopped = false;
-    for binary in &selection.binaries {
+    for (index, binary) in selection.binaries.iter().enumerate() {
         if stopped || supervisor.stop_reason().is_some() {
             outcomes.push(BinaryOutcome::NotRun);
             continue;
         }
-        let outcome = supervisor.run(
-            Command::new(&binary.executable)
-                .current_dir(&binary.working_directory)
-                .args(args),
-            cleanup,
-        );
+        let mut observer = events.binary(binary, args, index);
+        let mut command = Command::new(&binary.executable);
+        command.current_dir(&binary.working_directory).args(args);
+        observer.configure(&mut command);
+        let outcome = supervisor.run(&mut command, cleanup, Some(&mut observer));
+        observer.finished(&outcome);
         let id = &binary.binary_id;
         match &outcome {
             BinaryOutcome::Failed { code } => {
@@ -148,11 +161,12 @@ pub fn cargo_args(args: &[String]) -> Vec<String> {
             result.extend(args.cloned());
             break;
         }
-        if arg == "--deadline" || arg == "--kill-grace" {
+        if arg == "--deadline" || arg == "--kill-grace" || arg == "--invocation-id" {
             args.next();
         } else if arg != "--keep-leftovers"
             && !arg.starts_with("--deadline=")
             && !arg.starts_with("--kill-grace=")
+            && !arg.starts_with("--invocation-id=")
         {
             result.push(arg.clone());
         }

@@ -66,8 +66,16 @@ impl Supervisor {
         self.stop_reason().or(Some(reason))
     }
 
-    pub fn run(&mut self, command: &mut Command, cleanup: bool) -> BinaryOutcome {
+    pub fn run(
+        &mut self,
+        command: &mut Command,
+        cleanup: bool,
+        mut events: Option<&mut crate::events::BinaryEvents<'_>>,
+    ) -> BinaryOutcome {
         if let Some(reason) = self.stop_if_requested() {
+            if let Some(events) = events.as_deref_mut() {
+                events.stop(&reason);
+            }
             return reason;
         }
         self.platform.prepare(command);
@@ -80,9 +88,15 @@ impl Supervisor {
             }
         };
         self.platform.track(child.id());
+        if let Some(events) = events.as_deref_mut() {
+            events.started(child.id());
+        }
         loop {
             // Cancellation wins even when exit and the signal arrive together.
             if let Some(reason) = self.stop_reason() {
+                if let Some(events) = events.as_deref_mut() {
+                    events.stop(&reason);
+                }
                 if let Err(error) = self.platform.cleanup(self.grace, reason.exit_code(), false) {
                     eprintln!("Process cleanup failed: {error:#}");
                     self.cleanup_failed = true;
