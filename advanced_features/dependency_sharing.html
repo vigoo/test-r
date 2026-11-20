@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-de51c1e9.js";
+            window.path_to_searchindex_js = "../searchindex-3f294f0a.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-16c0bd11.js"></script>
+        <script src="../toc-e23b0b45.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -813,6 +813,17 @@ cfg-propagated.</li>
 and <code>desert_rust::BinaryDeserializer</code>. Common standard-library types
 (<code>u8</code>/<code>u16</code>/<code>u32</code>/<code>u64</code>/<code>i*</code>, <code>bool</code>, <code>String</code>, <code>Vec&lt;T&gt;</code>, <code>Option&lt;T&gt;</code>,
 <code>HashMap&lt;K, V&gt;</code> and N-ary tuples for <code>N &gt;= 2</code>) already do.</p>
+<p>test-r uses <code>desert_rust</code> 0.2 with its default features disabled. Implement
+the traits for your own types with <code>desert_rust</code> 0.2. Types from other
+crates are supported only through <code>desert_rust</code> features. Earlier test-r
+versions enabled <code>bigdecimal</code>, <code>chrono</code>, <code>uuid</code>, <code>nonempty-collections</code> and
+<code>serde-json</code> implicitly; now none are enabled, and <code>chrono</code> support no longer
+exists (use <code>jiff</code> instead). To pass such types, depend on <code>desert_rust</code> 0.2
+yourself and enable the matching features (<code>uuid</code>, <code>jiff</code>, <code>serde-json</code>,
+<code>bigdecimal</code>, <code>nonempty-collections</code>, …), for example:</p>
+<pre><code class="language-toml">[dev-dependencies]
+desert_rust = { version = "0.2", default-features = false, features = ["uuid"] }
+</code></pre>
 <p>Transport, codec and dispatch failures (IPC errors, owner panics,
 encode/decode errors) <strong>panic in the generated stub</strong> with an
 <code>expect(...)</code> message of the form <code>hosted_rpc(&lt;Trait&gt;::&lt;method&gt;): ...</code>.

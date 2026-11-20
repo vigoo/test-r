@@ -1,0 +1,453 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Running prebuilt test binaries - test-r</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-3f294f0a.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-e23b0b45.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">test-r</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="running-prebuilt-test-binaries"><a class="header" href="#running-prebuilt-test-binaries">Running prebuilt test binaries</a></h1>
+<p><code>cargo test-r run</code> normally forwards to <code>cargo test</code>. It can also run test binaries that were built earlier, for example in a separate CI step, without invoking Cargo. This chapter covers:</p>
+<ul>
+<li><a href="#choosing-binaries">choosing the binaries</a> and saving the choice as a <strong>selection</strong> file,</li>
+<li><a href="#snapshots-freezing-binaries">snapshots</a> that freeze binaries so a later rebuild cannot change them,</li>
+<li><a href="#deadlines-cancellation-and-cleanup">deadlines, cancellation and cleanup</a> of the processes tests leave behind,</li>
+<li>an <a href="#event-log">event log</a> that records what happened, for CI tooling.</li>
+</ul>
+<pre><code class="language-sh"># Build once
+cargo nextest list --list-type binaries-only --message-format json &gt; binaries.json
+# Choose binaries and save the choice
+cargo test-r list --binaries-metadata binaries.json -p my-crate &gt; selection.json
+# Run exactly those binaries
+cargo test-r run --selection selection.json --no-fail-fast --deadline 30m -- --retry-failed 2
+</code></pre>
+<h2 id="choosing-binaries"><a class="header" href="#choosing-binaries">Choosing binaries</a></h2>
+<h3 id="inputs"><a class="header" href="#inputs">Inputs</a></h3>
+<p>cargo-test-r reads one of three kinds of build output. None of them makes cargo-test-r invoke Cargo.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Input</th><th>How to produce it</th><th>Flag</th></tr>
+</thead>
+<tbody>
+<tr><td>nextest binary list</td><td><code>cargo nextest list --list-type binaries-only --message-format json &gt; binaries.json</code></td><td><code>--binaries-metadata binaries.json</code></td></tr>
+<tr><td>Cargo JSON messages</td><td><code>cargo test --no-run --message-format json &gt; cargo-messages.jsonl</code></td><td><code>--cargo-messages cargo-messages.jsonl</code></td></tr>
+<tr><td>Extracted nextest archive</td><td><code>cargo test-r reuse-nextest-archive --archive-file tests.tar.zst</code></td><td>none: used automatically when no other input is given</td></tr>
+</tbody>
+</table>
+</div>
+<p>Both flags can be repeated, and both kinds can be mixed. An extracted archive lives in <code>target/nextest-archive</code>, or in <code>&lt;DIR&gt;/nextest-archive</code> with <code>--target-dir &lt;DIR&gt;</code>. Its binary paths and package directories are moved to match the current workspace.</p>
+<p>For Cargo messages, use Cargo’s JSON stdout, not its human-readable stderr. Only test artifacts that have an executable are used; other JSON messages are skipped. Every line must still be valid JSON.</p>
+<p>Without any input, <code>cargo test-r run</code> forwards all its arguments to <code>cargo test</code> (see <a href="#without-prebuilt-input">Without prebuilt input</a>).</p>
+<h3 id="filters"><a class="header" href="#filters">Filters</a></h3>
+<p><code>cargo test-r list</code> and prebuilt <code>cargo test-r run</code> accept the same filters:</p>
+<ul>
+<li><code>-p</code>/<code>--package &lt;NAME&gt;</code> and <code>--exclude &lt;NAME&gt;</code> match <strong>Cargo package names</strong>, not directory names. Both accept globs and can be repeated. Excludes apply even without <code>-p</code>.</li>
+<li><code>--lib</code> selects library unit tests (including proc macros). <code>--bins</code> selects binary unit tests. <code>--test &lt;NAME&gt;</code> selects integration tests by name, with globs, and can be repeated. <code>--tests</code> selects all three kinds.</li>
+<li>Kind filters add up: <code>--lib --test integration</code> selects both. With no kind filter, every binary is eligible.</li>
+<li><code>--binary-id &lt;ID&gt;</code> keeps only the given binary ids, and can be repeated.</li>
+</ul>
+<p>Binary ids follow nextest’s scheme: <code>my-crate</code> for library unit tests, <code>my-crate::integration</code> for an integration test, and <code>my-crate::bin/tool</code> for other targets. They come from the package id and target, never from file names.</p>
+<p>The same binary id listed twice with identical details is merged. Two different entries for one id, such as two executable paths or two build variants, are an error that shows both, rather than one being picked silently. A binary id is unique within a selection.</p>
+<p>Test name filters and arguments after <code>--</code> are passed to every selected binary:</p>
+<pre><code class="language-sh">cargo test-r run --binaries-metadata binaries.json -p my-crate --test integration -- --retry-failed 2
+</code></pre>
+<p>Build options such as <code>--release</code>, <code>--features</code> or <code>--no-run</code> are rejected, because the binaries are already built.</p>
+<h3 id="selection-files"><a class="header" href="#selection-files">Selection files</a></h3>
+<p><code>cargo test-r list</code> prints the chosen binaries as JSON on stdout and never runs anything. <code>cargo test-r run --selection &lt;FILE&gt;</code> later runs exactly those binaries, in <code>binary-id</code> order, without reading the inputs again:</p>
+<pre><code class="language-json">{
+  "format": "cargo-test-r-selection",
+  "version": 1,
+  "inputs": [
+    { "path": "binaries.json", "sha256": "&lt;64 hex digits&gt;", "kind": "nextest-binaries" }
+  ],
+  "binaries": [{
+    "binary-id": "my-crate::integration",
+    "package-id": "path+file:///w/my-crate#my-crate@0.1.0",
+    "package-name": "my-crate",
+    "kind": "test",
+    "name": "integration",
+    "build-variant": "3b1e0c9a77d2",
+    "executable": "/w/target/debug/deps/integration-4f1a2b",
+    "working-directory": "/w/my-crate"
+  }]
+}
+</code></pre>
+<ul>
+<li><code>inputs</code> records which files the selection came from, with the SHA-256 of their contents. <code>kind</code> is <code>nextest-binaries</code> or <code>cargo-messages</code>; a missing <code>kind</code> means <code>nextest-binaries</code>. <code>run</code> ignores input kinds it doesn’t know, so selections from newer versions still run.</li>
+<li><code>build-variant</code> is an opaque short hash of the build settings. Compare it only between selections made by the same cargo-test-r version from the same kind of input.</li>
+<li>Paths are absolute. Each binary runs in its package’s directory.</li>
+</ul>
+<p>Filters, <code>--target-dir</code> and other inputs cannot be combined with <code>--selection</code>; make a new selection instead. A selection does not freeze the executables: a rebuild can replace them. Use a <a href="#snapshots-freezing-binaries">snapshot</a> for that.</p>
+<h3 id="errors-before-anything-runs"><a class="header" href="#errors-before-anything-runs">Errors before anything runs</a></h3>
+<p>Every selected binary is checked before the first one starts. Unreadable input, an empty selection, a missing executable or working directory, and a file that is not executable (Unix permission bits; an <code>.exe</code> extension on Windows) all fail with exit code 1. <code>list</code> then prints nothing on stdout.</p>
+<h2 id="running-the-binaries"><a class="header" href="#running-the-binaries">Running the binaries</a></h2>
+<p>Binaries run one at a time, in <code>binary-id</code> order, with stdout and stderr inherited.</p>
+<h3 id="failing-fast-or-not"><a class="header" href="#failing-fast-or-not">Failing fast, or not</a></h3>
+<p>By default the run stops after the first binary that fails, crashes or cannot be started. <code>--no-fail-fast</code> runs every binary anyway. Passing binaries are never rerun; per-test retries such as <code>--retry-failed</code> still happen inside each binary. Each failing binary’s id and status are printed on stderr.</p>
+<h3 id="exit-code"><a class="header" href="#exit-code">Exit code</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>What happened</th><th>Exit code</th></tr>
+</thead>
+<tbody>
+<tr><td>Everything passed</td><td>0</td></tr>
+<tr><td>Cancelled by a signal</td><td>128 + signal (Ctrl+C: 130)</td></tr>
+<tr><td>Deadline expired</td><td>124</td></tr>
+<tr><td>A binary failed</td><td>that binary’s exit code (the <strong>first</strong> failure in selection order)</td></tr>
+<tr><td>A binary was killed by a signal (Unix)</td><td>128 + signal</td></tr>
+<tr><td>A binary could not be started</td><td>1</td></tr>
+<tr><td>Everything passed, but cleanup or the event log failed</td><td>1</td></tr>
+</tbody>
+</table>
+</div>
+<p>Cancellation wins over the deadline, and the deadline wins over binary failures. A binary that itself exits with 124 or 128 + n looks like a timeout or a signal in the exit code; the <a href="#event-log">event log</a> tells them apart.</p>
+<h3 id="without-prebuilt-input"><a class="header" href="#without-prebuilt-input">Without prebuilt input</a></h3>
+<p>Without <code>--selection</code>, <code>--binaries-metadata</code>, <code>--cargo-messages</code> or an extracted archive, <code>cargo test-r run</code> forwards its arguments to <code>cargo test</code>. Without <code>--deadline</code>, cargo-test-r prints the command and runs <code>cargo test</code> as a direct call would, with the same signals and terminal. With <code>--deadline</code>, the <a href="#deadlines-cancellation-and-cleanup">deadline and cancellation rules</a> apply to the whole <code>cargo test</code> process, compilation included; processes left behind after <code>cargo test</code> finishes normally are not stopped (on Windows, see the platform notes). <code>--events</code> and <code>--binary-id</code> need prebuilt input.</p>
+<h2 id="snapshots-freezing-binaries"><a class="header" href="#snapshots-freezing-binaries">Snapshots: freezing binaries</a></h2>
+<p>A selection points at executables inside Cargo’s target directory, which a later build can overwrite. On <strong>Linux with glibc</strong>, a snapshot copies them into a directory that Cargo never writes to:</p>
+<pre><code class="language-sh">cargo test-r snapshot --selection selection.json --out /ci/snap/run-1
+# prints: snapshot /ci/snap/run-1 sha256:&lt;digest&gt;
+cargo test-r verify --selection /ci/snap/run-1/selection.json --expect-digest sha256:&lt;digest&gt;
+cargo test-r run --selection /ci/snap/run-1/selection.json --expect-digest sha256:&lt;digest&gt;
+</code></pre>
+<p>The output directory must not exist yet; its parent must. The snapshot appears all at once or not at all. It contains <code>bin/</code> with one copy of each executable, and a <code>selection.json</code> that points at those copies. Working directories stay the original package directories: test resources are not copied.</p>
+<h3 id="what-a-snapshot-records"><a class="header" href="#what-a-snapshot-records">What a snapshot records</a></h3>
+<p>The snapshot’s <code>selection.json</code> is a normal version 1 selection with extra fields:</p>
+<pre><code class="language-json">{
+  "format": "cargo-test-r-selection",
+  "version": 1,
+  "inputs": [ ... ],
+  "binaries": [{
+    "binary-id": "my-crate::integration",
+    ...,
+    "sha256": "&lt;64 hex digits of the executable&gt;",
+    "mode": 493,
+    "dependencies": [
+      { "path": "/lib/x86_64-linux-gnu/libc.so.6", "sha256": "&lt;64 hex digits&gt;" }
+    ]
+  }],
+  "snapshot": { "platform": "linux-gnu" }
+}
+</code></pre>
+<ul>
+<li><code>snapshot</code> marks the file as a snapshot, and names the rules used to create it.</li>
+<li><code>mode</code> is the executable’s Unix permission bits (493 is 0755).</li>
+<li><code>dependencies</code> lists the shared libraries the system loader resolved for the executable, plus the loader itself, with their hashes. It is empty for a static executable.</li>
+</ul>
+<p><code>snapshot</code> refuses to create a snapshot when a library is missing, when a library comes from the target directory or a build script’s link path (so a rebuild could change it), or when copying the executable changes how its libraries resolve (for example through <code>$ORIGIN</code>). It needs the original nextest binary list from <code>inputs</code>, unchanged, to know which directories are build output. Selections made from Cargo messages cannot be snapshotted, because Cargo’s messages don’t describe those directories completely.</p>
+<h3 id="verification"><a class="header" href="#verification">Verification</a></h3>
+<p><code>verify</code>, and <code>run --selection</code> on a snapshot, check everything before any binary starts: each executable must be inside the snapshot’s <code>bin/</code> and match its hash and mode, and each recorded library must exist and match its hash. Verification never runs the loader or a test.</p>
+<ul>
+<li><code>--expect-digest sha256:&lt;digest&gt;</code> also checks the exact bytes of <code>selection.json</code>. Keep the digest separately from the snapshot: it is what detects an edited manifest.</li>
+<li><code>--skip-library-hashes</code> still requires recorded libraries to exist, but allows their contents to change, for example after a system update. Binary hashes and the digest are still checked.</li>
+<li>A file with snapshot fields but no <code>snapshot</code> marker, an unknown key inside <code>snapshot</code>, or a platform this version doesn’t know is rejected rather than run unverified.</li>
+</ul>
+<p>Snapshot creation works on Linux with glibc only; macOS, Windows and musl report it as unsupported. Verify and run a snapshot on the same kind of system that created it: paths, file modes and libraries are platform-specific.</p>
+<p><strong>Trust assumptions.</strong> Only the CI user should be able to write to the snapshot directory. Snapshot creation runs the system loader on the executables, so use it on your own build output. System libraries outside the build output are assumed stable while the snapshot is used. Keep the loader environment (such as <code>LD_LIBRARY_PATH</code>) and working directories the same between snapshot and run: verification checks the recorded files, it does not resolve libraries again. Without a separately kept digest, hashes detect accidents, not deliberate tampering. Verification is not a sandbox: a process changing files after the check is not detected.</p>
+<p>On filesystems that cannot rename without replacing (some NFS or FUSE mounts), or in containers that block that call, publishing falls back to “check, then rename”. Make sure no other process publishes to the same output path at the same time there.</p>
+<h2 id="deadlines-cancellation-and-cleanup"><a class="header" href="#deadlines-cancellation-and-cleanup">Deadlines, cancellation and cleanup</a></h2>
+<pre><code class="language-sh">cargo test-r run --selection selection.json --deadline 30m --kill-grace 10s
+</code></pre>
+<ul>
+<li><code>--deadline</code> is a budget for the <strong>whole invocation</strong>, measured from when cargo-test-r starts. It covers loading and every binary, and is never reset between binaries. On the Cargo fallback it includes compilation. When it expires, no further binaries start and the running one is stopped. Durations are whole numbers with <code>ms</code>, <code>s</code>, <code>m</code> or <code>h</code>, such as <code>90s</code> or <code>30m</code>; <code>0s</code> stops before the first binary.</li>
+<li><strong>Cancellation</strong>: Ctrl+C, SIGTERM or SIGHUP while binaries run stops the run the same way. A second signal (Ctrl+C, SIGTERM or SIGHUP) skips the grace period. During loading and verification, before anything has started, these signals simply end cargo-test-r.</li>
+<li><strong>Stopping</strong>: on Unix the running binary and its descendants get SIGTERM, or the received signal when cancelled; after <code>--kill-grace</code> (default <code>10s</code>) they get SIGKILL. The grace period can extend past the deadline. Output and reports already written are kept.</li>
+<li><strong>Leftover processes</strong>: in prebuilt runs, processes a binary leaves behind (such as a server that keeps a port open) are stopped after <strong>every</strong> binary, even when it passed. <code>--keep-leftovers</code> turns this off for suites that start a daemon on purpose; a deadline or cancellation still cleans up. Cleanup after a binary can itself cross the deadline: the run then exits 124 even though every binary passed.</li>
+<li>If cleanup fails, no further binaries start, and an otherwise passing run exits 1.</li>
+</ul>
+<h3 id="platform-notes"><a class="header" href="#platform-notes">Platform notes</a></h3>
+<ul>
+<li><strong>Linux:</strong> each binary runs in its own process group, and cargo-test-r adopts orphaned descendants, so processes that start a new session are still found and stopped. This needs <code>/proc</code> with child lists (<code>CONFIG_PROC_CHILDREN</code>); without them every supervised run fails before starting. It does not reach processes in other PID namespaces or ones started through a service manager such as systemd or Docker.</li>
+<li><strong>macOS:</strong> process groups only. A descendant that starts a new session or process group escapes cleanup. Don’t rely on it to contain daemonizing or hostile programs.</li>
+<li><strong>Windows:</strong> cargo-test-r and all descendants share a Job Object. Cleanup terminates every member except cargo-test-r, <strong>without</strong> a grace period (<code>--kill-grace</code> has no effect). Ctrl+C counts as signal 2 (exit 130) and Ctrl+Break as signal 15 (exit 143). When cargo-test-r exits, or is killed, any processes still in the job are terminated: leftovers kept with <code>--keep-leftovers</code>, and processes left by <code>cargo test</code> on the fallback. The job allows breakaway: a process created with the <code>CREATE_BREAKAWAY_FROM_JOB</code> flag by its parent is not a member, so it survives the run, but it also escapes cleanup on a deadline or cancellation. Failing to create the job is an error before tests start.</li>
+<li><strong>Terminal (Unix):</strong> because binaries run in their own process group, a test that reads from the terminal is stopped by the system (SIGTTIN), and Ctrl+Z or Ctrl+\ reach cargo-test-r, not the test. Give such tests input another way. The Cargo fallback without <code>--deadline</code> is not affected.</li>
+</ul>
+<h2 id="event-log"><a class="header" href="#event-log">Event log</a></h2>
+<p><code>--events &lt;FILE&gt;</code> writes one JSON object per line describing the run. It works for prebuilt runs only.</p>
+<pre><code class="language-sh">cargo test-r run --selection selection.json --invocation-id ci-run-1-shard-3 \
+  --events target/events.jsonl -- --format ctrf --logfile target/ctrf.json
+</code></pre>
+<p>The file must not exist yet; it is never overwritten. If it cannot be created, nothing runs and the exit code is 1. <code>--invocation-id</code> is any string you choose; without it a UUID is generated.</p>
+<h3 id="records"><a class="header" href="#records">Records</a></h3>
+<p>Every record has these fields:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>v</code></td><td>Schema version, currently <code>1</code></td></tr>
+<tr><td><code>seq</code></td><td>Record number, starting at 0 and always increasing</td></tr>
+<tr><td><code>time</code></td><td>UTC time, RFC 3339 with milliseconds</td></tr>
+<tr><td><code>elapsed-ms</code></td><td>Milliseconds since cargo-test-r started, on the same clock as <code>--deadline</code></td></tr>
+<tr><td><code>invocation-id</code></td><td>The <code>--invocation-id</code>, or the generated UUID</td></tr>
+<tr><td><code>event</code></td><td>One of the event names below</td></tr>
+</tbody>
+</table>
+</div>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Event</th><th>Other fields</th></tr>
+</thead>
+<tbody>
+<tr><td><code>invocation-started</code></td><td><code>pid</code>, <code>selection-sha256</code>, <code>no-fail-fast</code>, <code>deadline-ms</code> (null without a deadline), <code>kill-grace-ms</code>, <code>keep-leftovers</code></td></tr>
+<tr><td><code>binary-started</code></td><td><code>binary-id</code>, <code>package-id</code>, <code>attempt</code>, child <code>pid</code>, <code>cwd</code>, <code>args</code></td></tr>
+<tr><td><code>binary-launch-failed</code></td><td><code>binary-id</code>, <code>package-id</code>, <code>attempt</code>, <code>error</code> (instead of a start and finish)</td></tr>
+<tr><td><code>binary-finished</code></td><td><code>binary-id</code>, <code>attempt</code>, <code>outcome</code>, <code>exit-code</code>, <code>signal</code>, <code>duration-ms</code>, <code>leftovers-killed</code>, <code>reports</code></td></tr>
+<tr><td><code>deadline-expired</code></td><td><code>binary-id</code> (null between binaries), <code>signal</code> (null), <code>at-elapsed-ms</code></td></tr>
+<tr><td><code>cancel-requested</code></td><td><code>binary-id</code> (null between binaries), <code>signal</code>, <code>at-elapsed-ms</code></td></tr>
+<tr><td><code>invocation-finished</code></td><td><code>outcome</code>, <code>exit-code</code>, and counts of binaries: <code>passed</code>, <code>failed</code>, <code>crashed</code>, <code>launch-failed</code>, <code>timed-out</code>, <code>cancelled</code>, <code>not-run</code></td></tr>
+</tbody>
+</table>
+</div>
+<ul>
+<li><code>selection-sha256</code> identifies what ran: the SHA-256 of the selection file’s bytes, or of the resolved selection as compact JSON for other inputs.</li>
+<li>Binary <code>outcome</code> is <code>passed</code>, <code>failed</code>, <code>crashed</code>, <code>timed-out</code> or <code>cancelled</code>. <code>exit-code</code> is set for <code>passed</code> and <code>failed</code>, <code>signal</code> for <code>crashed</code>; otherwise they are null. The invocation <code>outcome</code> is <code>passed</code>, <code>failed</code>, <code>timed-out</code> or <code>cancelled</code>, and matches the <a href="#exit-code">exit code</a>.</li>
+<li><code>attempt</code> is always 1: cargo-test-r does not rerun binaries. <code>leftovers-killed</code> is currently always null.</li>
+<li>Each of <code>deadline-expired</code> and <code>cancel-requested</code> is written at most once, in the order they happened. Both appear when a signal arrives after the deadline expired; cancellation then decides the outcome. <code>at-elapsed-ms</code> is when the stop happened (for the deadline, the deadline itself). The record can be written later, for example after the grace period, so its <code>elapsed-ms</code> can be larger.</li>
+<li><code>invocation-finished</code> is written only after everything has stopped. <strong>A log without it is incomplete</strong>: cargo-test-r was killed or crashed. Never read a missing final record as success. Ignore a last line that has no newline.</li>
+<li>If writing the log fails, tests keep running, a warning is printed, and an otherwise passing run exits 1.</li>
+</ul>
+<h3 id="reports-and-identity"><a class="header" href="#reports-and-identity">Reports and identity</a></h3>
+<p>Each binary gets these environment variables, with or without <code>--events</code>:</p>
+<ul>
+<li><code>TEST_R_INVOCATION_ID</code>: the invocation id.</li>
+<li><code>TEST_R_BINARY_ID</code>: the binary id.</li>
+<li><code>TEST_R_ATTEMPT</code>: <code>1</code>.</li>
+</ul>
+<p>With <code>--events</code>, each binary also gets <code>TEST_R_REPORT_INDEX</code>, the path of a private file. test-r adds one JSON object per report file it opens, such as <code>{"path": "/w/target/ctrf-1b9d….json", "format": "ctrf"}</code>. <code>binary-finished.reports</code> lists these objects:</p>
+<ul>
+<li><code>[]</code>: the binary uses a test-r version that supports the index, and opened no report.</li>
+<li><code>null</code>: unknown, for example because the binary uses an older test-r.</li>
+<li>Lines cargo-test-r doesn’t understand are skipped.</li>
+</ul>
+<p>test-r removes the variable at startup, so nested test-r processes don’t write into the outer index. The listed paths are the actual files, after test-r adds its unique suffix. Concurrent runs use separate indexes and logs. Reports are never deleted.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../core_features/running_tests.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../core_features/test_output.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../core_features/running_tests.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../core_features/test_output.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

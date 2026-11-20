@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-de51c1e9.js";
+            window.path_to_searchindex_js = "../searchindex-3f294f0a.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-16c0bd11.js"></script>
+        <script src="../toc-e23b0b45.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -229,13 +229,7 @@ It is also possible to run <strong>only the ignored tests</strong> with the <cod
 <h2 id="debugging"><a class="header" href="#debugging">Debugging</a></h2>
 <p>Output capturing is implemented by forking one or more child processes and attaching to their standard output and error channels. This means that attaching a <strong>debugger</strong> to the parent process will not work as expected. When using a debugger, always pass the <code>--nocapture</code> flag to the test runner to disable output capturing, which guarantees that all the tests are executed in the single root process.</p>
 <h2 id="running-prebuilt-test-binaries-with-cargo-test-r"><a class="header" href="#running-prebuilt-test-binaries-with-cargo-test-r">Running prebuilt test binaries with <code>cargo-test-r</code></a></h2>
-<p><code>cargo test-r run</code> accepts the same arguments as <code>cargo test</code>. With <code>--binaries-metadata &lt;PATH&gt;</code> it runs test binaries that were already built instead of invoking Cargo. <code>PATH</code> is the JSON written by:</p>
-<pre><code>cargo nextest list --list-type binaries-only --message-format json [--cargo-profile &lt;PROFILE&gt;] &gt; binaries.json
-</code></pre>
-<p>The binaries run from the absolute paths recorded in that file, in their package’s directory. <code>-p</code>/<code>--package</code>, <code>--exclude</code>, <code>--test</code> and <code>--lib</code> select which binaries to run. Test name filters and arguments after <code>--</code> are passed to each binary:</p>
-<pre><code>cargo test-r run --binaries-metadata binaries.json -p my-crate --test integration -- --retry-failed 2
-</code></pre>
-<p>This mode never falls back to building with Cargo. It fails if the file is missing or invalid, if no listed binary matches the selection, or if a selected binary no longer exists. Build options such as <code>--profile</code> or <code>--features</code> are rejected, because the binaries are already built.</p>
+<p><code>cargo test-r run</code> accepts the same arguments as <code>cargo test</code>. It can also run test binaries that were already built, without invoking Cargo, with a whole-run deadline and an event log for CI. See <a href="./prebuilt_binaries.html">Running prebuilt test binaries</a>.</p>
 
                     </main>
 
@@ -245,7 +239,7 @@ It is also possible to run <strong>only the ignored tests</strong> with the <cod
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../core_features/test_output.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../core_features/prebuilt_binaries.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -259,7 +253,7 @@ It is also possible to run <strong>only the ignored tests</strong> with the <cod
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../core_features/test_output.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../core_features/prebuilt_binaries.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
