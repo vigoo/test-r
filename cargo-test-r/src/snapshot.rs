@@ -212,7 +212,12 @@ mod linux {
                     },
                     path,
                 );
-            } else if !line.starts_with("linux-vdso.") && !line.starts_with("linux-gate.") {
+            } else if !line.starts_with("linux-vdso.")
+                && !line.starts_with("linux-gate.")
+                // Some kernels expose the vDSO without a soname: glibc then
+                // lists only its load address, as "(0x...)".
+                && !(line.starts_with("(0x") && line.ends_with(')'))
+            {
                 bail!("Unrecognized loader dependency for {executable}: {line}");
             }
         }
