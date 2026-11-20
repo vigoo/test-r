@@ -27,7 +27,7 @@ int main(int argc, char **argv) {
     FILE *trace = fopen("trace", "a"); fprintf(trace, "%s\n", mode); fclose(trace);
     if (!strcmp(mode, "ok")) return 0;
     if (!strcmp(mode, "fail")) return 7;
-    if (!strcmp(mode, "slow")) { usleep(150000); return 0; }
+    if (!strcmp(mode, "slow")) { usleep(1000000); return 0; }
     if (!strcmp(mode, "forward")) signal(SIGTERM, received);
     if (!strcmp(mode, "orphan") || !strcmp(mode, "escape") || !strcmp(mode, "resistant")) {
         signal(SIGTERM, SIG_IGN);
@@ -400,18 +400,24 @@ fn cancellation_at_binary_handoff_never_leaks_spawned_child() {
 #[test]
 fn one_budget_spans_binaries_and_timeout_overrides_earlier_failure() {
     let suite = Suite::new();
+    // `slow` takes 1s and the budget is 1.5s, leaving `hung` a wide margin to
+    // start even on slow CI runners. A per-binary budget would instead let
+    // `hung` run for a full 1.5s after it starts, ending near 2.5s.
+    let started = Instant::now();
     let output = finish(spawn(
         suite.command(&["fail", "slow", "hung", "ok"]).args([
             "--deadline",
-            "300ms",
+            "1500ms",
             "--no-fail-fast",
         ]),
     ));
+    let elapsed = started.elapsed();
     assert_eq!(output.status.code(), Some(124), "{output:?}");
     assert_eq!(
         std::fs::read_to_string(suite.path().join("trace")).unwrap(),
         "fail\nslow\nhung\n"
     );
+    assert!(elapsed < Duration::from_millis(2300), "{elapsed:?}");
 }
 
 #[cfg(unix)]
