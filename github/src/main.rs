@@ -1,6 +1,5 @@
 use gh_workflow::{
     Cargo, Event, Expression, Job, Level, Permissions, PullRequest, Push, Step, Workflow,
-    toolchain::Toolchain,
 };
 use internal::*;
 
@@ -8,7 +7,10 @@ use internal::*;
 mod internal;
 
 fn main() {
-    let toolchain = Toolchain::default();
+    // Keep action versions explicit so regeneration preserves dependency updates.
+    let checkout = Step::uses("actions", "checkout", "v7").name("Checkout Code");
+    let toolchain =
+        Step::uses("actions-rust-lang", "setup-rust-toolchain", "v2").name("Setup Rust Toolchain");
 
     Workflow::new("CI")
         .on(Event::default()
@@ -27,9 +29,10 @@ fn main() {
                     ),
                 ))
                 .runs_on_("${{ matrix.os }}")
-                .add_step(Step::checkout())
+                .add_step(checkout.clone())
                 .add_step(toolchain.clone())
                 .add_step(Cargo::new("test").args("-p test-r --all-features"))
+                .add_step(Cargo::new("test").args("-p cargo-test-r"))
                 .add_step(Cargo::new("test").args("-p test-r-example --no-run"))
                 .add_step(Cargo::new("test").args("-p test-r-example-tokio --no-run")),
         )
@@ -37,9 +40,12 @@ fn main() {
             "checks",
             Job::new("Checks")
                 .runs_on_("ubuntu-latest")
-                .add_step(Step::checkout())
+                .add_step(checkout.clone())
                 .add_step(toolchain)
-                .add_step(InstallAction::default().add_tool("cargo-deny"))
+                .add_step(
+                    Step::uses("taiki-e", "install-action", "v2.88.1")
+                        .add_with(("tool", "cargo-deny")),
+                )
                 .add_step(Cargo::new("clippy").args("--no-deps --all-targets -- -Dwarnings"))
                 .add_step(Cargo::new("fmt").args("--all -- --check"))
                 .add_step(Cargo::new("deny").args("check")),
@@ -48,7 +54,7 @@ fn main() {
             "deploy-book",
             Job::new("Deploy book")
                 .runs_on_("ubuntu-latest")
-                .add_step(Step::checkout())
+                .add_step(checkout)
                 .add_step(SetupMDBook::default())
                 .add_step(Step::run("mdbook build").working_directory_("book"))
                 .add_step(

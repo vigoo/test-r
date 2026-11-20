@@ -39,6 +39,7 @@ jobs:
     - name: Setup Rust Toolchain
       uses: actions-rust-lang/setup-rust-toolchain@v2
     - run: cargo test -p test-r --all-features
+    - run: cargo test -p cargo-test-r
     - run: cargo test -p test-r-example --no-run
     - run: cargo test -p test-r-example-tokio --no-run
   checks:

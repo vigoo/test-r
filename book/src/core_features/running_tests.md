@@ -109,10 +109,61 @@ Output capturing is implemented by forking one or more child processes and attac
 cargo nextest list --list-type binaries-only --message-format json [--cargo-profile <PROFILE>] > binaries.json
 ```
 
-The binaries run from the absolute paths recorded in that file, in their package's directory. `-p`/`--package`, `--exclude`, `--test` and `--lib` select which binaries to run. Test name filters and arguments after `--` are passed to each binary:
+The binaries run from the absolute paths recorded in that file, in their package's directory. Test name filters and arguments after `--` are passed to each binary:
 
 ```
 cargo test-r run --binaries-metadata binaries.json -p my-crate --test integration -- --retry-failed 2
 ```
 
-This mode never falls back to building with Cargo. It fails if the file is missing or invalid, if no listed binary matches the selection, or if a selected binary no longer exists. Build options such as `--profile` or `--features` are rejected, because the binaries are already built.
+### Selecting binaries without running tests
+
+`cargo test-r list` reads existing metadata, validates the selected artifacts and writes only selection JSON to stdout. It never runs Cargo or a test binary:
+
+```sh
+cargo test-r list --binaries-metadata binaries.json -p my-crate --test integration > selection.json
+cargo test-r run --selection selection.json -- --retry-failed 2
+```
+
+Both `list` and `run --binaries-metadata` support these filters:
+
+- `-p`/`--package` and `--exclude` match **Cargo package names**, not directory names. Both accept globs and can be repeated. Excludes apply even without `-p`.
+- `--lib` selects library (including proc-macro) unit tests; `--bins` selects binary unit tests.
+- Repeatable `--test <NAME>` selects integration test targets by name, with globs. `--tests` selects library, binary and integration test targets.
+- Target-kind/name filters are additive: `--lib --test integration` selects both. Package filters and repeatable exact `--binary-id <ID>` filters further restrict the result.
+- With no target filters, all entries in the metadata are eligible.
+
+Repeat `--binaries-metadata <PATH>` to combine metadata files. Identical entries for the same binary id are merged. Conflicting entries (including different executable paths or build variants) fail with both candidates in the diagnostic, rather than picking one.
+
+### Selection JSON version 1
+
+The top-level fields, in output order, are `format`, `version`, `inputs`, `binaries`:
+
+```json
+{
+  "format": "cargo-test-r-selection",
+  "version": 1,
+  "inputs": [{ "path": "binaries.json", "sha256": "<64 lowercase hex digits>" }],
+  "binaries": [{
+    "binary-id": "my-crate::integration",
+    "package-id": "path+file:///w/my-crate#my-crate@0.1.0",
+    "package-name": "my-crate",
+    "kind": "test",
+    "name": "integration",
+    "build-variant": "3b1e0c9a77d2",
+    "executable": "/w/target/debug/deps/integration-4f1a2b",
+    "working-directory": "/w/my-crate"
+  }]
+}
+```
+
+Inputs remain in command-line order; each hash is SHA-256 of the exact metadata bytes read. Binaries are sorted by `binary-id` in byte order, which is also their run order. Binary ids use nextest's stable scheme: `pkg` for libraries, `pkg::name` for integration tests, and `pkg::bin/name` for binary unit tests. Each binary has the fields shown above in that order. Paths to executables and working directories are absolute. Package names come from `#name@version` in the Cargo package id, or the last path component for older `…/name#version` ids.
+
+`build-variant` is the first 12 lowercase hex digits of SHA-256 over compact JSON containing, in order, the original target directory, nextest's `platforms`, legacy `target-platforms` and `target-platform`, sorted base output directories (profiles), and the binary's host/target build platform. It identifies the build metadata, not the executable contents. Nextest binaries-only metadata does not enumerate feature sets; different executables for one id are rejected even when these build metadata fields agree.
+
+`run --selection` validates the format/version and all artifacts before starting anything. It runs exactly the saved binaries, in binary-id order, without reopening input metadata or invoking Cargo. Package/target filters, `--target-dir` and `--binaries-metadata` cannot be combined with `--selection`; make a new selection instead. Test name filters and arguments after `--` are still forwarded to every selected binary. A selection does not freeze executable contents: rebuilding can replace them.
+
+### Extracted nextest archives and errors
+
+After `cargo test-r reuse-nextest-archive --archive-file tests.tar.zst`, both `list` and `run` automatically read `target/nextest-archive/target/nextest/binaries-metadata.json` when no explicit input is given. `--target-dir <DIR>` changes the archive location to `<DIR>/nextest-archive`. Binary paths are relocated relative to the original target directory; package working directories are relocated from the original `workspace_root` in the archive's `target/nextest/cargo-metadata.json` to the current workspace. This also supports archives built with redirected Cargo target directories.
+
+Explicit metadata/selection input and `list` never fall back to Cargo. Unreadable or malformed metadata, unsupported package ids that cannot map to local directories, missing or non-executable selected artifacts, missing working directories and empty selections fail with exit code 1 and diagnostics on stderr, without selection output on stdout. On Unix, executable permission bits are checked; on Windows, files must have an `.exe` extension. These checks do not inspect executable contents or guarantee that the OS can load them; launch errors are reported by `run`. Build options such as `--profile` or `--features` are rejected in prebuilt mode. The run loop remains sequential and stops at the first failing binary; prebuilt `--no-fail-fast` and `--no-run` are not supported yet. Without explicit input or an extracted archive, `run` still forwards to `cargo test`.
