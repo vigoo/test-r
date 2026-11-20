@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.16](https://github.com/vigoo/test-r/compare/test-r-v3.0.15...test-r-v3.0.16) - 2026-11-20
+
+### Other
+
+- Replace humantime and disable unused desert integrations ([#223](https://github.com/vigoo/test-r/pull/223))
+
 ## [3.0.15](https://github.com/vigoo/test-r/compare/test-r-v3.0.14...test-r-v3.0.15) - 2026-11-17
 
 ### Other
