@@ -7,6 +7,7 @@ use selection::{Filters, Selection};
 mod run;
 mod selection;
 mod snapshot;
+mod supervise;
 
 #[derive(Parser, Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
@@ -131,6 +132,15 @@ struct RunSubcommand {
     /// Run all tests regardless of failure.
     #[arg(long)]
     no_fail_fast: bool,
+    /// Whole invocation budget, including compilation on the Cargo fallback (e.g. 30m).
+    #[arg(long, value_parser = supervise::parse_duration)]
+    deadline: Option<std::time::Duration>,
+    /// Time between TERM and KILL on Unix (e.g. 10s).
+    #[arg(long, default_value = "10s", value_parser = supervise::parse_duration)]
+    kill_grace: std::time::Duration,
+    /// Keep daemons after normal prebuilt exits; cancellation/deadline still clean up.
+    #[arg(long)]
+    keep_leftovers: bool,
     /// Test only the specified binary.
     #[arg(long)]
     bin: Option<String>,
@@ -220,7 +230,8 @@ struct RunSubcommand {
 }
 
 fn main() {
-    match try_main() {
+    let started = std::time::Instant::now();
+    match try_main(started) {
         Ok(code) => std::process::exit(code),
         Err(err) => {
             eprintln!("Error: {err:#}");
@@ -234,7 +245,7 @@ fn workspace_root() -> anyhow::Result<Utf8PathBuf> {
         .map_err(|path| anyhow!("Unexpected characters in workspace root: {path:?}"))
 }
 
-fn try_main() -> anyhow::Result<i32> {
+fn try_main(started: std::time::Instant) -> anyhow::Result<i32> {
     let mut args = std::env::args().collect::<Vec<_>>();
     // Cargo passes the subcommand name to external subcommands.
     if args.get(1).is_some_and(|arg| arg == "test-r") {
@@ -249,7 +260,7 @@ fn try_main() -> anyhow::Result<i32> {
             println!();
             Ok(0)
         }
-        Command::Run(cmd) => run(cmd, &args[2..]),
+        Command::Run(cmd) => run(cmd, &args[2..], started),
         Command::Snapshot(cmd) => {
             let digest = snapshot::snapshot(&cmd.selection, &cmd.out)?;
             println!("snapshot {} {digest}", cmd.out);
@@ -299,7 +310,12 @@ fn reuse_nextest_archive(
     Ok(0)
 }
 
-fn run(cmd: RunSubcommand, cargo_args: &[String]) -> anyhow::Result<i32> {
+fn run(
+    cmd: RunSubcommand,
+    cargo_args: &[String],
+    started: std::time::Instant,
+) -> anyhow::Result<i32> {
+    let mut supervisor = supervise::Supervisor::new(started, cmd.deadline, cmd.kill_grace)?;
     if cmd.selection.is_none()
         && (cmd.verification.expect_digest.is_some() || cmd.verification.skip_library_hashes)
     {
@@ -341,18 +357,28 @@ fn run(cmd: RunSubcommand, cargo_args: &[String]) -> anyhow::Result<i32> {
     if let Some(selection) = selection {
         let mut args = cmd.testname;
         args.extend(cmd.test_args);
-        Ok(run::run(&selection, &args, cmd.no_fail_fast).exit_code())
+        Ok(run::run(
+            &selection,
+            &args,
+            cmd.no_fail_fast,
+            !cmd.keep_leftovers,
+            &mut supervisor,
+        )
+        .exit_code())
     } else {
         if !cmd.selection_args.binary_id.is_empty() {
             bail!("--binary-id requires prebuilt metadata or an extracted archive");
         }
         println!("No nexttest archive was found, forwarding to cargo test");
         let cargo_path = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let mut args = cargo_args.to_vec();
+        let mut args = run::cargo_args(cargo_args);
         args.insert(0, "test".into());
         println!("Executing {} {}", cargo_path, args.join(" "));
-        let status = std::process::Command::new(cargo_path).args(args).status()?;
-        Ok(run::BinaryOutcome::from(status).exit_code())
+        let outcome = supervisor.run(std::process::Command::new(cargo_path).args(args), false);
+        Ok(supervisor
+            .stop_if_requested()
+            .unwrap_or(outcome)
+            .exit_code())
     }
 }
 

@@ -469,12 +469,20 @@ fn extracted_archive_relocates_redirected_target_and_workspace() {
             .unwrap(),
     );
     assert_eq!(
-        selection["binaries"][0]["executable"],
-        exe.to_str().unwrap()
+        Path::new(selection["binaries"][0]["executable"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        exe.canonicalize().unwrap()
     );
     assert_eq!(
-        selection["binaries"][0]["working-directory"],
-        w.dir.path().join("a/same").to_str().unwrap()
+        Path::new(
+            selection["binaries"][0]["working-directory"]
+                .as_str()
+                .unwrap()
+        )
+        .canonicalize()
+        .unwrap(),
+        w.dir.path().join("a/same").canonicalize().unwrap()
     );
     assert!(!w.dir.path().join("trace").exists());
     let output = w
@@ -520,10 +528,14 @@ fn outcome_run(input: Input, names: [&str; 3], no_fail_fast: bool, code: i32) ->
         let exe = target.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
         if name == "launch" {
             // Pass artifact validation but let the OS reject the image at spawn.
+            #[cfg(windows)]
             std::fs::write(&exe, "not an executable image").unwrap();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
+                // Darwin executes plain text via sh; a missing interpreter
+                // reliably fails spawn with ENOENT on both Darwin and Linux.
+                std::fs::write(&exe, "#!/nonexistent/interpreter\n").unwrap();
                 std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
         } else {

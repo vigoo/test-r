@@ -1,13 +1,24 @@
 use crate::selection::Selection;
+use crate::supervise::Supervisor;
 use std::process::{Command, ExitStatus};
 
 #[derive(Debug)]
 pub enum BinaryOutcome {
     Passed,
-    Failed { code: i32 },
-    Crashed { signal: i32 },
-    LaunchFailed { error: String },
-    // TimedOut and Cancelled will be added with the invocation supervisor.
+    Failed {
+        code: i32,
+    },
+    #[cfg_attr(not(unix), allow(dead_code))]
+    Crashed {
+        signal: i32,
+    },
+    LaunchFailed {
+        error: String,
+    },
+    TimedOut,
+    Cancelled {
+        signal: i32,
+    },
     NotRun,
 }
 
@@ -36,6 +47,8 @@ impl BinaryOutcome {
             Self::Failed { code } => *code,
             Self::Crashed { signal } => 128 + signal,
             Self::LaunchFailed { .. } => 1,
+            Self::TimedOut => 124,
+            Self::Cancelled { signal } => 128 + signal,
         }
     }
 }
@@ -43,37 +56,56 @@ impl BinaryOutcome {
 pub struct RunResult {
     /// One outcome per binary, in selection order, including skipped binaries.
     pub outcomes: Vec<BinaryOutcome>,
+    pub cleanup_failed: bool,
+    pub stop_reason: Option<BinaryOutcome>,
 }
 
 impl RunResult {
     pub fn exit_code(&self) -> i32 {
-        // The supervisor will give cancellation and deadline expiry precedence.
+        if let Some(outcome) = self
+            .outcomes
+            .iter()
+            .chain(self.stop_reason.iter())
+            .find(|o| matches!(o, BinaryOutcome::Cancelled { .. }))
+        {
+            return outcome.exit_code();
+        }
+        if self
+            .outcomes
+            .iter()
+            .chain(self.stop_reason.iter())
+            .any(|o| matches!(o, BinaryOutcome::TimedOut))
+        {
+            return 124;
+        }
         self.outcomes
             .iter()
             .map(BinaryOutcome::exit_code)
             .find(|code| *code != 0)
-            .unwrap_or(0)
+            .unwrap_or(i32::from(self.cleanup_failed))
     }
 }
 
-pub fn run(selection: &Selection, args: &[String], no_fail_fast: bool) -> RunResult {
+pub fn run(
+    selection: &Selection,
+    args: &[String],
+    no_fail_fast: bool,
+    cleanup: bool,
+    supervisor: &mut Supervisor,
+) -> RunResult {
     let mut outcomes = Vec::with_capacity(selection.binaries.len());
     let mut stopped = false;
     for binary in &selection.binaries {
-        if stopped {
+        if stopped || supervisor.stop_reason().is_some() {
             outcomes.push(BinaryOutcome::NotRun);
             continue;
         }
-        let outcome = match Command::new(&binary.executable)
-            .current_dir(&binary.working_directory)
-            .args(args)
-            .status()
-        {
-            Ok(status) => BinaryOutcome::from(status),
-            Err(error) => BinaryOutcome::LaunchFailed {
-                error: error.to_string(),
-            },
-        };
+        let outcome = supervisor.run(
+            Command::new(&binary.executable)
+                .current_dir(&binary.working_directory)
+                .args(args),
+            cleanup,
+        );
         let id = &binary.binary_id;
         match &outcome {
             BinaryOutcome::Failed { code } => {
@@ -87,9 +119,43 @@ pub fn run(selection: &Selection, args: &[String], no_fail_fast: bool) -> RunRes
                 binary.executable
             ),
             BinaryOutcome::Passed | BinaryOutcome::NotRun => {}
+            BinaryOutcome::TimedOut => eprintln!("Invocation deadline expired at {id}"),
+            BinaryOutcome::Cancelled { signal } => {
+                eprintln!("Invocation cancelled by signal {signal} at {id}")
+            }
         }
-        stopped = !matches!(outcome, BinaryOutcome::Passed) && !no_fail_fast;
+        stopped = matches!(
+            outcome,
+            BinaryOutcome::TimedOut | BinaryOutcome::Cancelled { .. }
+        ) || (!matches!(outcome, BinaryOutcome::Passed) && !no_fail_fast)
+            || supervisor.cleanup_failed;
         outcomes.push(outcome);
     }
-    RunResult { outcomes }
+    RunResult {
+        outcomes,
+        stop_reason: supervisor.stop_if_requested(),
+        cleanup_failed: supervisor.cleanup_failed,
+    }
+}
+
+/// Remove only our flags, leaving Cargo and harness arguments unchanged.
+pub fn cargo_args(args: &[String]) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            result.push(arg.clone());
+            result.extend(args.cloned());
+            break;
+        }
+        if arg == "--deadline" || arg == "--kill-grace" {
+            args.next();
+        } else if arg != "--keep-leftovers"
+            && !arg.starts_with("--deadline=")
+            && !arg.starts_with("--kill-grace=")
+        {
+            result.push(arg.clone());
+        }
+    }
+    result
 }

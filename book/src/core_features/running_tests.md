@@ -180,16 +180,18 @@ cargo test-r run --target-dir archive-target --no-fail-fast
 
 This applies equally to metadata, saved selections and extracted archives. Binary-id order, package working directories and harness arguments are unchanged. Passing binaries are not rerun, and per-test retries inside each binary are unaffected. Each binary inherits stdout and stderr and writes its ordinary reports; cargo-test-r also reports each failing binary's id and status on stderr, so distinct failures remain distinguishable.
 
-The final exit code is the **first failure in selection order**, not the last or largest code:
+The final exit code gives **cancellation precedence over timeout**, then uses the **first failure in selection order**, not the last or largest code:
 
 | Binary outcome | Exit code |
 | --- | --- |
 | All binaries passed | 0 |
+| Invocation cancelled | 128 + signal number (for example, Ctrl+C: 130) |
+| Invocation deadline expired | 124 |
 | Nonzero exit | The binary's exit code |
 | Killed by a signal (Unix) | 128 + signal number |
 | Launch failure after validation (for example, an invalid executable image) | 1 |
 
-With default fail-fast, the remaining binaries are not run. With `--no-fail-fast`, later binaries still run but cannot turn the final result into success. Artifact validation still happens for the entire selection before any binary starts; `--no-fail-fast` does not bypass invalid metadata or missing files. Invocation deadlines, cancellation handling and descendant cleanup are not implemented yet.
+With default fail-fast, the remaining binaries are not run. With `--no-fail-fast`, later binaries still run but cannot turn the final result into success. A deadline or cancellation always stops admission of further binaries, regardless of `--no-fail-fast`. Artifact validation still happens for the entire selection before any binary starts; `--no-fail-fast` does not bypass invalid metadata or missing files.
 
 ### Freezing prebuilt binaries with snapshot
 
@@ -227,3 +229,25 @@ Both `verify` and `run --selection` accept `--skip-library-hashes`: recorded lib
 **Trust assumptions:** only the CI user may write the snapshot directory (including during verification/execution). Loader inspection runs the system interpreter from **trusted, own build outputs**, not arbitrary downloaded executables. System libraries outside mutable build output are assumed stable for the snapshot's lifetime. Preserve the loader environment (for example `LD_LIBRARY_PATH`/`LD_PRELOAD`), working directories and host loader configuration between snapshot and execution: verification checks the recorded files without resolving libraries again. Hashes detect accidental changes; without a separately trusted digest they do not authenticate a maliciously rewritten manifest. Verification is not a sandbox and does not prevent a concurrent writer changing files after the check.
 
 Publication normally uses `renameat2(RENAME_NOREPLACE)` to reject even a concurrently created output directory. On filesystems that reject this flag with `EINVAL` (for example some NFS or FUSE mounts), snapshot falls back to checking that the output does not exist and then performing an ordinary atomic rename. This fallback has a weaker race guarantee: another process could create an empty output directory between the check and rename and have it replaced. Ensure no other process publishes to the same output path on those filesystems.
+
+### Invocation deadlines and descendant cleanup
+
+```sh
+cargo test-r run --selection selection.json --deadline 30m --kill-grace 10s
+```
+
+`--deadline` is an optional **whole invocation** budget measured on a monotonic clock from cargo-test-r startup. It includes selection loading and all binaries, including retries inside each binary; it is never reset between binaries. On the Cargo fallback, the supervised process is `cargo test`, so **compilation is included**. Validation and metadata loading are synchronous; expiry is checked before launching work, not by interrupting filesystem reads.
+
+Durations are nonnegative integers followed by `ms`, `s`, `m`, or `h` (for example, `90s`, `30m`, `1h`). Fractions, bare numbers, and overflowing durations are rejected. `0s` expires before starting a binary. `--kill-grace` defaults to `10s` and is separate from the deadline: shutdown may extend beyond the invocation budget.
+
+On Unix every binary (or the fallback Cargo process) starts in its own process group. SIGINT, SIGTERM, and SIGHUP are recorded and forwarded by the supervisor. On expiry it sends TERM; on cancellation it sends the received signal. After the grace interval it escalates to KILL. A second Ctrl+C skips the remaining grace. Signal handlers only record cancellation and wake the supervision loop, so cancellation around spawning cannot abandon an untracked child. stdout and stderr remain inherited; output and partial reports already written are not removed.
+
+In prebuilt mode, cleanup also runs **after every normal binary exit**, without changing a passing/failing exit into a different test result. This prevents orphan descendants from retaining an inherited pipe or listening port. Use `--keep-leftovers` for a suite that intentionally leaves a daemon alive after a normal exit. Deadline expiry and cancellation still clean up with this flag. The Cargo fallback does not clean leftovers after normal completion.
+
+If cleanup itself fails, no further binaries are admitted; an otherwise successful invocation exits 1. An existing test failure, timeout, or cancellation keeps its exit-code precedence. After KILL the supervisor allows up to two seconds for process draining instead of waiting indefinitely for an unkillable process.
+
+Platform containment and limits:
+
+- **Linux:** process groups plus `PR_SET_CHILD_SUBREAPER`. Orphans are adopted, terminated, and reaped, including descendants that changed session/process group. This requires readable `/proc` child information. It is not isolation against another PID namespace, a service manager such as systemd, Docker, or privileged processes. Cleanup polling after KILL is bounded; uninterruptible kernel waits cannot be made killable by a userspace runner.
+- **macOS:** process groups only. Descendants that call `setsid` or `setpgid` can escape; orphan zombies belong to the system reaper, not cargo-test-r. Do not use this as a containment boundary for daemonizing or hostile workloads.
+- **Windows:** cargo-test-r joins a Job Object before launching work; descendants inherit membership. Both normal cleanup and deadline/cancellation enumerate and terminate job members **except the runner**, with bounded waits and **without a grace period**. The runner stays alive to report the outcome and return the usual exit code. Console Ctrl+C maps to signal 2 (exit 130), and Ctrl+Break to signal 15 (exit 143). Console close/logoff and forcible termination of the supervisor are not graceful cancellation; use Ctrl+C, Ctrl+Break, or the deadline. Job assignment failure (for example, incompatible enclosing job restrictions) is an error before tests start. Job membership is not a sandbox or a guarantee against privileged external service managers.
