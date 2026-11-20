@@ -467,10 +467,8 @@ fn interrupt_while_reading_selection_terminates_by_default_action() {
         libc::kill(child.id() as i32, libc::SIGINT);
     }
     let status = finish(child).status;
-    assert!(
-        status.signal() == Some(libc::SIGINT) || status.code() == Some(130),
-        "{status:?}"
-    );
+    // Death by the default action, not a handled cancellation (exit 130).
+    assert_eq!(status.signal(), Some(libc::SIGINT), "{status:?}");
 }
 
 /// Without a deadline, the Cargo fallback is a plain pass-through: Cargo stays
@@ -494,9 +492,10 @@ int main(void) {
         // A Cargo.lock without target/nextest-archive selects the fallback.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.lock"), "").unwrap();
+        common::install(&cargo, dir.path(), &["cargo"]);
         let mut cmd = cargo_test_r();
         cmd.current_dir(dir.path())
-            .env("CARGO", &cargo)
+            .env("CARGO", dir.path().join(common::exe("cargo")))
             .arg("run")
             .process_group(0);
         if deadline {

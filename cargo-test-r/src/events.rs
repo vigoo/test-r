@@ -15,7 +15,9 @@ pub struct Events {
     started: Instant,
     pub invocation_id: String,
     indexes: Option<tempfile::TempDir>,
-    stop_recorded: bool,
+    /// Each kind of stop is logged once; a signal can follow a deadline.
+    deadline_recorded: bool,
+    signal_recorded: bool,
 }
 
 impl Events {
@@ -39,7 +41,8 @@ impl Events {
             started,
             invocation_id: id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             indexes,
-            stop_recorded: false,
+            deadline_recorded: false,
+            signal_recorded: false,
         })
     }
 
@@ -96,14 +99,15 @@ impl Events {
     }
 
     pub fn stop(&mut self, reason: StopReason, binary: Option<&str>) {
-        if self.stop_recorded {
+        let (event, signal, recorded) = match reason {
+            StopReason::Deadline => ("deadline-expired", None, &mut self.deadline_recorded),
+            StopReason::Signal(signal) => {
+                ("cancel-requested", Some(signal), &mut self.signal_recorded)
+            }
+        };
+        if std::mem::replace(recorded, true) {
             return;
         }
-        let (event, signal) = match reason {
-            StopReason::Deadline => ("deadline-expired", None),
-            StopReason::Signal(signal) => ("cancel-requested", Some(signal)),
-        };
-        self.stop_recorded = true;
         self.record(event, json!({"binary-id": binary, "signal": signal}));
     }
 

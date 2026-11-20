@@ -156,8 +156,8 @@ mod linux {
                     "snapshot does not support Cargo-message inputs: {} lacks complete mutable target/linked-paths metadata; use nextest binaries metadata instead",
                     input.path
                 ),
-                InputKind::Unknown => bail!(
-                    "snapshot does not support the input kind of {}; it was written by a newer cargo-test-r",
+                InputKind::Other(ref kind) => bail!(
+                    "snapshot does not support input kind {kind:?} of {}; it was written by a newer cargo-test-r",
                     input.path
                 ),
             }
@@ -510,6 +510,22 @@ mod linux {
             ] {
                 assert_eq!(parse(&format!("\t{vdso}\n")).unwrap(), [], "{vdso}");
             }
+        }
+
+        #[test]
+        fn loader_listed_by_path_resolving_elsewhere_is_recorded_under_that_path() {
+            // Fedora and Arch print the interpreter with its resolved location.
+            let text =
+                "\t/lib64/ld-linux-x86-64.so.2 => /usr/lib64/ld-linux-x86-64.so.2 (0x7f00)\n";
+            let resolved = parse_loader_list(text).unwrap();
+            assert_eq!(
+                parse(text).unwrap(),
+                [(
+                    "/lib64/ld-linux-x86-64.so.2".to_owned(),
+                    "/usr/lib64/ld-linux-x86-64.so.2".to_owned()
+                )]
+            );
+            assert_eq!(unresolved(&["ld-linux-x86-64.so.2"], &resolved), None);
         }
 
         #[test]

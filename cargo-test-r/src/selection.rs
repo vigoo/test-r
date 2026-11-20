@@ -82,14 +82,15 @@ pub struct SelectionInput {
     pub kind: InputKind,
 }
 
-/// Only `snapshot` reads inputs. `run` must accept kinds added by newer versions.
+/// Only `snapshot` reads inputs. `run` must accept kinds added by newer
+/// versions, and rewriting a selection must keep their names.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum InputKind {
     NextestBinaries,
     CargoMessages,
-    #[serde(other)]
-    Unknown,
+    #[serde(untagged)]
+    Other(String),
 }
 
 impl InputKind {
@@ -493,4 +494,31 @@ pub fn extract_tar_zstd(archive_file: &Utf8Path, target_root: &Utf8Path) -> anyh
     let decoder = zstd::Decoder::new(File::open(archive_file)?)?;
     Archive::new(decoder).unpack(target_root)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input(json: &str) -> SelectionInput {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn input_kinds_default_to_nextest_and_keep_unknown_names() {
+        assert_eq!(
+            input(r#"{"path": "a", "sha256": "0"}"#).kind,
+            InputKind::NextestBinaries
+        );
+        assert_eq!(
+            input(r#"{"path": "a", "sha256": "0", "kind": "cargo-messages"}"#).kind,
+            InputKind::CargoMessages
+        );
+        let future = input(r#"{"path": "a", "sha256": "0", "kind": "future-thing"}"#);
+        assert_eq!(future.kind, InputKind::Other("future-thing".into()));
+        assert_eq!(
+            serde_json::to_value(&future).unwrap()["kind"],
+            "future-thing"
+        );
+    }
 }

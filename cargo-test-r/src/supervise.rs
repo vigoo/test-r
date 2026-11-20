@@ -106,7 +106,13 @@ impl Supervisor {
                 }
                 self.cleanup();
                 let _ = child.try_wait();
-                return self.stop_reason().unwrap_or(reason).into();
+                // A signal during deadline cleanup replaces the reason; log it
+                // for this binary too (each kind is logged once).
+                let reason = self.stop_reason().unwrap_or(reason);
+                if let Some(events) = events.as_deref_mut() {
+                    events.stop(reason);
+                }
+                return reason.into();
             }
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -412,6 +418,10 @@ mod platform {
 
     /// The runner and every descendant share one Job Object. Only one
     /// `Processes` exists per process: the console handler state is global.
+    /// Nothing is released on drop. Closing the job handle would terminate
+    /// the runner itself (it is a member). The console handler and its wake
+    /// event stay installed until exit, so a late Ctrl+C neither takes the
+    /// default action, losing the exit code, nor signals a closed handle.
     pub struct Processes {
         job: HANDLE,
         wake: HANDLE,
@@ -430,12 +440,14 @@ mod platform {
                     return Err(error.into());
                 }
                 let result = Self { job, wake };
-                SIGNAL.store(0, Ordering::SeqCst);
                 WAKE.store(wake, Ordering::SeqCst);
-                // If the runner is killed forcibly, closing its last job handle
-                // terminates every descendant instead of leaving them running.
+                // When the runner exits, even forcibly, closing its last job
+                // handle terminates every remaining member. A daemon that must
+                // outlive the run (such as a compiler cache server) can still
+                // leave the job by starting with CREATE_BREAKAWAY_FROM_JOB.
                 let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                limits.BasicLimitInformation.LimitFlags =
+                    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
                 if SetInformationJobObject(
                     job,
                     JobObjectExtendedLimitInformation,
@@ -556,17 +568,6 @@ mod platform {
                         }
                     }
                 }
-            }
-        }
-    }
-    impl Drop for Processes {
-        fn drop(&mut self) {
-            unsafe {
-                SetConsoleCtrlHandler(Some(handler), 0);
-                WAKE.store(std::ptr::null_mut(), Ordering::SeqCst);
-                CloseHandle(self.wake);
-                // The job handle stays open until the runner exits: closing the
-                // last handle would terminate the runner itself (it is a member).
             }
         }
     }

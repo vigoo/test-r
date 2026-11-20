@@ -369,6 +369,9 @@ impl RunSubcommand {
                 );
             }
             let (selection, digest) = Selection::read(path)?;
+            if verification.skip_library_hashes && !snapshot::requires_verification(&selection) {
+                bail!("--skip-library-hashes applies only to snapshots; {path} is not one");
+            }
             if snapshot::requires_verification(&selection) || verification.expect_digest.is_some() {
                 snapshot::verify(
                     path,
@@ -414,18 +417,20 @@ fn run(
     };
     match cmd.resolve()? {
         RunInput::Prebuilt { selection, digest } => {
+            // A supervisor that cannot start must not leave a log that looks
+            // like an interrupted run.
+            let mut supervisor =
+                supervise::Supervisor::new(started, options.deadline, options.kill_grace)?;
             let mut events =
                 events::Events::new(cmd.events.as_deref(), cmd.invocation_id, started)?;
             events.started(&digest, &options);
-            let mut supervisor =
-                supervise::Supervisor::new(started, options.deadline, options.kill_grace)?;
             let mut args = cmd.testname;
             args.extend(cmd.test_args);
             let result = run::run(&selection, &args, &options, &mut supervisor, &mut events);
             Ok(events.finish(&result))
         }
         RunInput::Cargo => {
-            println!("No nexttest archive was found, forwarding to cargo test");
+            println!("No nextest archive was found, forwarding to cargo test");
             let cargo_path = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
             let mut args = run::cargo_args(cargo_args);
             args.insert(0, "test".into());

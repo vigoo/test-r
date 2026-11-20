@@ -35,18 +35,36 @@ pub fn cc_fixture(source: &str) -> PathBuf {
     compile("cc", "c", source)
 }
 
+/// Bump when `compile` changes how fixtures are built.
+const CACHE_VERSION: u32 = 1;
+
 /// Compiles `source` at most once: the executable is cached under Cargo's
-/// test temp directory, keyed by compiler and source. Tests copy it (see
+/// test temp directory, keyed by compiler version and source. Tests copy it (see
 /// [`install`]) rather than running the cached file in place.
 fn compile(compiler: &str, extension: &str, source: &str) -> PathBuf {
     static LOCK: Mutex<()> = Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let key = sha256_hex(format!("{compiler}\0{source}").as_bytes());
+    let version = Command::new(compiler)
+        .arg("--version")
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run {compiler}: {e}"))
+        .stdout;
+    let key = sha256_hex(
+        format!(
+            "{CACHE_VERSION}\0{compiler}\0{}\0{source}",
+            String::from_utf8_lossy(&version)
+        )
+        .as_bytes(),
+    );
     let dir = root.join(format!("fixture-{}", &key[..16]));
     let executable = dir.join(exe("fixture"));
     if executable.exists() {
         return executable;
+    }
+    if dir.exists() {
+        // A damaged entry would otherwise block publishing forever.
+        let _ = std::fs::remove_dir_all(&dir);
     }
     // Compile into a private directory and publish it with one rename, so a
     // concurrent test process never sees a partial executable.

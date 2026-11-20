@@ -22,6 +22,13 @@ fn main() {
     if mode == "fail" { std::process::exit(7); }
     if mode == "crash" { std::process::abort(); }
     if mode == "hung" { std::thread::sleep(std::time::Duration::from_secs(30)); }
+    #[cfg(unix)]
+    if mode == "stubborn" {
+        unsafe extern "C" { fn signal(signum: i32, handler: usize) -> usize; }
+        // SIG_IGN for SIGINT and SIGTERM: only KILL ends it.
+        unsafe { signal(2, 1); signal(15, 1); }
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
 }
 "##,
     )
@@ -37,7 +44,7 @@ impl Suite {
         install(
             &fixture(),
             dir.path(),
-            &["ok", "fail", "hung", "crash", "index"],
+            &["ok", "fail", "hung", "crash", "index", "stubborn"],
         );
         Self { dir }
     }
@@ -244,6 +251,46 @@ fn wait_started(suite: &Suite, log: &str) -> u32 {
             .find(|record| record["event"] == "binary-started")
             .map(|record| record["pid"].as_u64().unwrap() as u32)
     })
+}
+
+/// A signal during deadline cleanup is logged too, and decides the outcome.
+#[cfg(unix)]
+#[test]
+fn signal_during_deadline_cleanup_is_recorded_after_deadline() {
+    let suite = Suite::new();
+    let child = suite
+        .command(&["stubborn"])
+        .args(["--deadline", "300ms", "--kill-grace", "3s"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    common::wait_until("deadline-expired record", || {
+        let raw = std::fs::read_to_string(suite.path().join("events.jsonl")).ok()?;
+        raw.contains("\"deadline-expired\"").then_some(())
+    });
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+    let output = common::finish(child);
+    assert_eq!(output.status.code(), Some(130), "{output:?}");
+    let events: Vec<_> = suite
+        .records("events.jsonl")
+        .into_iter()
+        .filter(|r| r["event"] != "binary-started")
+        .map(|r| (r["event"].as_str().unwrap().to_owned(), r["signal"].clone()))
+        .collect();
+    assert_eq!(
+        events,
+        [
+            ("invocation-started", Value::Null),
+            ("deadline-expired", Value::Null),
+            ("cancel-requested", json!(libc::SIGINT)),
+            ("binary-finished", Value::Null),
+            ("invocation-finished", Value::Null),
+        ]
+        .map(|(event, signal)| (event.to_owned(), signal))
+    );
+    let finished = suite.records("events.jsonl").pop().unwrap();
+    assert_eq!(finished["outcome"], "cancelled");
 }
 
 #[cfg(unix)]

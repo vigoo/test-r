@@ -107,8 +107,12 @@ impl RunResult {
     /// turn an otherwise passing run into exit 1.
     pub fn verdict(&self, runner_failed: bool) -> (&'static str, i32) {
         match self.stop_reason {
-            Some(StopReason::Signal(signal)) => ("cancelled", 128 + signal),
-            Some(StopReason::Deadline) => ("timed-out", 124),
+            Some(reason @ StopReason::Signal(_)) => {
+                ("cancelled", BinaryOutcome::from(reason).exit_code())
+            }
+            Some(reason @ StopReason::Deadline) => {
+                ("timed-out", BinaryOutcome::from(reason).exit_code())
+            }
             None => match self
                 .outcomes
                 .iter()
