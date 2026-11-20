@@ -48,8 +48,8 @@
 //! - method index is the trait's 0-based source order, encoded as `u32`.
 //! - args are encoded as the method's parameter list after stripping `self`:
 //!   the 0-arg case sends `()`, the 1-arg case sends the bare value of
-//!   type `T` (NOT `(T,)`, see [`expand`] for the `desert_rust 0.1.7`
-//!   tuple-1 asymmetry that motivates this), and the 2+-arg case sends
+//!   type `T` (NOT `(T,)`, see [`expand`] for the `desert_rust`
+//!   tuple-1 asymmetry (observed in 0.1.7) that motivates this), and the 2+-arg case sends
 //!   a regular tuple `(T1, T2, …)`.
 //! - return values are encoded directly; the unit case uses `()`.
 //! - encoding is `desert_rust` (the same codec used by the IPC framing).
@@ -400,7 +400,7 @@ fn expand(item_trait: ItemTrait) -> TokenStream2 {
         // Wire shape by arity:
         //   - 0 args: encode/decode the unit value `()`.
         //   - 1 arg:  encode/decode the bare value of type `T` (NOT a 1-tuple
-        //             — `desert_rust 0.1.7`'s `BinarySerializer` for `(T,)`
+        //             — `desert_rust`'s (0.1.7) `BinarySerializer` for `(T,)`
         //             does not write a version byte while its matching
         //             `BinaryDeserializer` for `(T,)` always reads one, so a
         //             round-trip through `(T,)` would desync the input

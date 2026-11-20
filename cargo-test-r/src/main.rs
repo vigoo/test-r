@@ -107,8 +107,26 @@ impl SelectionArgs {
         }
     }
 
+    fn explicit(&self) -> bool {
+        !self.binaries_metadata.is_empty() || !self.cargo_messages.is_empty()
+    }
+
+    /// The extracted archive directory and the current workspace root.
+    fn archive(&self) -> anyhow::Result<(Utf8PathBuf, Utf8PathBuf)> {
+        let workspace = workspace_root()?;
+        Ok((
+            selection::archive_target(&workspace, &self.target_dir),
+            workspace,
+        ))
+    }
+
+    /// Whether `select` has prebuilt input: explicit metadata or an extracted archive.
+    fn has_prebuilt_input(&self) -> anyhow::Result<bool> {
+        Ok(self.explicit() || self.archive()?.0.join(ARCHIVE_METADATA).exists())
+    }
+
     fn select(&self) -> anyhow::Result<Selection> {
-        if !self.binaries_metadata.is_empty() || !self.cargo_messages.is_empty() {
+        if self.explicit() {
             return selection::select(
                 &self.binaries_metadata,
                 &self.cargo_messages,
@@ -116,16 +134,17 @@ impl SelectionArgs {
                 &self.filters(),
             );
         }
-        let workspace = workspace_root()?;
-        let archive = selection::archive_target(&workspace, &self.target_dir);
+        let (archive, workspace) = self.archive()?;
         selection::select(
-            &[archive.join("target/nextest/binaries-metadata.json")],
+            &[archive.join(ARCHIVE_METADATA)],
             &[],
             Some((&archive, &workspace)),
             &self.filters(),
         )
     }
 }
+
+const ARCHIVE_METADATA: &str = "target/nextest/binaries-metadata.json";
 
 #[derive(Args, Debug, Clone)]
 struct RunSubcommand {
@@ -283,10 +302,11 @@ fn try_main(started: std::time::Instant) -> anyhow::Result<i32> {
             Ok(0)
         }
         Command::Verify(cmd) => {
-            let selection = Selection::read(&cmd.selection)?;
+            let (selection, digest) = Selection::read(&cmd.selection)?;
             snapshot::verify(
                 &cmd.selection,
                 &selection,
+                &digest,
                 cmd.verification.expect_digest.as_deref(),
                 cmd.verification.skip_library_hashes,
             )?;
@@ -326,100 +346,105 @@ fn reuse_nextest_archive(
     Ok(0)
 }
 
+/// What `run` executes, resolved and checked before any process starts.
+enum RunInput {
+    /// Prebuilt binaries, and the SHA-256 that identifies them in events.
+    Prebuilt {
+        selection: Selection,
+        digest: String,
+    },
+    /// No prebuilt input: forward to `cargo test`.
+    Cargo,
+}
+
+impl RunSubcommand {
+    fn resolve(&self) -> anyhow::Result<RunInput> {
+        let verification = &self.verification;
+        if let Some(path) = &self.selection {
+            validate_supported_test_args(self)?;
+            if !self.selection_args.filters().is_empty() || self.selection_args.target_dir.is_some()
+            {
+                bail!(
+                    "--selection runs exactly the saved selection; package/target filters and --target-dir cannot be combined with it"
+                );
+            }
+            let (selection, digest) = Selection::read(path)?;
+            if snapshot::requires_verification(&selection) || verification.expect_digest.is_some() {
+                snapshot::verify(
+                    path,
+                    &selection,
+                    &digest,
+                    verification.expect_digest.as_deref(),
+                    verification.skip_library_hashes,
+                )?;
+            }
+            return Ok(RunInput::Prebuilt { selection, digest });
+        }
+        if verification.expect_digest.is_some() || verification.skip_library_hashes {
+            bail!("--expect-digest and --skip-library-hashes require --selection");
+        }
+        if self.selection_args.has_prebuilt_input()? {
+            validate_supported_test_args(self)?;
+            let selection = self.selection_args.select()?;
+            let digest = selection::sha256(&serde_json::to_vec(&selection)?);
+            return Ok(RunInput::Prebuilt { selection, digest });
+        }
+        if self.events.is_some() {
+            bail!(
+                "--events is supported only for prebuilt runs; the Cargo fallback cannot write lifecycle events"
+            );
+        }
+        if !self.selection_args.binary_id.is_empty() {
+            bail!("--binary-id requires prebuilt metadata or an extracted archive");
+        }
+        Ok(RunInput::Cargo)
+    }
+}
+
 fn run(
     cmd: RunSubcommand,
     cargo_args: &[String],
     started: std::time::Instant,
 ) -> anyhow::Result<i32> {
-    let mut supervisor = supervise::Supervisor::new(started, cmd.deadline, cmd.kill_grace)?;
-    if cmd.selection.is_none()
-        && (cmd.verification.expect_digest.is_some() || cmd.verification.skip_library_hashes)
-    {
-        bail!("--expect-digest and --skip-library-hashes require --selection");
-    }
-    let selection = if let Some(path) = &cmd.selection {
-        validate_supported_test_args(&cmd)?;
-        if !cmd.selection_args.filters().is_empty() || cmd.selection_args.target_dir.is_some() {
-            bail!(
-                "--selection runs exactly the saved selection; package/target filters and --target-dir cannot be combined with it"
-            );
-        }
-        let selection = Selection::read(path)?;
-        if snapshot::has_hashes(&selection) || cmd.verification.expect_digest.is_some() {
-            snapshot::verify(
-                path,
-                &selection,
-                cmd.verification.expect_digest.as_deref(),
-                cmd.verification.skip_library_hashes,
-            )?;
-        }
-        Some(selection)
-    } else if !cmd.selection_args.binaries_metadata.is_empty()
-        || !cmd.selection_args.cargo_messages.is_empty()
-    {
-        validate_supported_test_args(&cmd)?;
-        Some(cmd.selection_args.select()?)
-    } else {
-        let workspace = workspace_root()?;
-        let archive = selection::archive_target(&workspace, &cmd.selection_args.target_dir);
-        if archive
-            .join("target/nextest/binaries-metadata.json")
-            .exists()
-        {
-            validate_supported_test_args(&cmd)?;
-            Some(cmd.selection_args.select()?)
-        } else {
-            None
-        }
+    let options = run::Options {
+        no_fail_fast: cmd.no_fail_fast,
+        deadline: cmd.deadline,
+        kill_grace: cmd.kill_grace,
+        keep_leftovers: cmd.keep_leftovers,
     };
-    if let Some(selection) = selection {
-        use sha2::{Digest, Sha256};
-        // For saved selections, identify the exact input bytes. For metadata and
-        // archive inputs, identify the resolved selection's compact JSON encoding.
-        let selection_bytes = match &cmd.selection {
-            Some(path) => std::fs::read(path)?,
-            None => serde_json::to_vec(&selection)?,
-        };
-        let mut events = events::Events::new(cmd.events.as_deref(), cmd.invocation_id, started)?;
-        events.record("invocation-started", serde_json::json!({
-            "pid": std::process::id(), "selection-sha256": Sha256::digest(selection_bytes).iter().map(|b| format!("{b:02x}")).collect::<String>(),
-            "no-fail-fast": cmd.no_fail_fast, "deadline-ms": cmd.deadline.map(|d| d.as_millis() as u64),
-            "kill-grace-ms": cmd.kill_grace.as_millis() as u64, "keep-leftovers": cmd.keep_leftovers
-        }));
-        let mut args = cmd.testname;
-        args.extend(cmd.test_args);
-        let result = run::run(
-            &selection,
-            &args,
-            cmd.no_fail_fast,
-            !cmd.keep_leftovers,
-            &mut supervisor,
-            &mut events,
-        );
-        Ok(events.finish(&result))
-    } else {
-        if cmd.events.is_some() {
-            bail!(
-                "--events is supported only for prebuilt runs; the Cargo fallback cannot write lifecycle events"
-            );
+    match cmd.resolve()? {
+        RunInput::Prebuilt { selection, digest } => {
+            let mut events =
+                events::Events::new(cmd.events.as_deref(), cmd.invocation_id, started)?;
+            events.started(&digest, &options);
+            let mut supervisor =
+                supervise::Supervisor::new(started, options.deadline, options.kill_grace)?;
+            let mut args = cmd.testname;
+            args.extend(cmd.test_args);
+            let result = run::run(&selection, &args, &options, &mut supervisor, &mut events);
+            Ok(events.finish(&result))
         }
-        if !cmd.selection_args.binary_id.is_empty() {
-            bail!("--binary-id requires prebuilt metadata or an extracted archive");
+        RunInput::Cargo => {
+            println!("No nexttest archive was found, forwarding to cargo test");
+            let cargo_path = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+            let mut args = run::cargo_args(cargo_args);
+            args.insert(0, "test".into());
+            println!("Executing {} {}", cargo_path, args.join(" "));
+            let mut command = std::process::Command::new(cargo_path);
+            command.args(args);
+            let Some(deadline) = options.deadline else {
+                // Nothing to enforce: run `cargo test` exactly as a direct call would,
+                // in the terminal's foreground process group with default signals.
+                return Ok(run::BinaryOutcome::from(command.status()?).exit_code());
+            };
+            let mut supervisor =
+                supervise::Supervisor::new(started, Some(deadline), options.kill_grace)?;
+            let outcome = supervisor.run(&mut command, false, None);
+            Ok(supervisor
+                .stop_if_requested()
+                .map_or(outcome, run::BinaryOutcome::from)
+                .exit_code())
         }
-        println!("No nexttest archive was found, forwarding to cargo test");
-        let cargo_path = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let mut args = run::cargo_args(cargo_args);
-        args.insert(0, "test".into());
-        println!("Executing {} {}", cargo_path, args.join(" "));
-        let outcome = supervisor.run(
-            std::process::Command::new(cargo_path).args(args),
-            false,
-            None,
-        );
-        Ok(supervisor
-            .stop_if_requested()
-            .unwrap_or(outcome)
-            .exit_code())
     }
 }
 

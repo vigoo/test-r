@@ -1,5 +1,5 @@
 //! Version 1 invocation evidence, independent of harness stdout/stderr.
-use crate::run::{BinaryOutcome, RunResult};
+use crate::run::{BinaryOutcome, Options, RunResult, StopReason};
 use crate::selection::SelectedBinary;
 use anyhow::Context;
 use serde_json::{Value, json};
@@ -80,14 +80,28 @@ impl Events {
         }
     }
 
-    pub fn stop(&mut self, reason: &BinaryOutcome, binary: Option<&str>) {
+    /// `selection_sha256` identifies the binaries: the saved selection's bytes,
+    /// or the resolved selection's compact JSON for metadata and archive input.
+    pub fn started(&mut self, selection_sha256: &str, options: &Options) {
+        self.record(
+            "invocation-started",
+            json!({
+                "pid": std::process::id(), "selection-sha256": selection_sha256,
+                "no-fail-fast": options.no_fail_fast,
+                "deadline-ms": options.deadline.map(|d| d.as_millis() as u64),
+                "kill-grace-ms": options.kill_grace.as_millis() as u64,
+                "keep-leftovers": options.keep_leftovers
+            }),
+        );
+    }
+
+    pub fn stop(&mut self, reason: StopReason, binary: Option<&str>) {
         if self.stop_recorded {
             return;
         }
         let (event, signal) = match reason {
-            BinaryOutcome::TimedOut => ("deadline-expired", None),
-            BinaryOutcome::Cancelled { signal } => ("cancel-requested", Some(*signal)),
-            _ => return,
+            StopReason::Deadline => ("deadline-expired", None),
+            StopReason::Signal(signal) => ("cancel-requested", Some(signal)),
         };
         self.stop_recorded = true;
         self.record(event, json!({"binary-id": binary, "signal": signal}));
@@ -114,34 +128,11 @@ impl Events {
     }
 
     pub fn finish(&mut self, result: &RunResult) -> i32 {
-        if let Some(reason) = &result.stop_reason {
+        if let Some(reason) = result.stop_reason {
             self.stop(reason, None);
         }
-        let code = result.exit_code();
-        let outcome = if code == 0 {
-            "passed"
-        } else if result
-            .outcomes
-            .iter()
-            .chain(result.stop_reason.iter())
-            .any(|o| matches!(o, BinaryOutcome::Cancelled { .. }))
-        {
-            "cancelled"
-        } else if result
-            .outcomes
-            .iter()
-            .chain(result.stop_reason.iter())
-            .any(|o| matches!(o, BinaryOutcome::TimedOut))
-        {
-            "timed-out"
-        } else {
-            "failed"
-        };
-        let mut fields =
-            json!({"outcome": outcome, "exit-code": if code == 0 && self.failed {1} else {code}});
-        if self.failed && code == 0 {
-            fields["outcome"] = json!("failed");
-        }
+        let (outcome, code) = result.verdict(self.failed);
+        let mut fields = json!({"outcome": outcome, "exit-code": code});
         for name in [
             "passed",
             "failed",
@@ -154,7 +145,8 @@ impl Events {
             fields[name] = json!(result.outcomes.iter().filter(|o| o.name() == name).count());
         }
         self.record("invocation-finished", fields);
-        if code == 0 && self.failed { 1 } else { code }
+        // A failed final write still must not report success.
+        result.verdict(self.failed).1
     }
 }
 
@@ -187,22 +179,25 @@ impl BinaryEvents<'_> {
             "cwd": self.binary.working_directory, "args": self.args}),
         );
     }
-    pub fn stop(&mut self, reason: &BinaryOutcome) {
+    pub fn stop(&mut self, reason: StopReason) {
         self.events.stop(reason, Some(&self.binary.binary_id));
     }
     pub fn finished(&mut self, outcome: &BinaryOutcome) {
         if !self.spawned && !matches!(outcome, BinaryOutcome::LaunchFailed { .. }) {
             return;
         }
-        let reports: Option<Vec<String>> = self
+        // Each index line is an object with at least a string `path`. Lines
+        // this version does not understand are skipped, so newer harnesses
+        // can extend the format without hiding the reports older runners see.
+        let reports: Option<Vec<Value>> = self
             .report_index
             .as_ref()
             .and_then(|index| std::fs::read_to_string(index).ok())
-            .and_then(|text| {
+            .map(|text| {
                 text.lines()
-                    .map(serde_json::from_str)
-                    .collect::<Result<_, _>>()
-                    .ok()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .filter(|report| report["path"].is_string())
+                    .collect()
             });
         let (code, signal) = match outcome {
             BinaryOutcome::Passed => (Some(0), None),

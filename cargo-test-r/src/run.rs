@@ -1,6 +1,33 @@
 use crate::selection::Selection;
 use crate::supervise::Supervisor;
 use std::process::{Command, ExitStatus};
+use std::time::Duration;
+
+/// How a prebuilt run admits binaries and cleans up after them.
+pub struct Options {
+    pub no_fail_fast: bool,
+    pub deadline: Option<Duration>,
+    pub kill_grace: Duration,
+    pub keep_leftovers: bool,
+}
+
+/// Why the supervisor stopped admitting and running work. Both reasons are
+/// sticky: once observed, every later check reports one of them, and a signal
+/// replaces an earlier deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    Deadline,
+    Signal(i32),
+}
+
+impl From<StopReason> for BinaryOutcome {
+    fn from(reason: StopReason) -> Self {
+        match reason {
+            StopReason::Deadline => Self::TimedOut,
+            StopReason::Signal(signal) => Self::Cancelled { signal },
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum BinaryOutcome {
@@ -69,40 +96,37 @@ pub struct RunResult {
     /// One outcome per binary, in selection order, including skipped binaries.
     pub outcomes: Vec<BinaryOutcome>,
     pub cleanup_failed: bool,
-    pub stop_reason: Option<BinaryOutcome>,
+    /// Observed after the last binary; covers every binary that was stopped.
+    pub stop_reason: Option<StopReason>,
 }
 
 impl RunResult {
-    pub fn exit_code(&self) -> i32 {
-        if let Some(outcome) = self
-            .outcomes
-            .iter()
-            .chain(self.stop_reason.iter())
-            .find(|o| matches!(o, BinaryOutcome::Cancelled { .. }))
-        {
-            return outcome.exit_code();
+    /// The invocation outcome and exit code. Cancellation wins over the
+    /// deadline, which wins over the first failing binary in selection order.
+    /// Runner failures (cleanup, or event output when `runner_failed`) only
+    /// turn an otherwise passing run into exit 1.
+    pub fn verdict(&self, runner_failed: bool) -> (&'static str, i32) {
+        match self.stop_reason {
+            Some(StopReason::Signal(signal)) => ("cancelled", 128 + signal),
+            Some(StopReason::Deadline) => ("timed-out", 124),
+            None => match self
+                .outcomes
+                .iter()
+                .map(BinaryOutcome::exit_code)
+                .find(|c| *c != 0)
+            {
+                Some(code) => ("failed", code),
+                None if self.cleanup_failed || runner_failed => ("failed", 1),
+                None => ("passed", 0),
+            },
         }
-        if self
-            .outcomes
-            .iter()
-            .chain(self.stop_reason.iter())
-            .any(|o| matches!(o, BinaryOutcome::TimedOut))
-        {
-            return 124;
-        }
-        self.outcomes
-            .iter()
-            .map(BinaryOutcome::exit_code)
-            .find(|code| *code != 0)
-            .unwrap_or(i32::from(self.cleanup_failed))
     }
 }
 
 pub fn run(
     selection: &Selection,
     args: &[String],
-    no_fail_fast: bool,
-    cleanup: bool,
+    options: &Options,
     supervisor: &mut Supervisor,
     events: &mut crate::events::Events,
 ) -> RunResult {
@@ -117,7 +141,7 @@ pub fn run(
         let mut command = Command::new(&binary.executable);
         command.current_dir(&binary.working_directory).args(args);
         observer.configure(&mut command);
-        let outcome = supervisor.run(&mut command, cleanup, Some(&mut observer));
+        let outcome = supervisor.run(&mut command, !options.keep_leftovers, Some(&mut observer));
         observer.finished(&outcome);
         let id = &binary.binary_id;
         match &outcome {
@@ -140,7 +164,7 @@ pub fn run(
         stopped = matches!(
             outcome,
             BinaryOutcome::TimedOut | BinaryOutcome::Cancelled { .. }
-        ) || (!matches!(outcome, BinaryOutcome::Passed) && !no_fail_fast)
+        ) || (!matches!(outcome, BinaryOutcome::Passed) && !options.no_fail_fast)
             || supervisor.cleanup_failed;
         outcomes.push(outcome);
     }

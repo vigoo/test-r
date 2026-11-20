@@ -1,8 +1,31 @@
+mod common;
+
+use common::{cargo_test_r, exe, install};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-#[cfg(unix)]
-use std::time::{Duration, Instant};
+
+// A portable, real executable with distinguishable outcomes. Only `index`
+// writes the report index: the others also exercise older binaries.
+fn fixture() -> PathBuf {
+    common::rustc_fixture(
+        r##"
+fn main() {
+    let mode = std::env::current_exe().unwrap().file_stem().unwrap().to_str().unwrap().to_owned();
+    let identity = ["TEST_R_INVOCATION_ID", "TEST_R_BINARY_ID", "TEST_R_ATTEMPT", "TEST_R_REPORT_INDEX"]
+        .map(|key| std::env::var(key).unwrap_or_default()).join("\n");
+    std::fs::write(format!("ran-{mode}"), identity).unwrap();
+    if mode == "index" {
+        let lines = [r#"{"path":"/a","format":"ctrf"}"#, "not json", r#""/legacy-string""#, r#"{"path":"/b","extra":1}"#];
+        std::fs::write(std::env::var("TEST_R_REPORT_INDEX").unwrap(), lines.join("\n") + "\n").unwrap();
+    }
+    if mode == "fail" { std::process::exit(7); }
+    if mode == "crash" { std::process::abort(); }
+    if mode == "hung" { std::thread::sleep(std::time::Duration::from_secs(30)); }
+}
+"##,
+    )
+}
 
 struct Suite {
     dir: tempfile::TempDir,
@@ -11,79 +34,33 @@ struct Suite {
 impl Suite {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        // A portable, real executable with distinguishable outcomes. The index
-        // file is deliberately not touched: this also exercises older binaries.
-        let source = dir.path().join("fixture.rs");
-        std::fs::write(
-            &source,
-            r#"
-fn main() {
-    let mode = std::env::current_exe().unwrap().file_stem().unwrap().to_str().unwrap().to_owned();
-    let identity = ["TEST_R_INVOCATION_ID", "TEST_R_BINARY_ID", "TEST_R_ATTEMPT", "TEST_R_REPORT_INDEX"]
-        .map(|key| std::env::var(key).unwrap_or_default()).join("\n");
-    std::fs::write(format!("ran-{mode}"), identity).unwrap();
-    if mode == "fail" { std::process::exit(7); }
-    if mode == "crash" { std::process::abort(); }
-    if mode == "hung" { std::thread::sleep(std::time::Duration::from_secs(30)); }
-}
-"#,
-        )
-        .unwrap();
-        assert!(
-            Command::new("rustc")
-                .arg(source)
-                .arg("-o")
-                .arg(
-                    dir.path()
-                        .join(format!("ok{}", std::env::consts::EXE_SUFFIX))
-                )
-                .status()
-                .unwrap()
-                .success()
+        install(
+            &fixture(),
+            dir.path(),
+            &["ok", "fail", "hung", "crash", "index"],
         );
-        for name in ["fail", "hung", "crash"] {
-            std::fs::copy(
-                dir.path()
-                    .join(format!("ok{}", std::env::consts::EXE_SUFFIX)),
-                dir.path()
-                    .join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
-            )
-            .unwrap();
-        }
         Self { dir }
     }
     fn path(&self) -> &Path {
         self.dir.path()
     }
     fn selection(&self, executables: &[PathBuf]) {
-        let binaries: Vec<_> = executables.iter().enumerate().map(|(i, executable)| json!({
-            "binary-id": format!("pkg::{i}"), "package-id": "pkg@0.1.0", "package-name": "pkg",
-            "kind": "test", "name": format!("test-{i}"), "build-variant": "variant",
-            "executable": executable, "working-directory": self.path()
-        })).collect();
-        std::fs::write(
-            self.path().join("selection.json"),
-            json!({
-                "format": "cargo-test-r-selection", "version": 1, "inputs": [], "binaries": binaries
-            })
-            .to_string(),
-        )
-        .unwrap();
+        common::write_json(
+            &self.path().join("selection.json"),
+            &common::selection(executables, self.path()),
+        );
     }
     fn command(&self, names: &[&str]) -> Command {
         self.selection(
             &names
                 .iter()
-                .map(|name| {
-                    self.path()
-                        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
-                })
+                .map(|name| self.path().join(exe(name)))
                 .collect::<Vec<_>>(),
         );
         self.run("events.jsonl")
     }
     fn run(&self, log: &str) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_cargo-test-r"));
+        let mut command = cargo_test_r();
         command.current_dir(self.path()).args([
             "run",
             "--selection",
@@ -176,11 +153,7 @@ fn outcomes_order_identity_and_not_run_counts() {
                 .iter()
                 .all(|r| r["invocation-id"] == "opaque / shard 3")
         );
-        use sha2::{Digest, Sha256};
-        let hash = Sha256::digest(std::fs::read(suite.path().join("selection.json")).unwrap())
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
+        let hash = common::sha256_hex(&std::fs::read(suite.path().join("selection.json")).unwrap());
         assert_eq!(records[0]["selection-sha256"], hash);
         assert_eq!(records[1]["args"], json!(["harness-arg"]));
         assert_eq!(records[1]["cwd"], json!(suite.path()));
@@ -223,7 +196,7 @@ fn existing_log_and_cargo_fallback_are_rejected_without_execution() {
         "retain me"
     );
     std::fs::write(suite.path().join("Cargo.lock"), "").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_cargo-test-r"))
+    let output = cargo_test_r()
         .current_dir(suite.path())
         .args(["run", "--target-dir", "absent", "--events", "new.jsonl"])
         .output()
@@ -264,20 +237,13 @@ fn launch_failure_and_crash_are_distinct() {
 
 #[cfg(unix)]
 fn wait_started(suite: &Suite, log: &str) -> u32 {
-    let start = Instant::now();
-    loop {
-        if let Ok(raw) = std::fs::read_to_string(suite.path().join(log)) {
-            for line in raw.lines() {
-                if let Ok(record) = serde_json::from_str::<Value>(line)
-                    && record["event"] == "binary-started"
-                {
-                    return record["pid"].as_u64().unwrap() as u32;
-                }
-            }
-        }
-        assert!(start.elapsed() < Duration::from_secs(10));
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    common::wait_until("binary-started record", || {
+        let raw = std::fs::read_to_string(suite.path().join(log)).ok()?;
+        raw.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|record| record["event"] == "binary-started")
+            .map(|record| record["pid"].as_u64().unwrap() as u32)
+    })
 }
 
 #[cfg(unix)]
@@ -313,6 +279,20 @@ fn cancellation_and_abrupt_death_do_not_manufacture_completion() {
             assert_eq!(records.last().unwrap()["not-run"], 1);
         }
     }
+}
+
+#[test]
+fn report_index_lines_without_a_string_path_are_skipped() {
+    let suite = Suite::new();
+    let output = suite.command(&["index"]).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let records = suite.records("events.jsonl");
+    assert_eq!(records[2]["event"], "binary-finished");
+    // Objects pass through unchanged, including fields this version ignores.
+    assert_eq!(
+        records[2]["reports"],
+        json!([{"path": "/a", "format": "ctrf"}, {"path": "/b", "extra": 1}])
+    );
 }
 
 #[test]
@@ -366,7 +346,7 @@ fn later_log_write_failure_does_not_stop_tests_or_hide_failure() {
 fn without_events_needs_no_temp_directory_or_report_index() {
     let suite = Suite::new();
     suite.command(&["ok"]);
-    let output = Command::new(env!("CARGO_BIN_EXE_cargo-test-r"))
+    let output = cargo_test_r()
         .current_dir(suite.path())
         .args([
             "run",
@@ -459,7 +439,8 @@ fn real_retry_reports_and_concurrent_invocations_are_attributed() {
             assert_eq!(records[2]["outcome"], "passed");
             let reports = records[2]["reports"].as_array().unwrap();
             assert_eq!(reports.len(), 1);
-            let path = PathBuf::from(reports[0].as_str().unwrap());
+            let path = PathBuf::from(reports[0]["path"].as_str().unwrap());
+            assert_eq!(reports[0], json!({"path": path, "format": "ctrf"}));
             assert!(path.is_absolute());
             assert_eq!(
                 path.parent().unwrap().canonicalize().unwrap(),
@@ -535,7 +516,8 @@ fn real_retry_reports_and_concurrent_invocations_are_attributed() {
                 1,
                 "nested reports must not be attributed to the outer binary: {reports:?}"
             );
-            let outer = Path::new(reports[0].as_str().unwrap());
+            assert_eq!(reports[0]["format"], "ctrf", "{reports:?}");
+            let outer = Path::new(reports[0]["path"].as_str().unwrap());
             assert!(
                 outer
                     .file_name()

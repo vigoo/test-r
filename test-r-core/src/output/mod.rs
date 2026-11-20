@@ -154,7 +154,8 @@ struct LogFile {
 }
 
 impl LogFile {
-    fn new(mut path: PathBuf, merged: bool) -> Self {
+    /// `format` names the report format in `TEST_R_REPORT_INDEX`, such as `ctrf`.
+    fn new(mut path: PathBuf, merged: bool, format: &str) -> Self {
         let cwd = std::env::current_dir().unwrap();
         if path.is_relative() {
             path = cwd.join(path);
@@ -194,10 +195,13 @@ impl LogFile {
         file.seek(SeekFrom::End(0))
             .expect("Failed to seek log file");
         if let Some(index) = REPORT_INDEX.get().and_then(Option::as_ref) {
-            // JSON string lines also preserve paths containing newlines. One
-            // append-mode write keeps concurrent report writers independent.
+            // One JSON object per line; readers skip lines and ignore fields
+            // they do not understand, so new fields can be added. JSON also
+            // preserves paths containing newlines. One append-mode write keeps
+            // concurrent report writers independent.
             let result = (|| -> std::io::Result<()> {
-                let mut line = serde_json::to_vec(&path)?;
+                let mut line =
+                    serde_json::to_vec(&serde_json::json!({"path": path, "format": format}))?;
                 line.push(b'\n');
                 let mut index = std::fs::OpenOptions::new()
                     .create(true)

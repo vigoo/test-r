@@ -1,3 +1,6 @@
+mod common;
+
+use common::{cargo_test_r, stdout_json as success};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -78,7 +81,7 @@ impl Workspace {
     }
 
     fn command(&self, subcommand: &str) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_cargo-test-r"));
+        let mut command = cargo_test_r();
         command
             .current_dir(self.dir.path())
             .env("CARGO", "must-not-invoke-cargo")
@@ -107,15 +110,7 @@ fn test_source(package: &str, label: &str) -> String {
     )
 }
 
-fn success(output: Output) -> Value {
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
-}
-
+// Looser than common::failure: clap usage errors exit with 2.
 fn failure(output: Output, expected: &str) {
     assert!(!output.status.success());
     assert!(
@@ -152,10 +147,10 @@ fn real_cargo_inventory_duplicates_filters_and_saved_execution() {
     );
     assert_eq!(selection["version"], 1);
     assert_eq!(selection["inputs"][0]["kind"], "cargo-messages");
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(std::fs::read(&w.messages).unwrap());
-    let expected: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    assert_eq!(selection["inputs"][0]["sha256"], expected);
+    assert_eq!(
+        selection["inputs"][0]["sha256"],
+        common::sha256_hex(&std::fs::read(&w.messages).unwrap())
+    );
     for binary in selection["binaries"].as_array().unwrap() {
         assert!(Path::new(binary["executable"].as_str().unwrap()).starts_with(&w.target));
         let package = binary["package-name"].as_str().unwrap();

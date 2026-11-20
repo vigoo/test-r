@@ -1,38 +1,15 @@
-use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+mod common;
+
+use common::{failure, sha256_hex as hash, success, write_json as write};
+use serde_json::json;
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Command;
 
 fn command(subcommand: &str, selection: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_cargo-test-r"));
+    let mut command = common::cargo_test_r();
     command.arg(subcommand).arg("--selection").arg(selection);
     command
-}
-
-fn success(output: Output) -> Output {
-    assert!(output.status.success(), "{output:?}");
-    output
-}
-
-fn failure(output: Output, message: &str) {
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains(message),
-        "{output:?}"
-    );
-}
-
-fn write(path: &Path, document: &Value) {
-    fs::write(path, serde_json::to_vec_pretty(document).unwrap()).unwrap();
-}
-
-fn hash(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
 }
 
 #[test]
@@ -51,11 +28,18 @@ fn verification_is_platform_independent_and_never_runs_the_loader() {
     #[cfg(not(unix))]
     let mode = 0;
     let selection = dir.path().join("selection.json");
-    let mut doc = json!({"format":"cargo-test-r-selection", "version":1, "inputs":[], "binaries":[{
-        "binary-id":"fixture", "package-id":"fixture", "package-name":"fixture", "kind":"test",
-        "name":"fixture", "build-variant":"fixture", "executable": executable,
-        "working-directory":dir.path(), "sha256":hash(b"not an executable"), "mode":mode, "dependencies":[]
-    }]});
+    let mut doc = common::selection(&[executable], dir.path());
+    // Before any snapshot field: a plain selection has nothing to verify.
+    write(&selection, &doc);
+    failure(
+        command("verify", &selection).output().unwrap(),
+        "Selection is not a snapshot",
+    );
+    doc["snapshot"] = json!({"platform": "linux-gnu"});
+    let binary = &mut doc["binaries"][0];
+    binary["sha256"] = json!(hash(b"not an executable"));
+    binary["mode"] = json!(mode);
+    binary["dependencies"] = json!([]);
     write(&selection, &doc);
     success(command("verify", &selection).output().unwrap());
     failure(
@@ -92,8 +76,10 @@ fn snapshot_reports_unsupported_platform_without_creating_output() {
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
 mod linux {
     use super::*;
+    use serde_json::Value;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::PathBuf;
+    use std::process::Output;
     use tempfile::TempDir;
 
     struct Fixture {
@@ -146,7 +132,7 @@ mod linux {
             }, "rust-binaries":binaries}),
             );
             let result = success(
-                Command::new(env!("CARGO_BIN_EXE_cargo-test-r"))
+                common::cargo_test_r()
                     .arg("list")
                     .arg("--binaries-metadata")
                     .arg(&self.metadata)
@@ -231,6 +217,7 @@ mod linux {
                 .unwrap(),
         );
         let doc = f.document();
+        assert_eq!(doc["snapshot"], json!({"platform": "linux-gnu"}));
         assert_ne!(
             doc["binaries"][0]["executable"],
             doc["binaries"][1]["executable"]
@@ -280,6 +267,20 @@ mod linux {
             &[],
         );
         f.select(&[("a", &exe), ("b", &exe)], &[]);
+        let mut selection: Value =
+            serde_json::from_slice(&fs::read(&f.selection).unwrap()).unwrap();
+        assert_eq!(selection["inputs"][0]["kind"], "nextest-binaries");
+        // Snapshot reads its inputs, so it must refuse kinds it does not know.
+        selection["inputs"][0]["kind"] = json!("future-thing");
+        write(&f.selection, &selection);
+        failure(f.snapshot(), "written by a newer cargo-test-r");
+        f.assert_unpublished();
+        // Selections written before `kind` existed mean nextest metadata.
+        selection["inputs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("kind");
+        write(&f.selection, &selection);
         success(f.snapshot());
         let original = f.document();
         let digest = format!("sha256:{}", hash(&fs::read(f.manifest()).unwrap()));
@@ -314,6 +315,42 @@ mod linux {
             fs::write(&copied, old_bytes).unwrap();
             fs::set_permissions(&copied, fs::Permissions::from_mode(original["binaries"][1]["mode"].as_u64().unwrap() as u32)).unwrap();
         }
+        // The marker makes a selection a snapshot; an older verifier must not
+        // skip what it does not understand, nor treat a stripped marker as plain.
+        let mut unmarked = original.clone();
+        unmarked.as_object_mut().unwrap().remove("snapshot");
+        let mut unknown_key = original.clone();
+        unknown_key["snapshot"]["loader"] = json!("future");
+        let mut unknown_platform = original.clone();
+        unknown_platform["snapshot"]["platform"] = json!("future-os");
+        for (doc, message) in [
+            (unmarked, "snapshot fields but no \"snapshot\" marker"),
+            (unknown_key, "unknown field `loader`"),
+            (unknown_platform, "Unsupported snapshot platform"),
+        ] {
+            write(&f.manifest(), &doc);
+            for subcommand in ["run", "verify"] {
+                failure(
+                    command(subcommand, &f.manifest()).output().unwrap(),
+                    message,
+                );
+            }
+        }
+        // Without the marker and every per-binary field it is an ordinary selection.
+        let mut plain = original.clone();
+        plain.as_object_mut().unwrap().remove("snapshot");
+        for binary in plain["binaries"].as_array_mut().unwrap() {
+            for field in ["sha256", "mode", "dependencies"] {
+                binary.as_object_mut().unwrap().remove(field);
+            }
+        }
+        write(&f.manifest(), &plain);
+        failure(
+            command("verify", &f.manifest()).output().unwrap(),
+            "Selection is not a snapshot",
+        );
+        let run = success(command("run", &f.manifest()).output().unwrap());
+        assert_eq!(String::from_utf8(run.stdout).unwrap(), "started\nstarted\n");
         // An attacker updating both contents and the recorded hash still fails a pinned digest.
         let mut edited = original.clone();
         let copied = Path::new(edited["binaries"][1]["executable"].as_str().unwrap());

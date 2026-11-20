@@ -1,12 +1,14 @@
+mod common;
+
+use common::{cargo_test_r, exe, failure, stdout_json as success};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
 
-fn fixture(dir: &Path) -> PathBuf {
-    let source = dir.join("fixture.rs");
-    std::fs::write(&source, r#"
+fn fixture() -> PathBuf {
+    common::rustc_fixture(
+        r#"
             fn main() {
                 let exe = std::env::current_exe().unwrap();
                 let name = exe.file_stem().unwrap().to_str().unwrap();
@@ -22,18 +24,8 @@ fn fixture(dir: &Path) -> PathBuf {
                 if name == "fail-later" { std::process::exit(19); }
                 if name == "crash" { std::process::abort(); }
             }
-        "#).unwrap();
-    let exe = dir.join(format!("fixture{}", std::env::consts::EXE_SUFFIX));
-    assert!(
-        Command::new("rustc")
-            .arg(source)
-            .arg("-o")
-            .arg(&exe)
-            .status()
-            .unwrap()
-            .success()
-    );
-    exe
+        "#,
+    )
 }
 
 struct Workspace {
@@ -53,8 +45,10 @@ impl Workspace {
         std::fs::create_dir_all(&decoy).unwrap();
         let target = dir.path().join("redirected-output");
         std::fs::create_dir_all(&target).unwrap();
-        let executable = target.join(format!("ok{}", std::env::consts::EXE_SUFFIX));
-        let fixture = fixture(dir.path());
+        let executable = target.join(exe("ok"));
+        // A private copy: tests pass it to the runner and copy it further.
+        let fixture = dir.path().join(exe("fixture"));
+        std::fs::copy(self::fixture(), &fixture).unwrap();
         std::fs::copy(&fixture, &executable).unwrap();
         let mut binaries = serde_json::Map::new();
         for (id, name, kind, package, path) in [
@@ -91,7 +85,7 @@ impl Workspace {
     }
 
     fn command(&self, subcommand: &str) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cargo-test-r"));
+        let mut cmd = cargo_test_r();
         cmd.current_dir(self.dir.path())
             .env("CARGO", self.dir.path().join("no-cargo"))
             .env("TRACE", self.dir.path().join("trace"))
@@ -110,24 +104,6 @@ impl Workspace {
     }
 }
 
-fn success(output: Output) -> Value {
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
-}
-
-fn failure(output: Output, message: &str) {
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains(message),
-        "{output:?}"
-    );
-}
-
 fn ids(selection: &Value) -> Vec<&str> {
     selection["binaries"]
         .as_array()
@@ -143,6 +119,7 @@ fn inventory_filters_identity_order_and_no_execution() {
     let selection = success(w.list(&[]));
     assert_eq!(selection["format"], "cargo-test-r-selection");
     assert_eq!(selection["version"], 1);
+    assert_eq!(selection["inputs"][0]["kind"], "nextest-binaries");
     assert_eq!(
         ids(&selection),
         [
@@ -155,10 +132,7 @@ fn inventory_filters_identity_order_and_no_execution() {
     );
     assert_eq!(
         selection["inputs"][0]["sha256"],
-        Sha256::digest(std::fs::read(&w.metadata).unwrap())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
+        common::sha256_hex(&std::fs::read(&w.metadata).unwrap())
     );
     assert_eq!(selection["binaries"][0]["package-name"], "alpha");
     assert_eq!(
@@ -349,10 +323,7 @@ fn saved_selection_runs_exactly_it_in_order_with_arguments_and_fail_fast() {
             .unwrap(),
         "runs exactly",
     );
-    let fail = w
-        .dir
-        .path()
-        .join(format!("fail{}", std::env::consts::EXE_SUFFIX));
+    let fail = w.dir.path().join(exe("fail"));
     std::fs::copy(&w.fixture, &fail).unwrap();
     w.document["rust-binaries"]["alpha"]["binary-path"] = json!(fail);
     w.save();
@@ -411,6 +382,19 @@ fn selection_format_and_artifacts_are_validated_before_running() {
         );
         selection[field] = old;
     }
+    // Only snapshot reads inputs, so run accepts kinds from newer versions.
+    selection["inputs"][0]["kind"] = json!("future-thing");
+    std::fs::write(&path, selection.to_string()).unwrap();
+    let output = w
+        .command("run")
+        .arg("--selection")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let trace = w.dir.path().join("trace");
+    assert_eq!(std::fs::read_to_string(&trace).unwrap().lines().count(), 5);
+    std::fs::remove_file(trace).unwrap();
     selection["binaries"][4]["executable"] = json!(w.dir.path().join("missing"));
     std::fs::write(&path, selection.to_string()).unwrap();
     failure(
@@ -446,8 +430,7 @@ fn extracted_archive_relocates_redirected_target_and_workspace() {
                 .as_str()
                 .trim_end_matches('/')
         ));
-        binary["binary-path"] =
-            json!(old_target.join(format!("debug/deps/ok{}", std::env::consts::EXE_SUFFIX)));
+        binary["binary-path"] = json!(old_target.join(format!("debug/deps/{}", exe("ok"))));
     }
     document["rust-build-meta"]["target-directory"] = json!(old_target);
     std::fs::write(meta.join("binaries-metadata.json"), document.to_string()).unwrap();
@@ -525,7 +508,7 @@ fn outcome_run(input: Input, names: [&str; 3], no_fail_fast: bool, code: i32) ->
         .unwrap()
         .retain(|id, _| ids.contains(&id.as_str()));
     for (id, name) in ids.iter().zip(names) {
-        let exe = target.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        let exe = target.join(exe(name));
         if name == "launch" {
             // Pass artifact validation but let the OS reject the image at spawn.
             #[cfg(windows)]
@@ -561,7 +544,7 @@ fn outcome_run(input: Input, names: [&str; 3], no_fail_fast: bool, code: i32) ->
             let meta = archive.join("target/nextest");
             std::fs::create_dir_all(&meta).unwrap();
             for name in names {
-                let filename = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+                let filename = exe(name);
                 std::fs::copy(
                     target.join(&filename),
                     archive.join("target").join(filename),
@@ -675,10 +658,7 @@ fn prebuilt_crash_reports_signal_and_continues_only_when_requested() {
 fn cargo_fallback_forwards_no_fail_fast_and_preserves_exit_code() {
     let w = Workspace::new();
     std::fs::write(w.dir.path().join("Cargo.lock"), "").unwrap();
-    let cargo = w
-        .dir
-        .path()
-        .join(format!("fail{}", std::env::consts::EXE_SUFFIX));
+    let cargo = w.dir.path().join(exe("fail"));
     std::fs::copy(&w.fixture, &cargo).unwrap();
     let output = w
         .command("run")

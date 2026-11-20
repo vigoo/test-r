@@ -58,20 +58,44 @@ pub struct Selection {
     pub version: u32,
     pub inputs: Vec<SelectionInput>,
     pub binaries: Vec<SelectedBinary>,
+    /// Present only in snapshots. Its presence, not the per-binary fields,
+    /// decides whether a selection must be verified before running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<SnapshotInfo>,
+}
+
+/// Unknown keys are rejected: an older verifier must not silently skip a
+/// newer integrity check.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct SnapshotInfo {
+    /// Which loader contract was applied, such as `linux-gnu`.
+    pub platform: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SelectionInput {
     pub path: Utf8PathBuf,
     pub sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<InputKind>,
+    /// Selections written before `kind` existed meant nextest metadata.
+    #[serde(default = "InputKind::nextest")]
+    pub kind: InputKind,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// Only `snapshot` reads inputs. `run` must accept kinds added by newer versions.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum InputKind {
+    NextestBinaries,
     CargoMessages,
+    #[serde(other)]
+    Unknown,
+}
+
+impl InputKind {
+    fn nextest() -> Self {
+        Self::NextestBinaries
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,7 +124,8 @@ pub struct Dependency {
 }
 
 impl Selection {
-    pub fn read(path: &Utf8Path) -> anyhow::Result<Self> {
+    /// Returns the selection and the SHA-256 of exactly the bytes it was parsed from.
+    pub fn read(path: &Utf8Path) -> anyhow::Result<(Self, String)> {
         let raw =
             std::fs::read(path).with_context(|| format!("Failed to read selection {path}"))?;
         let mut selection: Self =
@@ -110,7 +135,7 @@ impl Selection {
         }
         selection.binaries = merge(selection.binaries)?;
         selection.validate()?;
-        Ok(selection)
+        Ok((selection, sha256(&raw)))
     }
 
     fn validate(&self) -> anyhow::Result<()> {
@@ -191,7 +216,7 @@ fn merge(binaries: Vec<SelectedBinary>) -> anyhow::Result<Vec<SelectedBinary>> {
     Ok(merged.into_values().collect())
 }
 
-fn sha256(bytes: &[u8]) -> String {
+pub fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -215,7 +240,7 @@ pub fn select(
         inputs.push(SelectionInput {
             path: path.clone(),
             sha256: sha256(&raw),
-            kind: None,
+            kind: InputKind::NextestBinaries,
         });
         let original_workspace = if let Some((root, _)) = archive {
             let cargo_path = root.join("target/nextest/cargo-metadata.json");
@@ -304,7 +329,7 @@ pub fn select(
         inputs.push(SelectionInput {
             path: path.clone(),
             sha256: sha256(&raw),
-            kind: Some(InputKind::CargoMessages),
+            kind: InputKind::CargoMessages,
         });
     }
     let selection = Selection {
@@ -312,6 +337,7 @@ pub fn select(
         version: 1,
         inputs,
         binaries: merge(binaries)?,
+        snapshot: None,
     };
     selection.validate()?;
     Ok(selection)

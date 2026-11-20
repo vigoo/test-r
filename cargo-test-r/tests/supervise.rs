@@ -1,19 +1,16 @@
-use serde_json::json;
-use std::path::Path;
+mod common;
+
+use common::{cargo_test_r, exe, finish, install};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
-struct Suite {
-    dir: tempfile::TempDir,
-}
-
-impl Suite {
-    fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        #[cfg(unix)]
-        {
-            let source = dir.path().join("fixture.c");
-            std::fs::write(&source, r#"
+// Each copy selects its behaviour from its file name.
+#[cfg(unix)]
+fn fixture() -> PathBuf {
+    common::cc_fixture(
+        r#"
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -46,21 +43,14 @@ int main(int argc, char **argv) {
     ready = fopen(name, "w"); fprintf(ready, "%d %d", getpid(), ntohs(addr.sin_port)); fclose(ready);
     while (1) pause();
 }
-"#).unwrap();
-            assert!(
-                Command::new("cc")
-                    .arg(source)
-                    .arg("-o")
-                    .arg(dir.path().join("fixture"))
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        }
-        #[cfg(windows)]
-        {
-            let source = dir.path().join("fixture.rs");
-            std::fs::write(&source, r#"
+"#,
+    )
+}
+
+#[cfg(windows)]
+fn fixture() -> PathBuf {
+    common::rustc_fixture(
+        r#"
 fn main() {
     let exe = std::env::current_exe().unwrap();
     let mode = exe.file_stem().unwrap().to_str().unwrap();
@@ -75,56 +65,46 @@ fn main() {
     std::fs::write("ready", format!("{} {}", std::process::id(), port.local_addr().unwrap().port())).unwrap();
     loop { std::thread::sleep(std::time::Duration::from_secs(1)); }
 }
-"#).unwrap();
-            assert!(
-                Command::new("rustc")
-                    .arg(source)
-                    .arg("-o")
-                    .arg(dir.path().join("fixture.exe"))
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        }
-        for name in [
-            "ok",
-            "fail",
-            "slow",
-            "hung",
-            "orphan",
-            "escape",
-            "resistant",
-            "forward",
-        ] {
-            std::fs::copy(
-                dir.path()
-                    .join(format!("fixture{}", std::env::consts::EXE_SUFFIX)),
-                dir.path()
-                    .join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
-            )
-            .unwrap();
-        }
+"#,
+    )
+}
+
+struct Suite {
+    dir: tempfile::TempDir,
+}
+
+impl Suite {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        install(
+            &fixture(),
+            dir.path(),
+            &[
+                "ok",
+                "fail",
+                "slow",
+                "hung",
+                "orphan",
+                "escape",
+                "resistant",
+                "forward",
+            ],
+        );
         Self { dir }
     }
     fn path(&self) -> &Path {
         self.dir.path()
     }
     fn command(&self, names: &[&str]) -> Command {
-        let binaries: Vec<_> = names.iter().enumerate().map(|(i, name)| json!({
-            "binary-id": format!("pkg::{i}"), "package-id": "pkg@0.1.0", "package-name": "pkg",
-            "kind": "test", "name": name, "build-variant": "variant",
-            "executable": self.path().join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
-            "working-directory": self.path()
-        })).collect();
-        std::fs::write(
-            self.path().join("selection.json"),
-            json!({
-                "format": "cargo-test-r-selection", "version": 1, "inputs": [], "binaries": binaries
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cargo-test-r"));
+        let executables: Vec<_> = names
+            .iter()
+            .map(|name| self.path().join(exe(name)))
+            .collect();
+        common::write_json(
+            &self.path().join("selection.json"),
+            &common::selection(&executables, self.path()),
+        );
+        let mut cmd = cargo_test_r();
         cmd.current_dir(self.path())
             .args(["run", "--selection", "selection.json"]);
         cmd
@@ -132,21 +112,13 @@ fn main() {
     fn ready(&self) -> (u32, u16) {
         self.ready_file("ready")
     }
+    /// The pid and listening port a fixture publishes once it is running.
     fn ready_file(&self, file: &str) -> (u32, u16) {
-        let start = Instant::now();
-        loop {
-            if let Ok(text) = std::fs::read_to_string(self.path().join(file)) {
-                let parts: Vec<_> = text.split_whitespace().collect();
-                if parts.len() == 2 {
-                    return (parts[0].parse().unwrap(), parts[1].parse().unwrap());
-                }
-            }
-            assert!(
-                start.elapsed() < Duration::from_secs(10),
-                "fixture never became ready"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        let text = common::wait_for_file(&self.path().join(file), |text| {
+            text.split_whitespace().count() == 2
+        });
+        let (pid, port) = text.split_once(' ').unwrap();
+        (pid.parse().unwrap(), port.parse().unwrap())
     }
     fn assert_port_closed(&self) {
         let (_, port) = self.ready();
@@ -154,31 +126,6 @@ fn main() {
             std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_ok(),
             "descendant retained port {port}"
         );
-    }
-}
-
-// The receiving thread remains bounded even if a descendant retains a pipe.
-fn finish(child: Child) -> std::process::Output {
-    let pid = child.id();
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    std::thread::spawn(move || {
-        let _ = sender.send(child.wait_with_output());
-    });
-    match receiver.recv_timeout(Duration::from_secs(15)) {
-        Ok(output) => output.unwrap(),
-        Err(error) => {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid as i32, libc::SIGKILL);
-            }
-            #[cfg(windows)]
-            {
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/T", "/PID", &pid.to_string()])
-                    .status();
-            }
-            panic!("supervisor or inherited pipe exceeded watchdog: {error}");
-        }
     }
 }
 
@@ -402,22 +349,43 @@ fn one_budget_spans_binaries_and_timeout_overrides_earlier_failure() {
     let suite = Suite::new();
     // `slow` takes 1s and the budget is 1.5s, leaving `hung` a wide margin to
     // start even on slow CI runners. A per-binary budget would instead let
-    // `hung` run for a full 1.5s after it starts, ending near 2.5s.
-    let started = Instant::now();
-    let output = finish(spawn(
-        suite.command(&["fail", "slow", "hung", "ok"]).args([
+    // `hung` run for a full 1.5s after it starts.
+    let output = finish(spawn(suite.command(&["fail", "slow", "hung", "ok"]).args(
+        [
             "--deadline",
             "1500ms",
             "--no-fail-fast",
-        ]),
-    ));
-    let elapsed = started.elapsed();
+            "--events",
+            "events.jsonl",
+        ],
+    )));
     assert_eq!(output.status.code(), Some(124), "{output:?}");
     assert_eq!(
         std::fs::read_to_string(suite.path().join("trace")).unwrap(),
         "fail\nslow\nhung\n"
     );
-    assert!(elapsed < Duration::from_millis(2300), "{elapsed:?}");
+    // Both times come from the runner's monotonic invocation clock, so a slow
+    // machine delays them together instead of failing a wall-clock bound.
+    let records: Vec<serde_json::Value> =
+        std::fs::read_to_string(suite.path().join("events.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+    let elapsed = |event: &str, binary: &str| {
+        let record = records
+            .iter()
+            .find(|r| r["event"] == event && r["binary-id"] == binary)
+            .unwrap_or_else(|| panic!("no {event} for {binary}: {records:?}"));
+        record["elapsed-ms"].as_u64().unwrap()
+    };
+    let hung_started = elapsed("binary-started", "pkg::2");
+    let expired = elapsed("deadline-expired", "pkg::2");
+    assert!(expired >= 1500, "expired early at {expired}ms");
+    assert!(
+        expired < hung_started + 1500,
+        "budget restarted for hung (started {hung_started}ms, expired {expired}ms)"
+    );
 }
 
 #[cfg(unix)]
@@ -440,7 +408,7 @@ fn cargo_fallback_deadline_includes_build_and_strips_only_runner_flags() {
     )
     .unwrap();
     std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cargo-test-r"));
+    let mut cmd = cargo_test_r();
     cmd.current_dir(suite.path()).env("CARGO", cargo).args([
         "run",
         "--deadline=500ms",
@@ -458,4 +426,91 @@ fn cargo_fallback_deadline_includes_build_and_strips_only_runner_flags() {
         "test\n--no-fail-fast\n--\n--deadline\nharness-value\n"
     );
     suite.assert_port_closed();
+}
+
+/// Signal handlers are installed only once processes are about to run, so an
+/// interrupt while the selection is still being read takes the default action.
+#[cfg(unix)]
+#[test]
+fn interrupt_while_reading_selection_terminates_by_default_action() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::process::ExitStatusExt;
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("selection.json");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let mut cmd = cargo_test_r();
+    cmd.current_dir(dir.path())
+        .args(["run", "--selection", "selection.json"]);
+    // The test runner may inherit an ignored SIGINT (a background job, for
+    // example). Restore the disposition a terminal-started runner has.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+    let child = spawn(&mut cmd);
+    // A non-blocking writer can open a FIFO only once a reader has it open:
+    // success proves the runner is reading the selection. Holding the writer
+    // open without writing keeps that read blocked.
+    let _writer = common::wait_until("runner to open the selection FIFO", || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .ok()
+    });
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGINT);
+    }
+    let status = finish(child).status;
+    assert!(
+        status.signal() == Some(libc::SIGINT) || status.code() == Some(130),
+        "{status:?}"
+    );
+}
+
+/// Without a deadline, the Cargo fallback is a plain pass-through: Cargo stays
+/// in the runner's process group (the terminal's foreground group). With one,
+/// it is supervised in a group of its own.
+#[cfg(unix)]
+#[test]
+fn cargo_fallback_runs_in_runner_group_unless_supervised() {
+    use std::os::unix::process::CommandExt;
+    let cargo = common::cc_fixture(
+        r#"
+#include <stdio.h>
+#include <unistd.h>
+int main(void) {
+    FILE *file = fopen("pgid", "w"); fprintf(file, "%d", (int)getpgrp()); fclose(file);
+    return 0;
+}
+"#,
+    );
+    for deadline in [false, true] {
+        // A Cargo.lock without target/nextest-archive selects the fallback.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.lock"), "").unwrap();
+        let mut cmd = cargo_test_r();
+        cmd.current_dir(dir.path())
+            .env("CARGO", &cargo)
+            .arg("run")
+            .process_group(0);
+        if deadline {
+            cmd.args(["--deadline", "30s"]);
+        }
+        let child = spawn(&mut cmd);
+        let runner_group = child.id().to_string();
+        let output = finish(child);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let cargo_group = std::fs::read_to_string(dir.path().join("pgid")).unwrap();
+        if deadline {
+            assert_ne!(cargo_group, runner_group);
+        } else {
+            assert_eq!(cargo_group, runner_group);
+        }
+    }
 }

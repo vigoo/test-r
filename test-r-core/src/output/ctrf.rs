@@ -18,7 +18,7 @@ pub(crate) struct Ctrf {
 impl Ctrf {
     pub fn new(show_output: bool, logfile_path: Option<PathBuf>) -> Self {
         let target = match logfile_path {
-            Some(path) => StdoutOrLogFile::LogFile(LogFile::new(path, false)),
+            Some(path) => StdoutOrLogFile::LogFile(LogFile::new(path, false, "ctrf")),
             None => StdoutOrLogFile::stdout(),
         };
         Self {
