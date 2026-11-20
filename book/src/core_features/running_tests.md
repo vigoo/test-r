@@ -124,7 +124,7 @@ cargo test-r list --binaries-metadata binaries.json -p my-crate --test integrati
 cargo test-r run --selection selection.json -- --retry-failed 2
 ```
 
-Both `list` and `run --binaries-metadata` support these filters:
+Both `list` and prebuilt `run` support these filters:
 
 - `-p`/`--package` and `--exclude` match **Cargo package names**, not directory names. Both accept globs and can be repeated. Excludes apply even without `-p`.
 - `--lib` selects library (including proc-macro) unit tests; `--bins` selects binary unit tests.
@@ -133,6 +133,26 @@ Both `list` and `run --binaries-metadata` support these filters:
 - With no target filters, all entries in the metadata are eligible.
 
 Repeat `--binaries-metadata <PATH>` to combine metadata files. Identical entries for the same binary id are merged. Conflicting entries (including different executable paths or build variants) fail with both candidates in the diagnostic, rather than picking one.
+
+### Reading Cargo build messages
+
+Instead of nextest metadata, both `list` and `run` accept repeatable `--cargo-messages <PATH>` inputs. Build separately, capturing Cargo's JSON Lines stdout (not its human-readable stderr):
+
+```sh
+cargo test --no-run --message-format json --target-dir /ci/build-output > cargo-messages.jsonl
+cargo test-r list --cargo-messages cargo-messages.jsonl --tests > selection.json
+cargo test-r run --selection selection.json
+# Or select and run directly:
+cargo test-r run --cargo-messages cargo-messages.jsonl -p my-crate --test integration
+```
+
+`cargo build --tests --message-format json` output works too. Only `compiler-artifact` records with `profile.test == true` and a non-null `executable` are eligible. Other JSON messages are ignored; every line must be valid JSON, even if it is not an artifact or would be filtered out. Malformed lines fail with the input path and line number. An empty selection, missing artifact, or non-executable artifact fails before anything runs.
+
+Identity comes exclusively from the package id and target kind/name, never filenames or modification times. Library and proc-macro unit tests use `pkg`, integration targets use `pkg::name`, and other executable targets use `pkg::kind/name` (for example `pkg::bin/tool`). Package names come from the package id; working directories come from the parent of the absolute `manifest_path`. Thus different packages with same-named targets remain distinct even when their source directories have the same name.
+
+Cargo `build-variant` is the first 12 lowercase hex digits of SHA-256 over compact JSON `[profile, sorted-deduplicated-features, target_triple]`. The entire profile object is retained, with sorted object keys. Standard Cargo JSON does not report a target triple; that component is null unless a producer supplies the optional `target_triple` string. Different executable paths still conflict even if profile/features agree, so redirected or cross-target builds cannot silently replace each other. Repeated artifacts merge regardless of Cargo's `fresh` field. Feature/profile differences conflict even at the same executable path.
+
+Cargo and nextest inputs may be mixed and use the same merge rules. Their variant metadata has different schemas, so overlapping binary ids generally conflict even if their executable paths agree; use disjoint selections or one source per binary. No input causes Cargo to be invoked by `list` or prebuilt `run`.
 
 ### Selection JSON version 1
 
@@ -156,11 +176,11 @@ The top-level fields, in output order, are `format`, `version`, `inputs`, `binar
 }
 ```
 
-Inputs remain in command-line order; each hash is SHA-256 of the exact metadata bytes read. Binaries are sorted by `binary-id` in byte order, which is also their run order. Binary ids use nextest's stable scheme: `pkg` for libraries, `pkg::name` for integration tests, and `pkg::bin/name` for binary unit tests. Each binary has the fields shown above in that order. Paths to executables and working directories are absolute. Package names come from `#name@version` in the Cargo package id, or the last path component for older `…/name#version` ids.
+Inputs retain the order within each flag, with nextest inputs before Cargo-message inputs when mixed; each hash is SHA-256 of the exact input bytes read. Cargo-message inputs add `"kind": "cargo-messages"` after `sha256`; an omitted kind means nextest metadata, preserving existing version-1 selections. Binaries are sorted by `binary-id` in byte order, which is also their run order. Binary ids use nextest's stable scheme: `pkg` for libraries, `pkg::name` for integration tests, and `pkg::bin/name` for binary unit tests. Each binary has the fields shown above in that order. Paths to executables and working directories are absolute. Package names come from `#name@version` in the Cargo package id, or the last path component for older `…/name#version` ids.
 
 `build-variant` is the first 12 lowercase hex digits of SHA-256 over compact JSON containing, in order, the original target directory, nextest's `platforms`, legacy `target-platforms` and `target-platform`, sorted base output directories (profiles), and the binary's host/target build platform. It identifies the build metadata, not the executable contents. Nextest binaries-only metadata does not enumerate feature sets; different executables for one id are rejected even when these build metadata fields agree.
 
-`run --selection` validates the format/version and all artifacts before starting anything. It runs exactly the saved binaries, in binary-id order, without reopening input metadata or invoking Cargo. Package/target filters, `--target-dir` and `--binaries-metadata` cannot be combined with `--selection`; make a new selection instead. Test name filters and arguments after `--` are still forwarded to every selected binary. A selection does not freeze executable contents: rebuilding can replace them.
+`run --selection` validates the format/version and all artifacts before starting anything. It runs exactly the saved binaries, in binary-id order, without reopening input metadata or invoking Cargo. Package/target filters, `--target-dir`, `--binaries-metadata` and `--cargo-messages` cannot be combined with `--selection`; make a new selection instead. Test name filters and arguments after `--` are still forwarded to every selected binary. A selection does not freeze executable contents: rebuilding can replace them.
 
 ### Extracted nextest archives and errors
 
@@ -205,6 +225,8 @@ cargo test-r run --selection /ci/snap/4711/selection.json --expect-digest sha256
 ```
 
 The output directory must not exist, and its parent must exist. Snapshot creation requires the original nextest metadata in `inputs`, unchanged (its recorded SHA-256 is checked), to identify mutable Cargo target directories and build-script `linked-paths`. Relative input metadata paths are resolved from the current directory, as with `list`. After publication, neither `verify` nor `run` needs that metadata or the original executables.
+
+Snapshot creation rejects selections containing any Cargo-message input, including mixed inputs, with an explicit unsupported-input error. Cargo streams do not reliably describe the complete mutable target directory and linked-library roots (for example external build-script link search paths). Guessing these from executable filenames would weaken the shared-library contract. Use nextest binaries metadata to create a snapshot; ordinary `run --selection` fully supports Cargo-message selections without snapshot hashes.
 
 Snapshot creation uses a private temporary sibling directory. Each new regular file under `bin/` has a sanitized, length-limited binary id plus the full SHA-256 of that id as its name, so colliding basenames and sanitized ids remain distinct. Copies are never hard links or symlinks. Source and copy hashes must agree; executable permissions are preserved. Files and directories are synced before an atomic rename publishes the complete snapshot, using no-overwrite semantics where supported (see the trust assumptions below); the parent directory is synced afterwards. An error cleans up the temporary directory instead of publishing a partial selection. Working directories remain the original package directories; snapshots do not copy resources or make tests hermetic.
 

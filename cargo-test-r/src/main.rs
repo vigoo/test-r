@@ -64,6 +64,9 @@ struct SelectionArgs {
     /// Read existing nextest binaries-only JSON (repeatable).
     #[arg(long, value_name = "PATH")]
     binaries_metadata: Vec<Utf8PathBuf>,
+    /// Read Cargo JSON messages from an existing build (repeatable).
+    #[arg(long, value_name = "PATH")]
+    cargo_messages: Vec<Utf8PathBuf>,
     /// Select Cargo package names (globs supported).
     #[arg(short, long)]
     package: Vec<String>,
@@ -104,13 +107,19 @@ impl SelectionArgs {
     }
 
     fn select(&self) -> anyhow::Result<Selection> {
-        if !self.binaries_metadata.is_empty() {
-            return selection::select(&self.binaries_metadata, None, &self.filters());
+        if !self.binaries_metadata.is_empty() || !self.cargo_messages.is_empty() {
+            return selection::select(
+                &self.binaries_metadata,
+                &self.cargo_messages,
+                None,
+                &self.filters(),
+            );
         }
         let workspace = workspace_root()?;
         let archive = selection::archive_target(&workspace, &self.target_dir);
         selection::select(
             &[archive.join("target/nextest/binaries-metadata.json")],
+            &[],
             Some((&archive, &workspace)),
             &self.filters(),
         )
@@ -122,7 +131,7 @@ struct RunSubcommand {
     #[command(flatten)]
     selection_args: SelectionArgs,
     /// Run exactly the binaries in a selection file, without invoking Cargo.
-    #[arg(long, value_name = "PATH", conflicts_with = "binaries_metadata")]
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["binaries_metadata", "cargo_messages"])]
     selection: Option<Utf8PathBuf>,
     #[command(flatten)]
     verification: VerificationArgs,
@@ -338,7 +347,9 @@ fn run(
             )?;
         }
         Some(selection)
-    } else if !cmd.selection_args.binaries_metadata.is_empty() {
+    } else if !cmd.selection_args.binaries_metadata.is_empty()
+        || !cmd.selection_args.cargo_messages.is_empty()
+    {
         validate_supported_test_args(&cmd)?;
         Some(cmd.selection_args.select()?)
     } else {

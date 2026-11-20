@@ -136,6 +136,12 @@ mod linux {
             if hash(&input.path)? != input.sha256 {
                 bail!("Metadata digest mismatch: {}", input.path);
             }
+            if matches!(input.kind, Some(crate::selection::InputKind::CargoMessages)) {
+                bail!(
+                    "snapshot does not support Cargo-message inputs: {} lacks complete mutable target/linked-paths metadata; use nextest binaries metadata instead",
+                    input.path
+                );
+            }
             let metadata: BinaryListSummary = serde_json::from_slice(&fs::read(&input.path)?)?;
             let target = metadata.rust_build_meta.target_directory;
             if !target.is_absolute() {

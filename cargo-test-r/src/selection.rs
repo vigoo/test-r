@@ -64,6 +64,14 @@ pub struct Selection {
 pub struct SelectionInput {
     pub path: Utf8PathBuf,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<InputKind>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputKind {
+    CargoMessages,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +201,7 @@ fn sha256(bytes: &[u8]) -> String {
 /// Read metadata directly, or relocate an extracted archive into the current workspace.
 pub fn select(
     paths: &[Utf8PathBuf],
+    cargo_messages: &[Utf8PathBuf],
     archive: Option<(&Utf8Path, &Utf8Path)>,
     filters: &Filters,
 ) -> anyhow::Result<Selection> {
@@ -206,6 +215,7 @@ pub fn select(
         inputs.push(SelectionInput {
             path: path.clone(),
             sha256: sha256(&raw),
+            kind: None,
         });
         let original_workspace = if let Some((root, _)) = archive {
             let cargo_path = root.join("target/nextest/cargo-metadata.json");
@@ -287,6 +297,16 @@ pub fn select(
             binaries.push(selected);
         }
     }
+    for path in cargo_messages {
+        let raw =
+            std::fs::read(path).with_context(|| format!("Failed to read Cargo messages {path}"))?;
+        binaries.extend(read_cargo_messages(&raw, path, filters)?);
+        inputs.push(SelectionInput {
+            path: path.clone(),
+            sha256: sha256(&raw),
+            kind: Some(InputKind::CargoMessages),
+        });
+    }
     let selection = Selection {
         format: "cargo-test-r-selection".into(),
         version: 1,
@@ -295,6 +315,120 @@ pub fn select(
     };
     selection.validate()?;
     Ok(selection)
+}
+
+#[derive(Deserialize)]
+struct CargoArtifact {
+    package_id: String,
+    manifest_path: Utf8PathBuf,
+    target: CargoTarget,
+    profile: serde_json::Value,
+    features: Vec<String>,
+    executable: Option<Utf8PathBuf>,
+    // Standard Cargo streams currently omit this; retain it if a producer supplies it.
+    target_triple: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CargoTarget {
+    kind: Vec<String>,
+    name: String,
+}
+
+fn read_cargo_messages(
+    raw: &[u8],
+    path: &Utf8Path,
+    filters: &Filters,
+) -> anyhow::Result<Vec<SelectedBinary>> {
+    let text = std::str::from_utf8(raw).with_context(|| format!("Invalid UTF-8 in {path}"))?;
+    let mut binaries = Vec::new();
+    for (line, text) in text.lines().enumerate() {
+        let context = || format!("Invalid Cargo message at {path}:{}", line + 1);
+        let message: serde_json::Value = serde_json::from_str(text).with_context(context)?;
+        if message["reason"] != "compiler-artifact" {
+            continue;
+        }
+        let mut artifact: CargoArtifact = serde_json::from_value(message).with_context(context)?;
+        let is_test = artifact.profile["test"].as_bool().with_context(context)?;
+        if !is_test {
+            continue;
+        }
+        let Some(executable) = artifact.executable else {
+            continue;
+        };
+        let package_name = package_name(&artifact.package_id).with_context(context)?;
+        let working_directory = artifact
+            .manifest_path
+            .parent()
+            .filter(|p| p.is_absolute())
+            .with_context(|| format!("Missing absolute manifest directory at {path}:{}", line + 1))?
+            .to_owned();
+        let kind = match artifact.target.kind.as_slice() {
+            [kind]
+                if matches!(
+                    kind.as_str(),
+                    "bin" | "test" | "bench" | "example" | "proc-macro"
+                ) =>
+            {
+                kind.as_str()
+            }
+            kinds
+                if !kinds.is_empty()
+                    && kinds.iter().all(|k| {
+                        matches!(
+                            k.as_str(),
+                            "lib" | "rlib" | "dylib" | "cdylib" | "staticlib"
+                        )
+                    }) =>
+            {
+                "lib"
+            }
+            kinds => bail!(
+                "Unsupported Cargo target kind {kinds:?} at {path}:{}",
+                line + 1
+            ),
+        };
+        let binary_id = match kind {
+            "lib" | "proc-macro" => package_name.clone(),
+            "test" => format!("{package_name}::{}", artifact.target.name),
+            _ => format!("{package_name}::{kind}/{}", artifact.target.name),
+        };
+        artifact.features.sort();
+        artifact.features.dedup();
+        let variant = serde_json::to_vec(&(
+            &artifact.profile,
+            &artifact.features,
+            &artifact.target_triple,
+        ))?;
+        let binary = SelectedBinary {
+            binary_id,
+            package_id: artifact.package_id,
+            package_name,
+            kind: kind.to_owned(),
+            name: artifact.target.name,
+            build_variant: sha256(&variant)[..12].to_owned(),
+            executable,
+            working_directory,
+            sha256: None,
+            mode: None,
+            dependencies: None,
+        };
+        if filters.matches(&binary) {
+            binaries.push(binary);
+        }
+    }
+    Ok(binaries)
+}
+
+fn package_name(id: &str) -> anyhow::Result<String> {
+    if let Some((_, fragment)) = id.rsplit_once('#')
+        && let Some((name, version)) = fragment.split_once('@')
+        && !name.is_empty()
+        && !version.is_empty()
+    {
+        return Ok(name.to_owned());
+    }
+    Ok(package_identity(id)?.0)
 }
 
 fn package_identity(id: &str) -> anyhow::Result<(String, Utf8PathBuf)> {
