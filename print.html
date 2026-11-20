@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-fff54a18.js";
+            window.path_to_searchindex_js = "searchindex-de51c1e9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-16c0bd11.js"></script>
@@ -1684,7 +1684,7 @@ async fn test1() {
     assert!(true);
 }
 <span class="boring">}</span></code></pre>
-<p>Alternatively a human-readable duration string can be used, parsed by the <code>humantime</code> crate:</p>
+<p>Alternatively a human-readable duration string can be used, parsed by the <code>fundu</code> crate with the existing timeout units and aliases. Compound durations such as <code>"2h 37min"</code>, fractional values such as <code>"1.5s"</code> or <code>".5s"</code>, scientific notation such as <code>"1e3ms"</code>, and ASCII whitespace between numbers and units are supported. String values without a unit are interpreted as seconds (<code>"2"</code> means two seconds), while integer attributes remain milliseconds. Units are case-sensitive: <code>m</code> means minutes, while <code>M</code> means a fixed 30.44-day month; years are fixed at 365.25 days. Duration syntax and numeric rounding follow Fundu. Results are truncated to whole milliseconds and must fit the nonnegative <code>u64</code> millisecond range:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use test_r::{test, timeout};
