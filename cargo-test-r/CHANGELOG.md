@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.12](https://github.com/vigoo/test-r/compare/cargo-test-r-v2.2.11...cargo-test-r-v2.2.12) - 2026-11-20
+
+### Other
+
+- prebuilt runner selection, snapshots, deadlines, no-fail-fast and event log ([#222](https://github.com/vigoo/test-r/pull/222))
+
 ### Changed
 
 - [**breaking**] Prebuilt runs stop processes left behind by each test binary; pass `--keep-leftovers` to keep them.

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.16](https://github.com/vigoo/test-r/compare/test-r-v3.0.15...test-r-v3.0.16) - 2026-11-20
+
+### Other
+
+- prebuilt runner selection, snapshots, deadlines, no-fail-fast and event log ([#222](https://github.com/vigoo/test-r/pull/222))
+- Replace humantime and disable unused desert integrations ([#223](https://github.com/vigoo/test-r/pull/223))
+
 ### Changed
 
 - [**breaking**] test-r re-exports `desert_rust` 0.2 (was 0.1) with its default features disabled. `#[hosted_rpc]` argument and return types must implement the 0.2 traits. The `bigdecimal`, `uuid`, `nonempty-collections` and `serde-json` implementations are no longer enabled implicitly, and `chrono` support is gone (use `jiff`). Enable the features you need on your own `desert_rust` dependency.
