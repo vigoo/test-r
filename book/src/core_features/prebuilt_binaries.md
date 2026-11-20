@@ -113,7 +113,7 @@ Cancellation wins over the deadline, and the deadline wins over binary failures.
 
 ### Without prebuilt input
 
-Without `--selection`, `--binaries-metadata`, `--cargo-messages` or an extracted archive, `cargo test-r run` forwards its arguments to `cargo test`. Without `--deadline`, cargo-test-r prints the command and runs `cargo test` as a direct call would, with the same signals and terminal. With `--deadline`, the [deadline and cancellation rules](#deadlines-cancellation-and-cleanup) apply to the whole `cargo test` process, compilation included; processes left behind after `cargo test` finishes normally are not stopped. `--events` and `--binary-id` need prebuilt input.
+Without `--selection`, `--binaries-metadata`, `--cargo-messages` or an extracted archive, `cargo test-r run` forwards its arguments to `cargo test`. Without `--deadline`, cargo-test-r prints the command and runs `cargo test` as a direct call would, with the same signals and terminal. With `--deadline`, the [deadline and cancellation rules](#deadlines-cancellation-and-cleanup) apply to the whole `cargo test` process, compilation included; processes left behind after `cargo test` finishes normally are not stopped (on Windows, see the platform notes). `--events` and `--binary-id` need prebuilt input.
 
 ## Snapshots: freezing binaries
 
@@ -186,7 +186,7 @@ cargo test-r run --selection selection.json --deadline 30m --kill-grace 10s
 
 - **Linux:** each binary runs in its own process group, and cargo-test-r adopts orphaned descendants, so processes that start a new session are still found and stopped. This needs `/proc` with child lists (`CONFIG_PROC_CHILDREN`); without them every supervised run fails before starting. It does not reach processes in other PID namespaces or ones started through a service manager such as systemd or Docker.
 - **macOS:** process groups only. A descendant that starts a new session or process group escapes cleanup. Don't rely on it to contain daemonizing or hostile programs.
-- **Windows:** cargo-test-r and all descendants share a Job Object. Cleanup terminates every member except cargo-test-r, **without** a grace period (`--kill-grace` has no effect). Ctrl+C counts as signal 2 (exit 130) and Ctrl+Break as signal 15 (exit 143). When cargo-test-r exits, or is killed, any processes still in the job are terminated: leftovers kept with `--keep-leftovers`, and processes left by `cargo test` on the fallback. A daemon that must outlive the run, such as a compiler cache server, can leave the job by starting itself with `CREATE_BREAKAWAY_FROM_JOB`. Failing to create the job is an error before tests start.
+- **Windows:** cargo-test-r and all descendants share a Job Object. Cleanup terminates every member except cargo-test-r, **without** a grace period (`--kill-grace` has no effect). Ctrl+C counts as signal 2 (exit 130) and Ctrl+Break as signal 15 (exit 143). When cargo-test-r exits, or is killed, any processes still in the job are terminated: leftovers kept with `--keep-leftovers`, and processes left by `cargo test` on the fallback. The job allows breakaway: a process created with the `CREATE_BREAKAWAY_FROM_JOB` flag by its parent is not a member, so it survives the run, but it also escapes cleanup on a deadline or cancellation. Failing to create the job is an error before tests start.
 - **Terminal (Unix):** because binaries run in their own process group, a test that reads from the terminal is stopped by the system (SIGTTIN), and Ctrl+Z or Ctrl+\ reach cargo-test-r, not the test. Give such tests input another way. The Cargo fallback without `--deadline` is not affected.
 
 ## Event log
@@ -219,14 +219,14 @@ Every record has these fields:
 | `binary-started` | `binary-id`, `package-id`, `attempt`, child `pid`, `cwd`, `args` |
 | `binary-launch-failed` | `binary-id`, `package-id`, `attempt`, `error` (instead of a start and finish) |
 | `binary-finished` | `binary-id`, `attempt`, `outcome`, `exit-code`, `signal`, `duration-ms`, `leftovers-killed`, `reports` |
-| `deadline-expired` | `binary-id` (null between binaries), `signal` (null) |
-| `cancel-requested` | `binary-id` (null between binaries), `signal` |
+| `deadline-expired` | `binary-id` (null between binaries), `signal` (null), `at-elapsed-ms` |
+| `cancel-requested` | `binary-id` (null between binaries), `signal`, `at-elapsed-ms` |
 | `invocation-finished` | `outcome`, `exit-code`, and counts of binaries: `passed`, `failed`, `crashed`, `launch-failed`, `timed-out`, `cancelled`, `not-run` |
 
 - `selection-sha256` identifies what ran: the SHA-256 of the selection file's bytes, or of the resolved selection as compact JSON for other inputs.
 - Binary `outcome` is `passed`, `failed`, `crashed`, `timed-out` or `cancelled`. `exit-code` is set for `passed` and `failed`, `signal` for `crashed`; otherwise they are null. The invocation `outcome` is `passed`, `failed`, `timed-out` or `cancelled`, and matches the [exit code](#exit-code).
 - `attempt` is always 1: cargo-test-r does not rerun binaries. `leftovers-killed` is currently always null.
-- Each of `deadline-expired` and `cancel-requested` is written at most once. Both appear when a signal arrives after the deadline expired; cancellation then decides the outcome.
+- Each of `deadline-expired` and `cancel-requested` is written at most once, in the order they happened. Both appear when a signal arrives after the deadline expired; cancellation then decides the outcome. `at-elapsed-ms` is when the stop happened (for the deadline, the deadline itself). The record can be written later, for example after the grace period, so its `elapsed-ms` can be larger.
 - `invocation-finished` is written only after everything has stopped. **A log without it is incomplete**: cargo-test-r was killed or crashed. Never read a missing final record as success. Ignore a last line that has no newline.
 - If writing the log fails, tests keep running, a warning is printed, and an otherwise passing run exits 1.
 

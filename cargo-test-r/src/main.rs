@@ -369,10 +369,10 @@ impl RunSubcommand {
                 );
             }
             let (selection, digest) = Selection::read(path)?;
-            if verification.skip_library_hashes && !snapshot::requires_verification(&selection) {
-                bail!("--skip-library-hashes applies only to snapshots; {path} is not one");
-            }
-            if snapshot::requires_verification(&selection) || verification.expect_digest.is_some() {
+            if snapshot::requires_verification(&selection)
+                || verification.expect_digest.is_some()
+                || verification.skip_library_hashes
+            {
                 snapshot::verify(
                     path,
                     &selection,

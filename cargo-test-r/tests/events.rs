@@ -23,10 +23,21 @@ fn main() {
     if mode == "crash" { std::process::abort(); }
     if mode == "hung" { std::thread::sleep(std::time::Duration::from_secs(30)); }
     #[cfg(unix)]
+    #[cfg(unix)]
+    if mode == "daemon" {
+        // Leaves a stubborn child behind and exits normally once it is ready.
+        let dir = std::env::current_exe().unwrap().parent().unwrap().to_owned();
+        std::process::Command::new(dir.join("stubborn")).spawn().unwrap();
+        while !std::path::Path::new("stubborn-ready").exists() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    #[cfg(unix)]
     if mode == "stubborn" {
         unsafe extern "C" { fn signal(signum: i32, handler: usize) -> usize; }
         // SIG_IGN for SIGINT and SIGTERM: only KILL ends it.
         unsafe { signal(2, 1); signal(15, 1); }
+        std::fs::write("stubborn-ready", "").unwrap();
         std::thread::sleep(std::time::Duration::from_secs(30));
     }
 }
@@ -44,7 +55,7 @@ impl Suite {
         install(
             &fixture(),
             dir.path(),
-            &["ok", "fail", "hung", "crash", "index", "stubborn"],
+            &["ok", "fail", "hung", "crash", "index", "stubborn", "daemon"],
         );
         Self { dir }
     }
@@ -253,44 +264,89 @@ fn wait_started(suite: &Suite, log: &str) -> u32 {
     })
 }
 
-/// A signal during deadline cleanup is logged too, and decides the outcome.
+/// A signal during cleanup is logged after the deadline that started it, or
+/// that expired during it, and decides the outcome. Each stop carries the
+/// time it happened, which can be earlier than when it was written.
 #[cfg(unix)]
 #[test]
-fn signal_during_deadline_cleanup_is_recorded_after_deadline() {
-    let suite = Suite::new();
-    let child = suite
-        .command(&["stubborn"])
-        .args(["--deadline", "300ms", "--kill-grace", "3s"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    common::wait_until("deadline-expired record", || {
-        let raw = std::fs::read_to_string(suite.path().join("events.jsonl")).ok()?;
-        raw.contains("\"deadline-expired\"").then_some(())
-    });
-    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
-    let output = common::finish(child);
-    assert_eq!(output.status.code(), Some(130), "{output:?}");
-    let events: Vec<_> = suite
-        .records("events.jsonl")
-        .into_iter()
-        .filter(|r| r["event"] != "binary-started")
-        .map(|r| (r["event"].as_str().unwrap().to_owned(), r["signal"].clone()))
-        .collect();
-    assert_eq!(
-        events,
-        [
-            ("invocation-started", Value::Null),
-            ("deadline-expired", Value::Null),
-            ("cancel-requested", json!(libc::SIGINT)),
-            ("binary-finished", Value::Null),
-            ("invocation-finished", Value::Null),
-        ]
-        .map(|(event, signal)| (event.to_owned(), signal))
-    );
-    let finished = suite.records("events.jsonl").pop().unwrap();
-    assert_eq!(finished["outcome"], "cancelled");
+fn signal_during_cleanup_is_recorded_with_the_deadline() {
+    // Stopped by the deadline: the binary ignores TERM for the whole grace.
+    // Cleaning up after a normal exit: the binary's child ignores TERM, and
+    // the deadline expires during that cleanup.
+    for (binary, deadline_ms, finished_before_stop) in
+        [("stubborn", 2000, false), ("daemon", 1000, true)]
+    {
+        let suite = Suite::new();
+        let started = std::time::Instant::now();
+        let child = suite
+            .command(&[binary])
+            .args([
+                "--deadline",
+                &format!("{deadline_ms}ms"),
+                "--kill-grace",
+                "3s",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        common::wait_until("stubborn process ignoring signals", || {
+            suite.path().join("stubborn-ready").exists().then_some(())
+        });
+        if finished_before_stop {
+            // No record is written while cleanup runs; wait past the deadline.
+            std::thread::sleep(
+                std::time::Duration::from_millis(deadline_ms + 600)
+                    .saturating_sub(started.elapsed()),
+            );
+        } else {
+            common::wait_until("deadline-expired record", || {
+                let raw = std::fs::read_to_string(suite.path().join("events.jsonl")).ok()?;
+                raw.contains("\"deadline-expired\"").then_some(())
+            });
+        }
+        assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+        let output = common::finish(child);
+        assert_eq!(output.status.code(), Some(130), "{binary}: {output:?}");
+        let records: Vec<_> = suite
+            .records("events.jsonl")
+            .into_iter()
+            .filter(|r| r["event"] != "binary-started")
+            .collect();
+        let events: Vec<_> = records
+            .iter()
+            .map(|r| r["event"].as_str().unwrap())
+            .collect();
+        let mut expected = vec![
+            "invocation-started",
+            "deadline-expired",
+            "cancel-requested",
+            "binary-finished",
+            "invocation-finished",
+        ];
+        if finished_before_stop {
+            expected.retain(|e| *e != "binary-finished");
+            expected.insert(1, "binary-finished");
+        }
+        assert_eq!(events, expected, "{binary}");
+        let deadline = &records[events
+            .iter()
+            .position(|e| *e == "deadline-expired")
+            .unwrap()];
+        let cancel = &records[events
+            .iter()
+            .position(|e| *e == "cancel-requested")
+            .unwrap()];
+        assert_eq!(deadline["at-elapsed-ms"], deadline_ms, "{binary}");
+        assert_eq!(cancel["signal"], libc::SIGINT, "{binary}");
+        let cancel_at = cancel["at-elapsed-ms"].as_u64().unwrap();
+        assert!(cancel_at > deadline_ms, "{binary}: {cancel}");
+        assert!(
+            cancel_at <= cancel["elapsed-ms"].as_u64().unwrap(),
+            "{binary}: {cancel}"
+        );
+        assert_eq!(records.last().unwrap()["outcome"], "cancelled", "{binary}");
+    }
 }
 
 #[cfg(unix)]

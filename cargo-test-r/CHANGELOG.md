@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Breaking changes
+### Changed
 
-- Prebuilt runs stop processes left behind by each test binary; pass `--keep-leftovers` to keep them.
-- `-p`/`--exclude` match Cargo package names instead of directory names.
+- [**breaking**] Prebuilt runs stop processes left behind by each test binary; pass `--keep-leftovers` to keep them.
+- [**breaking**] `-p`/`--exclude` match Cargo package names instead of directory names, and `--exclude` also applies without `-p`.
+- [**breaking**] Prebuilt binaries run in their own process group: a test that reads from the terminal is stopped (SIGTTIN), and Ctrl+Z or Ctrl+\ reach cargo-test-r instead of the test.
 
 ## [2.2.11](https://github.com/vigoo/test-r/compare/cargo-test-r-v2.2.10...cargo-test-r-v2.2.11) - 2026-11-17
 

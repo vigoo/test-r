@@ -98,6 +98,8 @@ pub struct RunResult {
     pub cleanup_failed: bool,
     /// Observed after the last binary; covers every binary that was stopped.
     pub stop_reason: Option<StopReason>,
+    /// Every stop that happened, with when, in time order.
+    pub stops: Vec<(StopReason, Duration)>,
 }
 
 impl RunResult {
@@ -172,9 +174,16 @@ pub fn run(
             || supervisor.cleanup_failed;
         outcomes.push(outcome);
     }
+    let stop_reason = supervisor.stop_if_requested();
     RunResult {
         outcomes,
-        stop_reason: supervisor.stop_if_requested(),
+        stop_reason,
+        // Only stops that the run observed; not a deadline passing just now.
+        stops: if stop_reason.is_some() {
+            supervisor.stops()
+        } else {
+            Vec::new()
+        },
         cleanup_failed: supervisor.cleanup_failed,
     }
 }

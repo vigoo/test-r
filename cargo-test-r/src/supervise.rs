@@ -45,19 +45,36 @@ impl Supervisor {
             started,
             deadline,
             grace,
-            platform: platform::Processes::new()?,
+            platform: platform::Processes::new(started)?,
             cleanup_failed: false,
         })
     }
 
     pub fn stop_reason(&self) -> Option<StopReason> {
-        if let Some(signal) = self.platform.signal() {
+        if let Some((signal, _)) = self.platform.signal() {
             Some(StopReason::Signal(signal))
         } else if self.deadline.is_some_and(|d| self.started.elapsed() >= d) {
             Some(StopReason::Deadline)
         } else {
             None
         }
+    }
+
+    /// Every stop that has happened so far, with the time since startup when it
+    /// happened, in time order. Logged records can be written later than that,
+    /// for example after a grace period.
+    pub fn stops(&self) -> Vec<(StopReason, Duration)> {
+        let mut stops = Vec::new();
+        if let Some(deadline) = self.deadline
+            && self.started.elapsed() >= deadline
+        {
+            stops.push((StopReason::Deadline, deadline));
+        }
+        if let Some((signal, at)) = self.platform.signal() {
+            stops.push((StopReason::Signal(signal), at));
+        }
+        stops.sort_by_key(|(_, at)| *at);
+        stops
     }
 
     pub fn stop_if_requested(&mut self) -> Option<StopReason> {
@@ -81,7 +98,7 @@ impl Supervisor {
     ) -> BinaryOutcome {
         if let Some(reason) = self.stop_if_requested() {
             if let Some(events) = events.as_deref_mut() {
-                events.stop(reason);
+                events.stops(&self.stops());
             }
             return reason.into();
         }
@@ -102,17 +119,16 @@ impl Supervisor {
             // Cancellation wins even when exit and the signal arrive together.
             if let Some(reason) = self.stop_reason() {
                 if let Some(events) = events.as_deref_mut() {
-                    events.stop(reason);
+                    events.stops(&self.stops());
                 }
                 self.cleanup();
                 let _ = child.try_wait();
                 // A signal during deadline cleanup replaces the reason; log it
                 // for this binary too (each kind is logged once).
-                let reason = self.stop_reason().unwrap_or(reason);
                 if let Some(events) = events.as_deref_mut() {
-                    events.stop(reason);
+                    events.stops(&self.stops());
                 }
-                return reason.into();
+                return self.stop_reason().unwrap_or(reason).into();
             }
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -147,7 +163,7 @@ mod platform {
     use std::os::unix::{net::UnixStream, process::CommandExt};
     use std::sync::{
         Arc,
-        atomic::{AtomicI32, AtomicUsize, Ordering},
+        atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering},
     };
 
     /// How long processes may take to disappear after KILL.
@@ -165,6 +181,8 @@ mod platform {
     pub struct Processes {
         groups: Vec<i32>,
         signal: Arc<AtomicI32>,
+        /// Nanoseconds from startup to the first signal, plus one (0: none yet).
+        signal_at: Arc<AtomicU64>,
         count: Arc<AtomicUsize>,
         wake: UnixStream,
         handlers: Vec<signal_hook::SigId>,
@@ -176,7 +194,7 @@ mod platform {
     }
 
     impl Processes {
-        pub fn new() -> anyhow::Result<Self> {
+        pub fn new(started: Instant) -> anyhow::Result<Self> {
             #[cfg(target_os = "linux")]
             linux::init()?;
             let (wake, writer) = UnixStream::pair()?;
@@ -187,17 +205,24 @@ mod platform {
             let mut result = Self {
                 groups: vec![],
                 signal,
+                signal_at: Arc::new(AtomicU64::new(0)),
                 count,
                 wake,
                 handlers: vec![],
             };
             for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
                 let signal = result.signal.clone();
+                let signal_at = result.signal_at.clone();
                 let count = result.count.clone();
                 let writer = writer.try_clone()?;
-                // Only lock-free atomics and a nonblocking write in the handler.
+                // Only lock-free atomics, the monotonic clock (clock_gettime is
+                // async-signal-safe) and a nonblocking write in the handler.
                 result.handlers.push(unsafe {
                     signal_hook::low_level::register(sig, move || {
+                        // The time first, so a reader that sees the signal sees it.
+                        let at = started.elapsed().as_nanos() as u64 + 1;
+                        let _ =
+                            signal_at.compare_exchange(0, at, Ordering::SeqCst, Ordering::SeqCst);
                         let _ = signal.compare_exchange(0, sig, Ordering::SeqCst, Ordering::SeqCst);
                         count.fetch_add(1, Ordering::SeqCst);
                         let _ = (&writer).write(&[1]);
@@ -206,10 +231,14 @@ mod platform {
             }
             Ok(result)
         }
-        pub fn signal(&self) -> Option<i32> {
+        /// The first signal, and when it arrived since startup.
+        pub fn signal(&self) -> Option<(i32, Duration)> {
             match self.signal.load(Ordering::SeqCst) {
                 0 => None,
-                sig => Some(sig),
+                sig => Some((
+                    sig,
+                    Duration::from_nanos(self.signal_at.load(Ordering::SeqCst).saturating_sub(1)),
+                )),
             }
         }
         pub fn prepare(&self, cmd: &mut Command) {
@@ -295,27 +324,23 @@ mod platform {
                 .any(|g| unsafe { libc::kill(-g, 0) } == 0)
                 || !self.adopted(first).is_empty()
         }
+        /// The received signal is forwarded; otherwise processes get TERM.
+        fn interrupt(&self) -> i32 {
+            self.signal().map_or(libc::SIGTERM, |(signal, _)| signal)
+        }
         /// Best effort: an error never stops escalation to KILL. Returns the
         /// first error once everything owned is gone or the drain timed out.
         pub fn cleanup(&mut self, grace: Duration) -> anyhow::Result<()> {
             let mut first = None;
             let mut sent = HashSet::new();
-            self.send(
-                self.signal().unwrap_or(libc::SIGTERM),
-                &mut sent,
-                &mut first,
-            );
+            self.send(self.interrupt(), &mut sent, &mut first);
             let start = Instant::now();
             while self.alive(&mut first)
                 && start.elapsed() < grace
                 && self.count.load(Ordering::SeqCst) < 2
             {
                 // A cancellation arriving during normal-exit cleanup must be forwarded too.
-                self.send(
-                    self.signal().unwrap_or(libc::SIGTERM),
-                    &mut sent,
-                    &mut first,
-                );
+                self.send(self.interrupt(), &mut sent, &mut first);
                 self.wait(Duration::from_millis(20));
             }
             self.send(libc::SIGKILL, &mut sent, &mut first);
@@ -337,6 +362,8 @@ mod platform {
             first.map_or(Ok(()), Err)
         }
     }
+    // Unlike Windows, Unix restores the previous handlers: a late signal then
+    // takes the default action only after the runner has finished its work.
     impl Drop for Processes {
         fn drop(&mut self) {
             for handler in self.handlers.drain(..) {
@@ -392,7 +419,7 @@ mod platform {
 mod platform {
     use super::*;
     use std::os::windows::process::CommandExt;
-    use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
+    use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, Ordering};
     use windows_sys::Win32::{
         Foundation::*,
         System::{Console::*, JobObjects::*, Threading::*},
@@ -402,6 +429,9 @@ mod platform {
     const KILL_DRAIN: Duration = Duration::from_secs(2);
 
     static SIGNAL: AtomicI32 = AtomicI32::new(0);
+    /// Nanoseconds from startup to the first signal, plus one (0: none yet).
+    static SIGNAL_AT: AtomicU64 = AtomicU64::new(0);
+    static STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     static WAKE: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
     unsafe extern "system" fn handler(kind: u32) -> i32 {
         let sig = match kind {
@@ -409,6 +439,11 @@ mod platform {
             CTRL_BREAK_EVENT => 15,
             _ => return 0,
         };
+        // The time first, so a reader that sees the signal sees it.
+        if let Some(started) = STARTED.get() {
+            let at = started.elapsed().as_nanos() as u64 + 1;
+            let _ = SIGNAL_AT.compare_exchange(0, at, Ordering::SeqCst, Ordering::SeqCst);
+        }
         let _ = SIGNAL.compare_exchange(0, sig, Ordering::SeqCst, Ordering::SeqCst);
         unsafe {
             SetEvent(WAKE.load(Ordering::SeqCst));
@@ -427,7 +462,8 @@ mod platform {
         wake: HANDLE,
     }
     impl Processes {
-        pub fn new() -> anyhow::Result<Self> {
+        pub fn new(started: Instant) -> anyhow::Result<Self> {
+            STARTED.get_or_init(|| started);
             unsafe {
                 let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
                 if job.is_null() {
@@ -462,10 +498,14 @@ mod platform {
                 Ok(result)
             }
         }
-        pub fn signal(&self) -> Option<i32> {
+        /// The first signal, and when it arrived since startup.
+        pub fn signal(&self) -> Option<(i32, Duration)> {
             match SIGNAL.load(Ordering::SeqCst) {
                 0 => None,
-                s => Some(s),
+                s => Some((
+                    s,
+                    Duration::from_nanos(SIGNAL_AT.load(Ordering::SeqCst).saturating_sub(1)),
+                )),
             }
         }
         pub fn prepare(&self, cmd: &mut Command) {

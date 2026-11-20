@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub struct Events {
     file: Option<File>,
@@ -98,7 +98,15 @@ impl Events {
         );
     }
 
-    pub fn stop(&mut self, reason: StopReason, binary: Option<&str>) {
+    /// Logs each stop kind once. `at` is when it happened since startup; the
+    /// record can be written later, such as after a grace period.
+    fn stops(&mut self, stops: &[(StopReason, Duration)], binary: Option<&str>) {
+        for (reason, at) in stops {
+            self.stop(*reason, *at, binary);
+        }
+    }
+
+    fn stop(&mut self, reason: StopReason, at: Duration, binary: Option<&str>) {
         let (event, signal, recorded) = match reason {
             StopReason::Deadline => ("deadline-expired", None, &mut self.deadline_recorded),
             StopReason::Signal(signal) => {
@@ -108,7 +116,10 @@ impl Events {
         if std::mem::replace(recorded, true) {
             return;
         }
-        self.record(event, json!({"binary-id": binary, "signal": signal}));
+        self.record(
+            event,
+            json!({"binary-id": binary, "signal": signal, "at-elapsed-ms": at.as_millis() as u64}),
+        );
     }
 
     pub fn binary<'a>(
@@ -132,9 +143,7 @@ impl Events {
     }
 
     pub fn finish(&mut self, result: &RunResult) -> i32 {
-        if let Some(reason) = result.stop_reason {
-            self.stop(reason, None);
-        }
+        self.stops(&result.stops, None);
         let (outcome, code) = result.verdict(self.failed);
         let mut fields = json!({"outcome": outcome, "exit-code": code});
         for name in [
@@ -183,8 +192,8 @@ impl BinaryEvents<'_> {
             "cwd": self.binary.working_directory, "args": self.args}),
         );
     }
-    pub fn stop(&mut self, reason: StopReason) {
-        self.events.stop(reason, Some(&self.binary.binary_id));
+    pub fn stops(&mut self, stops: &[(StopReason, Duration)]) {
+        self.events.stops(stops, Some(&self.binary.binary_id));
     }
     pub fn finished(&mut self, outcome: &BinaryOutcome) {
         if !self.spawned && !matches!(outcome, BinaryOutcome::LaunchFailed { .. }) {

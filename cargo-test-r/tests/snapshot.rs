@@ -36,13 +36,15 @@ fn verification_is_platform_independent_and_never_runs_the_loader() {
         "Selection is not a snapshot",
     );
     // An option that cannot apply is an error, not silently ignored.
-    failure(
-        command("run", &selection)
-            .arg("--skip-library-hashes")
-            .output()
-            .unwrap(),
-        "--skip-library-hashes applies only to snapshots",
-    );
+    for subcommand in ["run", "verify"] {
+        failure(
+            command(subcommand, &selection)
+                .arg("--skip-library-hashes")
+                .output()
+                .unwrap(),
+            "--skip-library-hashes applies only to snapshots",
+        );
+    }
     doc["snapshot"] = json!({"platform": "linux-gnu"});
     let binary = &mut doc["binaries"][0];
     binary["sha256"] = json!(hash(b"not an executable"));

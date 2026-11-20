@@ -45,11 +45,22 @@ fn compile(compiler: &str, extension: &str, source: &str) -> PathBuf {
     static LOCK: Mutex<()> = Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let version = Command::new(compiler)
-        .arg("--version")
-        .output()
-        .unwrap_or_else(|e| panic!("cannot run {compiler}: {e}"))
-        .stdout;
+    static VERSIONS: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
+    let version = {
+        let mut versions = VERSIONS.lock().unwrap_or_else(|e| e.into_inner());
+        match versions.iter().find(|(name, _)| name == compiler) {
+            Some((_, version)) => version.clone(),
+            None => {
+                let version = Command::new(compiler)
+                    .arg("--version")
+                    .output()
+                    .unwrap_or_else(|e| panic!("cannot run {compiler}: {e}"))
+                    .stdout;
+                versions.push((compiler.to_owned(), version.clone()));
+                version
+            }
+        }
+    };
     let key = sha256_hex(
         format!(
             "{CACHE_VERSION}\0{compiler}\0{}\0{source}",
@@ -62,8 +73,9 @@ fn compile(compiler: &str, extension: &str, source: &str) -> PathBuf {
     if executable.exists() {
         return executable;
     }
-    if dir.exists() {
-        // A damaged entry would otherwise block publishing forever.
+    // Publishing is one rename, so a directory seen before its executable is
+    // missing is damaged, not half-published, and would block publishing forever.
+    if dir.exists() && !executable.exists() {
         let _ = std::fs::remove_dir_all(&dir);
     }
     // Compile into a private directory and publish it with one rename, so a

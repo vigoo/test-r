@@ -68,6 +68,9 @@ pub fn verify(
         if requires_verification(selection) {
             bail!("Selection has snapshot fields but no \"snapshot\" marker: {path}");
         }
+        if skip_library_hashes {
+            bail!("--skip-library-hashes applies only to snapshots; {path} is not one");
+        }
         if expect_digest.is_some() {
             return Ok(());
         }
@@ -157,7 +160,7 @@ mod linux {
                     input.path
                 ),
                 InputKind::Other(ref kind) => bail!(
-                    "snapshot does not support input kind {kind:?} of {}; it was written by a newer cargo-test-r",
+                    "snapshot does not support input kind {kind:?} of {} (misspelled, or written by a newer cargo-test-r)",
                     input.path
                 ),
             }
