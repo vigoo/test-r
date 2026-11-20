@@ -11,7 +11,12 @@ struct Workspace {
 impl Workspace {
     fn new() -> Self {
         // Cargo canonicalizes manifest paths (notably /var -> /private/var on macOS).
-        let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        // Windows canonical paths gain a \\?\ prefix that Cargo does not report.
+        #[cfg(unix)]
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        #[cfg(not(unix))]
+        let root = std::env::temp_dir();
+        let dir = tempfile::tempdir_in(root).unwrap();
         let root = dir.path();
         std::fs::write(
             root.join("Cargo.toml"),
@@ -299,7 +304,9 @@ fn cargo_variants_malformed_missing_and_mixed_inputs_fail_closed() {
     let diagnostic = String::from_utf8_lossy(&output.stderr).into_owned();
     failure(output, "Conflicting entries for binary id alpha");
     for candidate in [&normal, &feature] {
-        assert!(diagnostic.contains(candidate["binaries"][0]["executable"].as_str().unwrap()));
+        // The diagnostic Debug-formats paths, which escapes Windows backslashes.
+        let executable = candidate["binaries"][0]["executable"].as_str().unwrap();
+        assert!(diagnostic.contains(&format!("{executable:?}")));
         assert!(diagnostic.contains(candidate["binaries"][0]["build-variant"].as_str().unwrap()));
     }
     let messages: Vec<Value> = std::fs::read_to_string(&w.messages)
