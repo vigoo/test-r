@@ -207,7 +207,7 @@ pub fn timeout_suite(input: TokenStream) -> TokenStream {
                 "timeout must be an integer (milliseconds) or a human-readable duration string",
             ),
             syn::Lit::Str(s) => {
-                let duration = s.value().parse::<humantime::Duration>().expect(
+                let duration = crate::helpers::parse_timeout_duration(&s.value()).expect(
                     "timeout must be an integer (milliseconds) or a human-readable duration string",
                 );
                 duration.as_millis() as u64
@@ -252,7 +252,7 @@ fn parse_timeout_millis(attr: TokenStream) -> u64 {
             .base10_parse::<u64>()
             .expect("timeout attribute's parameter must be an integer (timeout milliseconds) or a human-readable duration string")
     } else if let Ok(timeout) = syn::parse::<LitStr>(attr) {
-        let duration = timeout.value().parse::<humantime::Duration>()
+        let duration = crate::helpers::parse_timeout_duration(&timeout.value())
             .expect("timeout attribute's parameter must be an integer (timeout milliseconds) or a human-readable duration string");
         duration.as_millis() as u64
     } else {
