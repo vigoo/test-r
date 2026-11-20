@@ -60,7 +60,7 @@ async fn test1() {
 }
 ```
 
-Alternatively a human-readable duration string can be used, parsed by the `humantime` crate:
+Alternatively a human-readable duration string can be used, parsed by the `fundu` crate with the existing timeout units and aliases. Compound durations such as `"2h 37min"`, fractional values such as `"1.5s"`, and whitespace between numbers and units are supported. Units are case-sensitive: `m` means minutes, while `M` means a fixed 30.44-day month; years are fixed at 365.25 days. As before, sub-millisecond precision is truncated when setting the timeout:
 
 ```rust
 use test_r::{test, timeout};
