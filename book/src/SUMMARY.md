@@ -4,6 +4,7 @@
 - [Core features](./core_features.md)
   - [Defining tests](./core_features/defining_tests.md)
   - [Running tests](./core_features/running_tests.md)
+  - [Running prebuilt test binaries](./core_features/prebuilt_binaries.md)
   - [Test output](./core_features/test_output.md)
 - [Advanced features](./advanced_features.md)
   - [Dependency injection](./advanced_features/dependency_injection.md)

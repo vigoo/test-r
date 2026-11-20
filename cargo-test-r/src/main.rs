@@ -1,207 +1,329 @@
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser};
-use glob_match::glob_match;
 use humansize::{BINARY, format_size};
-use nextest_metadata::{BinaryListSummary, RustTestBinaryKind, RustTestBinarySummary};
-use std::fs::File;
-use std::process::ExitStatus;
-use tar::Archive;
+use selection::{Filters, Selection};
+
+mod events;
+mod run;
+mod selection;
+mod snapshot;
+mod supervise;
 
 #[derive(Parser, Debug, Clone)]
-#[command()]
 #[allow(clippy::large_enum_variant)]
 enum Command {
-    #[command()]
+    /// Unpack a cargo-nextest archive for later list/run commands.
     ReuseNextestArchive(ReuseNextestArchiveSubcommand),
-
-    #[command()]
+    /// Select and validate prebuilt binaries, printing selection JSON without running Cargo or tests.
+    List(SelectionArgs),
+    /// Copy a selection into an independently verified snapshot (Linux glibc).
+    Snapshot(SnapshotSubcommand),
+    /// Verify a snapshot without invoking the loader or tests.
+    Verify(VerifySubcommand),
     Run(RunSubcommand),
 }
 
-/// Unpacks a binary archive created by `cargo-nextest` to be used by follow-up `cargo-test-r run` commands.
+#[derive(Args, Debug, Clone)]
+struct SnapshotSubcommand {
+    #[arg(long)]
+    selection: Utf8PathBuf,
+    #[arg(long)]
+    out: Utf8PathBuf,
+}
+
+#[derive(Args, Debug, Clone)]
+struct VerifySubcommand {
+    #[arg(long)]
+    selection: Utf8PathBuf,
+    #[command(flatten)]
+    verification: VerificationArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+struct VerificationArgs {
+    /// Require the exact selection.json digest printed by snapshot.
+    #[arg(long)]
+    expect_digest: Option<String>,
+    /// Check recorded libraries exist, but allow their contents to change.
+    #[arg(long)]
+    skip_library_hashes: bool,
+}
+
 #[derive(Args, Debug, Clone)]
 struct ReuseNextestArchiveSubcommand {
-    /// Path to the archive file
-    #[clap(long)]
+    /// Path to the archive file.
+    #[arg(long)]
     archive_file: Utf8PathBuf,
-    /// Directory for all generated artifacts and intermediate files
-    #[clap(long)]
+    /// Directory for all generated artifacts and intermediate files.
+    #[arg(long)]
     target_dir: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
-struct RunSubcommand {
-    /// Compile, but don't run tests
-    #[clap(long)]
-    no_run: bool,
-    /// Run all tests regardless of failure
-    #[clap(long)]
-    no_fail_fast: bool,
-    /// Test only the specified package
-    #[clap(short, long)]
+struct SelectionArgs {
+    /// Read existing nextest binaries-only JSON (repeatable).
+    #[arg(long, value_name = "PATH")]
+    binaries_metadata: Vec<Utf8PathBuf>,
+    /// Read Cargo JSON messages from an existing build (repeatable).
+    #[arg(long, value_name = "PATH")]
+    cargo_messages: Vec<Utf8PathBuf>,
+    /// Select Cargo package names (globs supported).
+    #[arg(short, long)]
     package: Vec<String>,
-    /// Exclude the specified packages
-    #[clap(long)]
+    /// Exclude Cargo package names (globs supported).
+    #[arg(long)]
     exclude: Vec<String>,
-    /// Test the package's library
-    #[clap(long)]
+    /// Select library unit tests.
+    #[arg(long)]
     lib: bool,
-    /// Test only the specified binary
-    #[clap(long)]
-    bin: Option<String>,
-    /// Test all binaries
-    #[clap(long)]
+    /// Select binary unit tests.
+    #[arg(long)]
     bins: bool,
-    /// Test only the specified example
-    #[clap(long)]
-    example: Option<String>,
-    /// Test all examples
-    #[clap(long)]
-    examples: bool,
-    /// Test the specified integration test
-    #[clap(long)]
+    /// Select integration test targets by name (globs supported, repeatable).
+    #[arg(long)]
     test: Vec<String>,
-    /// Test all targets in test mode that have the test = true manifest flag set
-    #[clap(long)]
+    /// Select all library, binary and integration test targets.
+    #[arg(long)]
     tests: bool,
-    /// Test the specified benchmark
-    #[clap(long)]
-    bench: Option<String>,
-    /// Test all benchmarks
-    #[clap(long)]
-    benches: bool,
-    /// Test all targets
-    #[clap(long)]
-    all_targets: bool,
-    /// Test ONLY the library's documentation
-    #[clap(long)]
-    doc: bool,
-    /// Space or comma separated list of features to activate
-    #[clap(short = 'F', long)]
-    features: Option<String>,
-    /// Do not activate the default feature of the selected packages
-    #[clap(long)]
-    no_default_features: bool,
-    /// Test for a given architecture
-    #[clap(long)]
-    target: Option<String>,
-    /// Test optimized artifacts with the release profile
-    #[clap(short, long)]
-    release: bool,
-    /// Test with the given profile
-    #[clap(long)]
-    profile: Option<String>,
-    /// Ignore `rust-version` specification in packages
-    #[clap(long)]
-    ignore_rust_version: bool,
-    /// Output information how long each compilation takes
-    #[clap(long)]
-    timings: Option<String>,
-    /// Directory for all generated artifacts and intermediate files
-    #[clap(long)]
+    /// Select exact nextest binary ids (repeatable).
+    #[arg(long)]
+    binary_id: Vec<String>,
+    /// Directory containing nextest-archive (default: workspace target directory).
+    #[arg(long)]
     target_dir: Option<String>,
-    /// Use verbose output. May be specified twice for "very verbose" output
-    #[clap(short, long, action = clap::ArgAction::Count)]
+}
+
+impl SelectionArgs {
+    fn filters(&self) -> Filters {
+        Filters {
+            package: self.package.clone(),
+            exclude: self.exclude.clone(),
+            lib: self.lib,
+            bins: self.bins,
+            tests: self.tests,
+            test: self.test.clone(),
+            binary_id: self.binary_id.clone(),
+        }
+    }
+
+    fn explicit(&self) -> bool {
+        !self.binaries_metadata.is_empty() || !self.cargo_messages.is_empty()
+    }
+
+    /// The extracted archive directory and the current workspace root.
+    fn archive(&self) -> anyhow::Result<(Utf8PathBuf, Utf8PathBuf)> {
+        let workspace = workspace_root()?;
+        Ok((
+            selection::archive_target(&workspace, &self.target_dir),
+            workspace,
+        ))
+    }
+
+    /// Whether `select` has prebuilt input: explicit metadata or an extracted archive.
+    fn has_prebuilt_input(&self) -> anyhow::Result<bool> {
+        Ok(self.explicit() || self.archive()?.0.join(ARCHIVE_METADATA).exists())
+    }
+
+    fn select(&self) -> anyhow::Result<Selection> {
+        if self.explicit() {
+            return selection::select(
+                &self.binaries_metadata,
+                &self.cargo_messages,
+                None,
+                &self.filters(),
+            );
+        }
+        let (archive, workspace) = self.archive()?;
+        selection::select(
+            &[archive.join(ARCHIVE_METADATA)],
+            &[],
+            Some((&archive, &workspace)),
+            &self.filters(),
+        )
+    }
+}
+
+const ARCHIVE_METADATA: &str = "target/nextest/binaries-metadata.json";
+
+#[derive(Args, Debug, Clone)]
+struct RunSubcommand {
+    #[command(flatten)]
+    selection_args: SelectionArgs,
+    /// Run exactly the binaries in a selection file, without invoking Cargo.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["binaries_metadata", "cargo_messages"])]
+    selection: Option<Utf8PathBuf>,
+    #[command(flatten)]
+    verification: VerificationArgs,
+    /// Compile, but don't run tests.
+    #[arg(long)]
+    no_run: bool,
+    /// Run all tests regardless of failure.
+    #[arg(long)]
+    no_fail_fast: bool,
+    /// Whole invocation budget, including compilation on the Cargo fallback (e.g. 30m).
+    #[arg(long, value_parser = supervise::parse_duration)]
+    deadline: Option<std::time::Duration>,
+    /// Time between TERM and KILL on Unix (e.g. 10s).
+    #[arg(long, default_value = "10s", value_parser = supervise::parse_duration)]
+    kill_grace: std::time::Duration,
+    /// Keep daemons after normal prebuilt exits; cancellation/deadline still clean up.
+    #[arg(long)]
+    keep_leftovers: bool,
+    /// Write lifecycle JSON Lines to a new file (prebuilt runs only).
+    #[arg(long, value_name = "PATH")]
+    events: Option<std::path::PathBuf>,
+    /// Opaque invocation identity (defaults to a UUID).
+    #[arg(long, value_name = "ID")]
+    invocation_id: Option<String>,
+    /// Test only the specified binary.
+    #[arg(long)]
+    bin: Option<String>,
+    /// Test only the specified example.
+    #[arg(long)]
+    example: Option<String>,
+    /// Test all examples.
+    #[arg(long)]
+    examples: bool,
+    /// Test the specified benchmark.
+    #[arg(long)]
+    bench: Option<String>,
+    /// Test all benchmarks.
+    #[arg(long)]
+    benches: bool,
+    /// Test all targets.
+    #[arg(long)]
+    all_targets: bool,
+    /// Test ONLY the library's documentation.
+    #[arg(long)]
+    doc: bool,
+    /// Space or comma separated list of features to activate.
+    #[arg(short = 'F', long)]
+    features: Option<String>,
+    /// Do not activate the default feature of the selected packages.
+    #[arg(long)]
+    no_default_features: bool,
+    /// Test for a given architecture.
+    #[arg(long)]
+    target: Option<String>,
+    /// Test optimized artifacts with the release profile.
+    #[arg(short, long)]
+    release: bool,
+    /// Test with the given profile.
+    #[arg(long)]
+    profile: Option<String>,
+    /// Ignore rust-version specification in packages.
+    #[arg(long)]
+    ignore_rust_version: bool,
+    /// Output information how long each compilation takes.
+    #[arg(long)]
+    timings: Option<String>,
+    /// Use verbose output. May be specified twice for very verbose output.
+    #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: Option<u8>,
-    /// Do not print cargo log messages
-    #[clap(short, long)]
+    /// Do not print Cargo log messages.
+    #[arg(short, long)]
     quiet: bool,
-    /// Control when colored output is used
-    #[clap(long)]
+    /// Control when colored output is used.
+    #[arg(long)]
     color: Option<String>,
-    /// The output format for diagnostic messages
-    #[clap(long)]
+    /// The output format for diagnostic messages.
+    #[arg(long)]
     message_format: Option<String>,
-    /// Path to the Cargo.toml file
-    #[clap(long)]
+    /// Path to the Cargo.toml file.
+    #[arg(long)]
     manifest_path: Option<String>,
-    /// Require Cargo.lock and cache are up to date
-    #[clap(long)]
+    /// Require Cargo.lock and cache are up to date.
+    #[arg(long)]
     frozen: bool,
-    /// Require Cargo.lock is up to date
-    #[clap(long)]
+    /// Require Cargo.lock is up to date.
+    #[arg(long)]
     locked: bool,
-    /// Run without accessing the network
-    #[clap(long)]
+    /// Run without accessing the network.
+    #[arg(long)]
     offline: bool,
-    /// Number of parallel jobs to run
-    #[clap(short, long)]
+    /// Number of parallel jobs to run.
+    #[arg(short, long)]
     jobs: Option<usize>,
-    /// Build as many crates in the dependency graph as possible
-    #[clap(long)]
+    /// Build as many crates in the dependency graph as possible.
+    #[arg(long)]
     keep_going: bool,
-    /// Displays a future-incompat report for any future-incompatible warnings
-    #[clap(long)]
+    /// Display a future-incompat report for future-incompatible warnings.
+    #[arg(long)]
     future_incompat_report: bool,
     /// Test all members in the workspace.
-    #[clap(long)]
+    #[arg(long)]
     workspace: bool,
-    /// Alias for --workspace
-    #[clap(long)]
+    /// Alias for --workspace.
+    #[arg(long)]
     all: bool,
-    /// Run the test binaries listed in this file, which is the output of
-    /// `cargo nextest list --list-type binaries-only --message-format json`,
-    /// from their original locations instead of building them. Never falls
-    /// back to `cargo test`: fails if the file or a selected binary is missing.
-    #[clap(long, value_name = "PATH")]
-    binaries_metadata: Option<Utf8PathBuf>,
-
-    /// Test name filters
+    /// Test name filters.
     testname: Vec<String>,
-
-    /// Arguments to be passed to the tests
+    /// Arguments passed to each test binary.
     #[arg(last = true, num_args = 0..)]
     test_args: Vec<String>,
 }
 
 fn main() {
-    match try_main() {
-        Ok(status) => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::ExitStatusExt;
-                if let Some(signal) = status.signal() {
-                    // Follow Unix convention: 128 + signal number
-                    std::process::exit(128 + signal);
-                }
-            }
-            std::process::exit(status.code().unwrap_or(1));
-        }
+    let started = std::time::Instant::now();
+    match try_main(started) {
+        Ok(code) => std::process::exit(code),
         Err(err) => {
-            eprintln!("Error: {:#}", err);
+            eprintln!("Error: {err:#}");
             std::process::exit(1);
         }
     }
 }
 
-fn try_main() -> anyhow::Result<ExitStatus> {
-    let command: Command = Parser::parse();
-    let workspace_root = workspace_root::get_workspace_root();
-    let workspace_root = Utf8Path::from_path(&workspace_root).ok_or_else(|| {
-        anyhow!(
-            "Unexpected characters in workspace root: {:?}",
-            workspace_root
-        )
-    })?;
+fn workspace_root() -> anyhow::Result<Utf8PathBuf> {
+    Utf8PathBuf::from_path_buf(workspace_root::get_workspace_root_directory()?)
+        .map_err(|path| anyhow!("Unexpected characters in workspace root: {path:?}"))
+}
 
+fn try_main(started: std::time::Instant) -> anyhow::Result<i32> {
+    let mut args = std::env::args().collect::<Vec<_>>();
+    // Cargo passes the subcommand name to external subcommands.
+    if args.get(1).is_some_and(|arg| arg == "test-r") {
+        args.remove(1);
+    }
+    let command = Command::parse_from(&args);
     match command {
-        Command::ReuseNextestArchive(cmd) => reuse_nextest_archive(workspace_root, cmd),
-        Command::Run(cmd) => run(workspace_root, cmd),
+        Command::ReuseNextestArchive(cmd) => reuse_nextest_archive(&workspace_root()?, cmd),
+        Command::List(cmd) => {
+            let selection = cmd.select()?;
+            serde_json::to_writer_pretty(std::io::stdout().lock(), &selection)?;
+            println!();
+            Ok(0)
+        }
+        Command::Run(cmd) => run(cmd, &args[2..], started),
+        Command::Snapshot(cmd) => {
+            let digest = snapshot::snapshot(&cmd.selection, &cmd.out)?;
+            println!("snapshot {} {digest}", cmd.out);
+            Ok(0)
+        }
+        Command::Verify(cmd) => {
+            let (selection, digest) = Selection::read(&cmd.selection)?;
+            snapshot::verify(
+                &cmd.selection,
+                &selection,
+                &digest,
+                cmd.verification.expect_digest.as_deref(),
+                cmd.verification.skip_library_hashes,
+            )?;
+            Ok(0)
+        }
     }
 }
 
 fn reuse_nextest_archive(
-    workspace_root: &Utf8Path,
+    workspace: &Utf8Path,
     cmd: ReuseNextestArchiveSubcommand,
-) -> anyhow::Result<ExitStatus> {
-    let target = nextest_archive_target(workspace_root, &cmd.target_dir);
-
+) -> anyhow::Result<i32> {
+    let target = selection::archive_target(workspace, &cmd.target_dir);
     if !target.exists() {
         println!("Creating target directory: {target}");
         std::fs::create_dir_all(&target)?;
     }
-
     if cmd.archive_file.is_file() {
         let archive_size = std::fs::metadata(&cmd.archive_file)?.len();
         println!(
@@ -210,7 +332,7 @@ fn reuse_nextest_archive(
             target,
             format_size(archive_size, BINARY)
         );
-        extract_tar_zstd(&cmd.archive_file, &target)?;
+        selection::extract_tar_zstd(&cmd.archive_file, &target)?;
     } else {
         println!("Moving files from {} to {}", cmd.archive_file, target);
         fs_extra::dir::move_dir(
@@ -221,394 +343,145 @@ fn reuse_nextest_archive(
                 .content_only(true),
         )?;
     }
-
-    Ok(ExitStatus::default())
+    Ok(0)
 }
 
-fn run(workspace_root: &Utf8Path, cmd: RunSubcommand) -> anyhow::Result<ExitStatus> {
-    if let Some(path) = &cmd.binaries_metadata {
-        validate_supported_test_args(&cmd)?;
-        let raw = std::fs::read_to_string(path)
-            .map_err(|err| anyhow!("Failed to read binaries metadata {path}: {err}"))?;
-        let binary_list: BinaryListSummary = serde_json::from_str(&raw)
-            .map_err(|err| anyhow!("Invalid binaries metadata {path}: {err}"))?;
-        let mut test_binaries = Vec::new();
-        for binary in select_binaries(binary_list, &cmd)?.rust_binaries.values() {
-            let working_directory = package_path(binary).ok_or_else(|| {
-                anyhow!(
-                    "Unsupported package id {} for test binary {}",
-                    binary.package_id,
-                    binary.binary_id
-                )
-            })?;
-            if !binary.binary_path.is_file() {
-                return Err(anyhow!(
-                    "Test binary {} does not exist at {}",
-                    binary.binary_id,
-                    binary.binary_path
-                ));
+/// What `run` executes, resolved and checked before any process starts.
+enum RunInput {
+    /// Prebuilt binaries, and the SHA-256 that identifies them in events.
+    Prebuilt {
+        selection: Selection,
+        digest: String,
+    },
+    /// No prebuilt input: forward to `cargo test`.
+    Cargo,
+}
+
+impl RunSubcommand {
+    fn resolve(&self) -> anyhow::Result<RunInput> {
+        let verification = &self.verification;
+        if let Some(path) = &self.selection {
+            validate_supported_test_args(self)?;
+            if !self.selection_args.filters().is_empty() || self.selection_args.target_dir.is_some()
+            {
+                bail!(
+                    "--selection runs exactly the saved selection; package/target filters and --target-dir cannot be combined with it"
+                );
             }
-            test_binaries.push(TestBinary {
-                binary_path: binary.binary_path.clone(),
-                working_directory,
-            });
+            let (selection, digest) = Selection::read(path)?;
+            if snapshot::requires_verification(&selection)
+                || verification.expect_digest.is_some()
+                || verification.skip_library_hashes
+            {
+                snapshot::verify(
+                    path,
+                    &selection,
+                    &digest,
+                    verification.expect_digest.as_deref(),
+                    verification.skip_library_hashes,
+                )?;
+            }
+            return Ok(RunInput::Prebuilt { selection, digest });
         }
-        if test_binaries.is_empty() {
-            return Err(anyhow!("No test binaries in {path} match the selection"));
+        if verification.expect_digest.is_some() || verification.skip_library_hashes {
+            bail!("--expect-digest and --skip-library-hashes require --selection");
         }
-        return run_test_binaries(test_binaries, cmd.testname, cmd.test_args);
-    }
-
-    let nextest_archive_target = nextest_archive_target(workspace_root, &cmd.target_dir);
-    let binaries_metadata_path =
-        nextest_archive_target.join("target/nextest/binaries-metadata.json");
-    if binaries_metadata_path.exists() {
-        let raw = std::fs::read_to_string(binaries_metadata_path)?;
-        let binary_list: BinaryListSummary = serde_json::from_str(&raw)?;
-
-        println!("Running tests using cargo-nextest archive");
-
-        validate_supported_test_args(&cmd)?;
-
-        let test_binaries = filter_binaries(binary_list, workspace_root, &cmd)?;
-        println!("{test_binaries:#?}"); // TODO: remove
-
-        run_test_binaries(test_binaries, cmd.testname, cmd.test_args)
-    } else {
-        println!("No nexttest archive was found, forwarding to cargo test");
-        let cargo_path: Utf8PathBuf =
-            std::env::var("CARGO").map_or("cargo".into(), Utf8PathBuf::from);
-        let mut command = std::process::Command::new(cargo_path.clone());
-        let mut args = std::env::args().collect::<Vec<_>>();
-        args.remove(0); // process name
-        args.remove(0); // 'run' command
-        args.insert(0, "test".into());
-        command.args(&args);
-
-        println!("Executing {} {}", cargo_path, args.join(" "));
-
-        Ok(command.status()?)
+        if self.selection_args.has_prebuilt_input()? {
+            validate_supported_test_args(self)?;
+            let selection = self.selection_args.select()?;
+            let digest = selection::sha256(&serde_json::to_vec(&selection)?);
+            return Ok(RunInput::Prebuilt { selection, digest });
+        }
+        if self.events.is_some() {
+            bail!(
+                "--events is supported only for prebuilt runs; the Cargo fallback cannot write lifecycle events"
+            );
+        }
+        if !self.selection_args.binary_id.is_empty() {
+            bail!("--binary-id requires prebuilt metadata or an extracted archive");
+        }
+        Ok(RunInput::Cargo)
     }
 }
 
-/// Runs each test binary in turn with the test name filters and test
-/// arguments, stopping at the first one that fails.
-fn run_test_binaries(
-    test_binaries: Vec<TestBinary>,
-    mut test_args: Vec<String>,
-    extra_test_args: Vec<String>,
-) -> anyhow::Result<ExitStatus> {
-    test_args.extend(extra_test_args);
-    println!("{test_args:?}"); // TODO: remove
-
-    for test_binary in test_binaries {
-        let mut test_process = std::process::Command::new(&test_binary.binary_path);
-        test_process.current_dir(&test_binary.working_directory);
-        test_process.args(&test_args);
-
-        let exit_code = test_process.status()?;
-        if !exit_code.success() {
-            return Ok(exit_code);
+fn run(
+    cmd: RunSubcommand,
+    cargo_args: &[String],
+    started: std::time::Instant,
+) -> anyhow::Result<i32> {
+    let options = run::Options {
+        no_fail_fast: cmd.no_fail_fast,
+        deadline: cmd.deadline,
+        kill_grace: cmd.kill_grace,
+        keep_leftovers: cmd.keep_leftovers,
+    };
+    match cmd.resolve()? {
+        RunInput::Prebuilt { selection, digest } => {
+            // A supervisor that cannot start must not leave a log that looks
+            // like an interrupted run.
+            let mut supervisor =
+                supervise::Supervisor::new(started, options.deadline, options.kill_grace)?;
+            let mut events =
+                events::Events::new(cmd.events.as_deref(), cmd.invocation_id, started)?;
+            events.started(&digest, &options);
+            let mut args = cmd.testname;
+            args.extend(cmd.test_args);
+            let result = run::run(&selection, &args, &options, &mut supervisor, &mut events);
+            Ok(events.finish(&result))
+        }
+        RunInput::Cargo => {
+            println!("No nextest archive was found, forwarding to cargo test");
+            let cargo_path = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+            let mut args = run::cargo_args(cargo_args);
+            args.insert(0, "test".into());
+            println!("Executing {} {}", cargo_path, args.join(" "));
+            let mut command = std::process::Command::new(cargo_path);
+            command.args(args);
+            let Some(deadline) = options.deadline else {
+                // Nothing to enforce: run `cargo test` exactly as a direct call would,
+                // in the terminal's foreground process group with default signals.
+                return Ok(run::BinaryOutcome::from(command.status()?).exit_code());
+            };
+            let mut supervisor =
+                supervise::Supervisor::new(started, Some(deadline), options.kill_grace)?;
+            let outcome = supervisor.run(&mut command, false, None);
+            Ok(supervisor
+                .stop_if_requested()
+                .map_or(outcome, run::BinaryOutcome::from)
+                .exit_code())
         }
     }
-
-    Ok(ExitStatus::default())
 }
 
 fn validate_supported_test_args(cmd: &RunSubcommand) -> anyhow::Result<()> {
-    // NOTE: this feature is experimental and only a small subset of the features are
-    // supported. We fail if the user is trying to use something unsupported rather than
-    // doing something unexpected.
-
-    // Supported: -p
-    // Supported: --test
-    // Supported: --lib
-    // Supported: --workspace --exclude X
-    // Supported: testname, testargs
-
-    if cmd.no_run {
-        return Err(anyhow!("--no-run is not supported"));
+    let unsupported = [
+        (cmd.no_run, "--no-run"),
+        (cmd.bin.is_some(), "--bin"),
+        (cmd.example.is_some(), "--example"),
+        (cmd.examples, "--examples"),
+        (cmd.bench.is_some(), "--bench"),
+        (cmd.benches, "--benches"),
+        (cmd.all_targets, "--all-targets"),
+        (cmd.doc, "--doc"),
+        (cmd.features.is_some(), "--features"),
+        (cmd.no_default_features, "--no-default-features"),
+        (cmd.target.is_some(), "--target"),
+        (cmd.release, "--release"),
+        (cmd.profile.is_some(), "--profile"),
+        (cmd.ignore_rust_version, "--ignore-rust-version"),
+        (cmd.timings.is_some(), "--timings"),
+        (cmd.color.is_some(), "--color"),
+        (cmd.message_format.is_some(), "--message-format"),
+        (cmd.manifest_path.is_some(), "--manifest-path"),
+        (cmd.frozen, "--frozen"),
+        (cmd.locked, "--locked"),
+        (cmd.keep_going, "--keep-going"),
+        (cmd.future_incompat_report, "--future-incompat-report"),
+    ];
+    for (present, flag) in unsupported {
+        if present {
+            bail!("{flag} is not supported");
+        }
     }
-    if cmd.no_fail_fast {
-        return Err(anyhow!("--no-fail-fast is not supported"));
-    }
-    if cmd.bin.is_some() {
-        return Err(anyhow!("--bin is not supported"));
-    }
-    if cmd.bins {
-        return Err(anyhow!("--bins is not supported"));
-    }
-    if cmd.example.is_some() {
-        return Err(anyhow!("--example is not supported"));
-    }
-    if cmd.examples {
-        return Err(anyhow!("--examples is not supported"));
-    }
-    if cmd.tests {
-        return Err(anyhow!("--tests is not supported"));
-    }
-    if cmd.bench.is_some() {
-        return Err(anyhow!("--bench is not supported"));
-    }
-    if cmd.benches {
-        return Err(anyhow!("--benches is not supported"));
-    }
-    if cmd.all_targets {
-        return Err(anyhow!("--all-targets is not supported"));
-    }
-    if cmd.doc {
-        return Err(anyhow!("--doc is not supported"));
-    }
-    if cmd.features.is_some() {
-        return Err(anyhow!("--features is not supported"));
-    }
-    if cmd.no_default_features {
-        return Err(anyhow!("--no-default-features is not supported"));
-    }
-    if cmd.target.is_some() {
-        return Err(anyhow!("--target is not supported"));
-    }
-    if cmd.release {
-        return Err(anyhow!("--release is not supported"));
-    }
-    if cmd.profile.is_some() {
-        return Err(anyhow!("--profile is not supported"));
-    }
-    if cmd.ignore_rust_version {
-        return Err(anyhow!("--ignore-rust-version is not supported"));
-    }
-    if cmd.timings.is_some() {
-        return Err(anyhow!("--timings is not supported"));
-    }
-    if cmd.color.is_some() {
-        return Err(anyhow!("--color is not supported"));
-    }
-    if cmd.message_format.is_some() {
-        return Err(anyhow!("--message-format is not supported"));
-    }
-    if cmd.manifest_path.is_some() {
-        return Err(anyhow!("--manifest-path is not supported"));
-    }
-    if cmd.frozen {
-        return Err(anyhow!("--frozen is not supported"));
-    }
-    if cmd.locked {
-        return Err(anyhow!("--locked is not supported"));
-    }
-    if cmd.keep_going {
-        return Err(anyhow!("--keep-going is not supported"));
-    }
-    if cmd.future_incompat_report {
-        return Err(anyhow!("--future-incompat-report is not supported"));
-    }
-
     Ok(())
-}
-
-fn package_path(summary: &RustTestBinarySummary) -> Option<Utf8PathBuf> {
-    if let Some(path) = summary.package_id.strip_prefix("path+file://") {
-        let version_part = path.rfind('#');
-        if let Some(version_part) = version_part {
-            let path = &path[..version_part];
-            Some(Utf8Path::new(path).to_path_buf())
-        } else {
-            None
-        }
-    } else {
-        None
-    }
-}
-
-fn filter_by_package(
-    mut binaries: BinaryListSummary,
-    packages: &[String],
-    excludes: &[String],
-) -> anyhow::Result<BinaryListSummary> {
-    binaries.rust_binaries.retain(|_, summary| {
-        if let Some(path) = package_path(summary) {
-            if let Some(file_name) = path.file_name() {
-                packages
-                    .iter()
-                    .any(|condition| glob_match(condition, file_name))
-                    && excludes
-                        .iter()
-                        .all(|condition| !glob_match(condition, file_name))
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    });
-    Ok(binaries)
-}
-
-fn filter_by_test(
-    mut binaries: BinaryListSummary,
-    test: &[String],
-) -> anyhow::Result<BinaryListSummary> {
-    binaries.rust_binaries.retain(|_, summary| {
-        summary.kind == RustTestBinaryKind::TEST
-            && test
-                .iter()
-                .any(|condition| glob_match(condition, &summary.binary_name))
-    });
-    Ok(binaries)
-}
-
-fn filter_by_kind(
-    mut binaries: BinaryListSummary,
-    kind: RustTestBinaryKind,
-) -> anyhow::Result<BinaryListSummary> {
-    binaries
-        .rust_binaries
-        .retain(|_, summary| summary.kind == kind);
-    Ok(binaries)
-}
-
-/// Keeps the binaries selected by `--package`/`--exclude`, `--test` and `--lib`.
-fn select_binaries(
-    mut binaries: BinaryListSummary,
-    cmd: &RunSubcommand,
-) -> anyhow::Result<BinaryListSummary> {
-    if !cmd.package.is_empty() {
-        binaries = filter_by_package(binaries, &cmd.package, &cmd.exclude)?;
-    }
-
-    if !cmd.test.is_empty() {
-        binaries = filter_by_test(binaries, &cmd.test)?;
-    }
-
-    if cmd.lib {
-        binaries = filter_by_kind(binaries, RustTestBinaryKind::LIB)?;
-    }
-
-    Ok(binaries)
-}
-
-fn filter_binaries(
-    binaries: BinaryListSummary,
-    workspace_root: &Utf8Path,
-    cmd: &RunSubcommand,
-) -> anyhow::Result<Vec<TestBinary>> {
-    let mut filtered_binaries = vec![];
-
-    let archive_root = nextest_archive_target(workspace_root, &cmd.target_dir);
-
-    let original_target = binaries.rust_build_meta.target_directory.clone();
-    let original_workspace = original_target.parent().ok_or_else(|| {
-        anyhow!("The archive's original target directory {original_target} does not have a parent")
-    })?;
-    // TODO: this only works if the target directory was not customized when building the archive
-
-    let binaries = select_binaries(binaries, cmd)?;
-
-    for binary in binaries.rust_binaries.values() {
-        let relative_path = binary.binary_path.strip_prefix(original_workspace)?;
-        if let Some(relative_package_path) = package_path(binary) {
-            filtered_binaries.push(TestBinary {
-                binary_path: archive_root.join(relative_path.to_path_buf()),
-                working_directory: workspace_root.join(
-                    relative_package_path
-                        .strip_prefix(original_workspace)?
-                        .to_path_buf(),
-                ),
-            });
-        }
-    }
-
-    Ok(filtered_binaries)
-}
-
-#[derive(Debug, Clone)]
-struct TestBinary {
-    binary_path: Utf8PathBuf,
-    working_directory: Utf8PathBuf,
-}
-
-fn extract_tar_zstd(archive_file: &Utf8Path, target_root: &Utf8Path) -> anyhow::Result<()> {
-    let decoder = zstd::Decoder::new(File::open(archive_file)?)?;
-    let mut archive = Archive::new(decoder);
-    archive.unpack(target_root)?;
-    Ok(())
-}
-
-fn nextest_archive_target(workspace_root: &Utf8Path, target_dir: &Option<String>) -> Utf8PathBuf {
-    if let Some(target_dir) = target_dir {
-        Utf8Path::new(target_dir).join("nextest-archive")
-    } else {
-        workspace_root.join("target/nextest-archive")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn run_with_metadata(metadata: &Utf8Path, extra: &[&str]) -> anyhow::Result<ExitStatus> {
-        let mut argv = vec![
-            "cargo-test-r",
-            "run",
-            "--binaries-metadata",
-            metadata.as_str(),
-        ];
-        argv.extend(extra);
-        let Command::Run(cmd) = Command::parse_from(argv) else {
-            unreachable!()
-        };
-        // An unusable `cargo` proves the metadata path never falls back to it.
-        unsafe { std::env::set_var("CARGO", "/nonexistent/cargo") };
-        run(Utf8Path::new("/nonexistent/workspace"), cmd)
-    }
-
-    #[test]
-    fn binaries_metadata_fails_closed() {
-        let dir = Utf8PathBuf::from_path_buf(std::env::temp_dir())
-            .unwrap()
-            .join(format!("cargo-test-r-metadata-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let metadata = |binary_path: &str| {
-            serde_json::json!({
-                "rust-build-meta": {
-                    "target-directory": "/w/target",
-                    "base-output-directories": ["debug"],
-                    "non-test-binaries": {},
-                    "build-script-out-dirs": {},
-                    "linked-paths": [],
-                    "target-platforms": [],
-                    "target-platform": null
-                },
-                "rust-binaries": {
-                    "pkg": {
-                        "binary-id": "pkg",
-                        "binary-name": "pkg",
-                        "package-id": "path+file:///w/pkg#pkg@0.1.0",
-                        "kind": "lib",
-                        "binary-path": binary_path,
-                        "build-platform": "target"
-                    }
-                }
-            })
-            .to_string()
-        };
-
-        let error = |path: &Utf8Path, extra: &[&str]| {
-            run_with_metadata(path, extra).unwrap_err().to_string()
-        };
-        assert!(error(&dir.join("missing.json"), &[]).contains("Failed to read binaries metadata"));
-
-        let invalid = dir.join("invalid.json");
-        std::fs::write(&invalid, "{}").unwrap();
-        assert!(error(&invalid, &[]).contains("Invalid binaries metadata"));
-
-        let gone = dir.join("gone.json");
-        std::fs::write(&gone, metadata("/nonexistent/pkg-test-binary")).unwrap();
-        assert!(
-            error(&gone, &["-p", "pkg"]).contains("does not exist at /nonexistent/pkg-test-binary")
-        );
-        assert!(error(&gone, &["-p", "other"]).contains("match the selection"));
-        assert!(error(&gone, &["--profile", "dev-ci"]).contains("--profile is not supported"));
-
-        std::fs::remove_dir_all(dir).unwrap();
-    }
 }

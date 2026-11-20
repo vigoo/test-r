@@ -103,16 +103,4 @@ Output capturing is implemented by forking one or more child processes and attac
 
 
 ## Running prebuilt test binaries with `cargo-test-r`
-`cargo test-r run` accepts the same arguments as `cargo test`. With `--binaries-metadata <PATH>` it runs test binaries that were already built instead of invoking Cargo. `PATH` is the JSON written by:
-
-```
-cargo nextest list --list-type binaries-only --message-format json [--cargo-profile <PROFILE>] > binaries.json
-```
-
-The binaries run from the absolute paths recorded in that file, in their package's directory. `-p`/`--package`, `--exclude`, `--test` and `--lib` select which binaries to run. Test name filters and arguments after `--` are passed to each binary:
-
-```
-cargo test-r run --binaries-metadata binaries.json -p my-crate --test integration -- --retry-failed 2
-```
-
-This mode never falls back to building with Cargo. It fails if the file is missing or invalid, if no listed binary matches the selection, or if a selected binary no longer exists. Build options such as `--profile` or `--features` are rejected, because the binaries are already built.
+`cargo test-r run` accepts the same arguments as `cargo test`. It can also run test binaries that were already built, without invoking Cargo, with a whole-run deadline and an event log for CI. See [Running prebuilt test binaries](./prebuilt_binaries.md).

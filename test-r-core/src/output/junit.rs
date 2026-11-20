@@ -18,7 +18,7 @@ pub(crate) struct JUnit {
 
 impl JUnit {
     pub fn new(show_output: bool, logfile_path: Option<PathBuf>) -> Self {
-        let logfile = logfile_path.map(|path| LogFile::new(path, false));
+        let logfile = logfile_path.map(|path| LogFile::new(path, false, "junit"));
         let stream = match logfile {
             Some(log) => StdoutOrLogFile::LogFile(log),
             None => StdoutOrLogFile::stdout(),

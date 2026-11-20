@@ -46,7 +46,7 @@ impl Pretty {
         integ_test_threshold: TimeThreshold,
         show_stats: bool,
     ) -> Self {
-        let logfile = logfile_path.map(|path| LogFile::new(path, false));
+        let logfile = logfile_path.map(|path| LogFile::new(path, false, "pretty"));
 
         Self {
             style_ok: Style::new().fg_color(Some(AnsiColor::Green.into())),

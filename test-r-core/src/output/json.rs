@@ -13,7 +13,7 @@ pub(crate) struct Json {
 impl Json {
     pub fn new(show_output: bool, logfile_path: Option<PathBuf>) -> Self {
         let target = Mutex::new(match logfile_path {
-            Some(path) => StdoutOrLogFile::LogFile(LogFile::new(path, false)),
+            Some(path) => StdoutOrLogFile::LogFile(LogFile::new(path, false, "json")),
             None => StdoutOrLogFile::stdout(),
         });
         Self {

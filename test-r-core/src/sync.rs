@@ -26,6 +26,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 pub fn test_runner() -> ExitCode {
+    crate::output::capture_report_index();
     crate::panic_hook::install_panic_hook();
     let mut args = Arguments::from_args();
     // When the parent spawned this process as a worker it passed

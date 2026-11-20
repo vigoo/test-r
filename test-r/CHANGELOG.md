@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- [**breaking**] test-r re-exports `desert_rust` 0.2 (was 0.1) with its default features disabled. `#[hosted_rpc]` argument and return types must implement the 0.2 traits. The `bigdecimal`, `uuid`, `nonempty-collections` and `serde-json` implementations are no longer enabled implicitly, and `chrono` support is gone (use `jiff`). Enable the features you need on your own `desert_rust` dependency.
+
 ## [3.0.15](https://github.com/vigoo/test-r/compare/test-r-v3.0.14...test-r-v3.0.15) - 2026-11-17
 
 ### Other
