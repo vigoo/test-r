@@ -47,8 +47,8 @@ impl Workspace {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         // Both directories have the same last component, neither is the package name.
-        let alpha = dir.path().join("a/same");
-        let decoy = dir.path().join("b/same");
+        let alpha = dir.path().join("a").join("same");
+        let decoy = dir.path().join("b").join("same");
         std::fs::create_dir_all(&alpha).unwrap();
         std::fs::create_dir_all(&decoy).unwrap();
         let target = dir.path().join("redirected-output");
@@ -163,7 +163,7 @@ fn inventory_filters_identity_order_and_no_execution() {
     assert_eq!(selection["binaries"][0]["package-name"], "alpha");
     assert_eq!(
         selection["binaries"][0]["working-directory"],
-        w.dir.path().join("a/same").to_str().unwrap()
+        w.dir.path().join("a").join("same").to_str().unwrap()
     );
     assert_eq!(
         ids(&success(w.list(&["-p", "a*", "--test", "integ*"]))),
@@ -205,7 +205,7 @@ fn inventory_filters_identity_order_and_no_execution() {
 #[test]
 fn legacy_package_id_and_percent_encoded_directory() {
     let mut w = Workspace::new();
-    let package = w.dir.path().join("space here/legacy");
+    let package = w.dir.path().join("space here").join("legacy");
     std::fs::create_dir_all(&package).unwrap();
     w.document["rust-binaries"]["alpha"]["package-id"] = json!(format!(
         "path+{}#0.1.0",
@@ -329,13 +329,13 @@ fn saved_selection_runs_exactly_it_in_order_with_arguments_and_fail_fast() {
     assert_eq!(lines.len(), 2);
     assert!(lines[0].contains(&format!(
         "|{}|[\"name\", \"--exact\"]",
-        w.dir.path().join("a/same").canonicalize().unwrap().display()
+        w.dir.path().join("a").join("same").canonicalize().unwrap().display()
     )));
     assert!(lines[1].contains(&format!(
             "|{}|",
             w.dir
                 .path()
-                .join("b/same")
+                .join("b").join("same")
                 .canonicalize()
                 .unwrap()
                 .display()
@@ -441,7 +441,7 @@ fn extracted_archive_relocates_redirected_target_and_workspace() {
     {
         binary["package-id"] = json!(format!(
             "path+{}#alpha@0.1.0",
-            url::Url::from_directory_path(old_workspace.join("a/same"))
+            url::Url::from_directory_path(old_workspace.join("a").join("same"))
                 .unwrap()
                 .as_str()
                 .trim_end_matches('/')
@@ -482,7 +482,7 @@ fn extracted_archive_relocates_redirected_target_and_workspace() {
         )
         .canonicalize()
         .unwrap(),
-        w.dir.path().join("a/same").canonicalize().unwrap()
+        w.dir.path().join("a").join("same").canonicalize().unwrap()
     );
     assert!(!w.dir.path().join("trace").exists());
     let output = w
