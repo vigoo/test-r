@@ -15,7 +15,12 @@ fn fixture(dir: &Path) -> PathBuf {
                     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
                     writeln!(file, "{}|{}|{:?}", name, std::env::current_dir().unwrap().canonicalize().unwrap().display(), std::env::args().skip(1).collect::<Vec<_>>()).unwrap();
                 }
+                if let Ok(path) = std::env::var("REPORTS") {
+                    std::fs::write(std::path::Path::new(&path).join(format!("{name}.json")), format!("{{\"binary\":\"{name}\"}}")).unwrap();
+                }
                 if name == "fail" { std::process::exit(7); }
+                if name == "fail-later" { std::process::exit(19); }
+                if name == "crash" { std::process::abort(); }
             }
         "#).unwrap();
     let exe = dir.join(format!("fixture{}", std::env::consts::EXE_SUFFIX));
@@ -366,14 +371,20 @@ fn saved_selection_runs_exactly_it_in_order_with_arguments_and_fail_fast() {
             .count(),
         1
     );
-    failure(
-        w.command("run")
-            .arg("--binaries-metadata")
-            .arg(&w.metadata)
-            .args(["--no-fail-fast"])
-            .output()
-            .unwrap(),
-        "--no-fail-fast is not supported",
+    let output = w
+        .command("run")
+        .arg("--binaries-metadata")
+        .arg(&w.metadata)
+        .arg("--no-fail-fast")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(7), "{output:?}");
+    assert_eq!(
+        std::fs::read_to_string(w.dir.path().join("trace"))
+            .unwrap()
+            .lines()
+            .count(),
+        6
     );
 }
 
@@ -486,5 +497,188 @@ fn extracted_archive_relocates_redirected_target_and_workspace() {
             .output()
             .unwrap(),
         "does not exist",
+    );
+}
+
+// Exercise the same execution contract through every prebuilt input path.
+#[derive(Clone, Copy, Debug)]
+enum Input {
+    Metadata,
+    Archive,
+    Selection,
+}
+
+fn outcome_run(input: Input, names: [&str; 3], no_fail_fast: bool, code: i32) -> Output {
+    let mut w = Workspace::new();
+    let target = w.dir.path().join("redirected-output");
+    let ids = ["alpha", "alpha::integration", "decoy::integration"];
+    w.document["rust-binaries"]
+        .as_object_mut()
+        .unwrap()
+        .retain(|id, _| ids.contains(&id.as_str()));
+    for (id, name) in ids.iter().zip(names) {
+        let exe = target.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        if name == "launch" {
+            // Pass artifact validation but let the OS reject the image at spawn.
+            std::fs::write(&exe, "not an executable image").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        } else {
+            std::fs::copy(&w.fixture, &exe).unwrap();
+        }
+        w.document["rust-binaries"][id]["binary-path"] = json!(exe);
+    }
+    w.save();
+    let mut cmd = w.command("run");
+    match input {
+        Input::Metadata => {
+            cmd.arg("--binaries-metadata").arg(&w.metadata);
+        }
+        Input::Selection => {
+            let selection = success(w.list(&[]));
+            let path = w.dir.path().join("selection.json");
+            std::fs::write(&path, selection.to_string()).unwrap();
+            cmd.arg("--selection").arg(path);
+        }
+        Input::Archive => {
+            std::fs::write(w.dir.path().join("Cargo.lock"), "").unwrap();
+            let archive = w.dir.path().join("archive-target/nextest-archive");
+            let meta = archive.join("target/nextest");
+            std::fs::create_dir_all(&meta).unwrap();
+            for name in names {
+                let filename = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+                std::fs::copy(
+                    target.join(&filename),
+                    archive.join("target").join(filename),
+                )
+                .unwrap();
+            }
+            std::fs::write(meta.join("binaries-metadata.json"), w.document.to_string()).unwrap();
+            std::fs::write(
+                meta.join("cargo-metadata.json"),
+                json!({"workspace_root": w.dir.path()}).to_string(),
+            )
+            .unwrap();
+            cmd.args(["--target-dir", "archive-target"]);
+        }
+    }
+    let reports = w.dir.path().join("reports");
+    std::fs::create_dir(&reports).unwrap();
+    cmd.env("REPORTS", &reports);
+    if no_fail_fast {
+        cmd.arg("--no-fail-fast");
+    }
+    let output = cmd.args(["filter", "--", "--exact"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(code), "{input:?}: {output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let trace = std::fs::read_to_string(w.dir.path().join("trace")).unwrap_or_default();
+    let lines: Vec<_> = trace.lines().collect();
+    let mut executed = 0;
+    let mut stopped = false;
+    for (index, name) in names.iter().enumerate() {
+        let ran = !stopped && *name != "launch";
+        let report = reports.join(format!("{name}.json"));
+        assert_eq!(report.exists(), ran, "{input:?}: {name}: {output:?}");
+        if ran {
+            assert_eq!(
+                serde_json::from_slice::<Value>(&std::fs::read(report).unwrap()).unwrap(),
+                json!({"binary": name})
+            );
+            let cwd = w
+                .dir
+                .path()
+                .join(if index == 2 { "b/same" } else { "a/same" })
+                .canonicalize()
+                .unwrap();
+            assert_eq!(
+                lines[executed],
+                format!("{name}|{}|[\"filter\", \"--exact\"]", cwd.display())
+            );
+            executed += 1;
+        }
+        if *name != "ok" && *name != "later" && *name != "last" && !no_fail_fast {
+            stopped = true;
+        }
+    }
+    assert_eq!(lines.len(), executed, "{input:?}: {trace}");
+    output
+}
+
+#[test]
+fn prebuilt_outcomes_fail_fast_continue_and_preserve_reports() {
+    for input in [Input::Metadata, Input::Archive, Input::Selection] {
+        let default = outcome_run(input, ["fail", "later", "last"], false, 7);
+        assert!(
+            String::from_utf8_lossy(&default.stderr)
+                .contains("Test binary alpha: failed with exit code 7")
+        );
+        outcome_run(input, ["fail", "later", "last"], true, 7);
+        for no_fail_fast in [false, true] {
+            let passed = outcome_run(input, ["ok", "later", "last"], no_fail_fast, 0);
+            assert!(passed.stderr.is_empty(), "{passed:?}");
+        }
+        // A passing prefix must not hide the first failure, nor may a later code replace it.
+        let failed = outcome_run(input, ["ok", "fail-later", "fail"], true, 19);
+        let stderr = String::from_utf8_lossy(&failed.stderr);
+        assert!(
+            stderr.contains("Test binary alpha::integration: failed with exit code 19"),
+            "{failed:?}"
+        );
+        assert!(
+            stderr.contains("Test binary decoy::integration: failed with exit code 7"),
+            "{failed:?}"
+        );
+        // Also rule out choosing the largest code rather than selection order.
+        outcome_run(input, ["fail", "fail-later", "last"], true, 7);
+        for no_fail_fast in [false, true] {
+            let launch = outcome_run(input, ["launch", "later", "last"], no_fail_fast, 1);
+            assert!(
+                String::from_utf8_lossy(&launch.stderr)
+                    .contains("Test binary alpha: launch failed"),
+                "{launch:?}"
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn prebuilt_crash_reports_signal_and_continues_only_when_requested() {
+    for input in [Input::Metadata, Input::Archive, Input::Selection] {
+        for no_fail_fast in [false, true] {
+            let output = outcome_run(input, ["crash", "later", "last"], no_fail_fast, 134);
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("Test binary alpha: crashed with signal 6"),
+                "{output:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn cargo_fallback_forwards_no_fail_fast_and_preserves_exit_code() {
+    let w = Workspace::new();
+    std::fs::write(w.dir.path().join("Cargo.lock"), "").unwrap();
+    let cargo = w
+        .dir
+        .path()
+        .join(format!("fail{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(&w.fixture, &cargo).unwrap();
+    let output = w
+        .command("run")
+        .env("CARGO", cargo)
+        .args(["--no-fail-fast", "filter", "--", "--exact"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(7), "{output:?}");
+    let trace = std::fs::read_to_string(w.dir.path().join("trace")).unwrap();
+    assert_eq!(trace.lines().count(), 1);
+    assert!(
+        trace.ends_with("|[\"test\", \"--no-fail-fast\", \"filter\", \"--\", \"--exact\"]\n"),
+        "{trace}"
     );
 }

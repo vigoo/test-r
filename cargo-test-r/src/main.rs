@@ -3,8 +3,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser};
 use humansize::{BINARY, format_size};
 use selection::{Filters, Selection};
-use std::process::ExitStatus;
 
+mod run;
 mod selection;
 
 #[derive(Parser, Debug, Clone)]
@@ -188,16 +188,7 @@ struct RunSubcommand {
 
 fn main() {
     match try_main() {
-        Ok(status) => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::ExitStatusExt;
-                if let Some(signal) = status.signal() {
-                    std::process::exit(128 + signal);
-                }
-            }
-            std::process::exit(status.code().unwrap_or(1));
-        }
+        Ok(code) => std::process::exit(code),
         Err(err) => {
             eprintln!("Error: {err:#}");
             std::process::exit(1);
@@ -210,7 +201,7 @@ fn workspace_root() -> anyhow::Result<Utf8PathBuf> {
         .map_err(|path| anyhow!("Unexpected characters in workspace root: {path:?}"))
 }
 
-fn try_main() -> anyhow::Result<ExitStatus> {
+fn try_main() -> anyhow::Result<i32> {
     let mut args = std::env::args().collect::<Vec<_>>();
     // Cargo passes the subcommand name to external subcommands.
     if args.get(1).is_some_and(|arg| arg == "test-r") {
@@ -223,7 +214,7 @@ fn try_main() -> anyhow::Result<ExitStatus> {
             let selection = cmd.select()?;
             serde_json::to_writer_pretty(std::io::stdout().lock(), &selection)?;
             println!();
-            Ok(ExitStatus::default())
+            Ok(0)
         }
         Command::Run(cmd) => run(cmd, &args[2..]),
     }
@@ -232,7 +223,7 @@ fn try_main() -> anyhow::Result<ExitStatus> {
 fn reuse_nextest_archive(
     workspace: &Utf8Path,
     cmd: ReuseNextestArchiveSubcommand,
-) -> anyhow::Result<ExitStatus> {
+) -> anyhow::Result<i32> {
     let target = selection::archive_target(workspace, &cmd.target_dir);
     if !target.exists() {
         println!("Creating target directory: {target}");
@@ -257,10 +248,10 @@ fn reuse_nextest_archive(
                 .content_only(true),
         )?;
     }
-    Ok(ExitStatus::default())
+    Ok(0)
 }
 
-fn run(cmd: RunSubcommand, cargo_args: &[String]) -> anyhow::Result<ExitStatus> {
+fn run(cmd: RunSubcommand, cargo_args: &[String]) -> anyhow::Result<i32> {
     let selection = if let Some(path) = &cmd.selection {
         validate_supported_test_args(&cmd)?;
         if !cmd.selection_args.filters().is_empty() || cmd.selection_args.target_dir.is_some() {
@@ -286,7 +277,9 @@ fn run(cmd: RunSubcommand, cargo_args: &[String]) -> anyhow::Result<ExitStatus> 
         }
     };
     if let Some(selection) = selection {
-        run_test_binaries(selection, cmd.testname, cmd.test_args)
+        let mut args = cmd.testname;
+        args.extend(cmd.test_args);
+        Ok(run::run(&selection, &args, cmd.no_fail_fast).exit_code())
     } else {
         if !cmd.selection_args.binary_id.is_empty() {
             bail!("--binary-id requires prebuilt metadata or an extracted archive");
@@ -296,33 +289,14 @@ fn run(cmd: RunSubcommand, cargo_args: &[String]) -> anyhow::Result<ExitStatus> 
         let mut args = cargo_args.to_vec();
         args.insert(0, "test".into());
         println!("Executing {} {}", cargo_path, args.join(" "));
-        Ok(std::process::Command::new(cargo_path).args(args).status()?)
+        let status = std::process::Command::new(cargo_path).args(args).status()?;
+        Ok(run::BinaryOutcome::from(status).exit_code())
     }
-}
-
-/// Preserve the sequential, fail-fast execution behavior.
-fn run_test_binaries(
-    selection: Selection,
-    mut args: Vec<String>,
-    extra: Vec<String>,
-) -> anyhow::Result<ExitStatus> {
-    args.extend(extra);
-    for binary in selection.binaries {
-        let status = std::process::Command::new(binary.executable)
-            .current_dir(binary.working_directory)
-            .args(&args)
-            .status()?;
-        if !status.success() {
-            return Ok(status);
-        }
-    }
-    Ok(ExitStatus::default())
 }
 
 fn validate_supported_test_args(cmd: &RunSubcommand) -> anyhow::Result<()> {
     let unsupported = [
         (cmd.no_run, "--no-run"),
-        (cmd.no_fail_fast, "--no-fail-fast"),
         (cmd.bin.is_some(), "--bin"),
         (cmd.example.is_some(), "--example"),
         (cmd.examples, "--examples"),

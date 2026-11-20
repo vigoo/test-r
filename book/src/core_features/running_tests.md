@@ -166,4 +166,27 @@ Inputs remain in command-line order; each hash is SHA-256 of the exact metadata 
 
 After `cargo test-r reuse-nextest-archive --archive-file tests.tar.zst`, both `list` and `run` automatically read `target/nextest-archive/target/nextest/binaries-metadata.json` when no explicit input is given. `--target-dir <DIR>` changes the archive location to `<DIR>/nextest-archive`. Binary paths are relocated relative to the original target directory; package working directories are relocated from the original `workspace_root` in the archive's `target/nextest/cargo-metadata.json` to the current workspace. This also supports archives built with redirected Cargo target directories.
 
-Explicit metadata/selection input and `list` never fall back to Cargo. Unreadable or malformed metadata, unsupported package ids that cannot map to local directories, missing or non-executable selected artifacts, missing working directories and empty selections fail with exit code 1 and diagnostics on stderr, without selection output on stdout. On Unix, executable permission bits are checked; on Windows, files must have an `.exe` extension. These checks do not inspect executable contents or guarantee that the OS can load them; launch errors are reported by `run`. Build options such as `--profile` or `--features` are rejected in prebuilt mode. The run loop remains sequential and stops at the first failing binary; prebuilt `--no-fail-fast` and `--no-run` are not supported yet. Without explicit input or an extracted archive, `run` still forwards to `cargo test`.
+Explicit metadata/selection input and `list` never fall back to Cargo. Unreadable or malformed metadata, unsupported package ids that cannot map to local directories, missing or non-executable selected artifacts, missing working directories and empty selections fail with exit code 1 and diagnostics on stderr, without selection output on stdout. On Unix, executable permission bits are checked; on Windows, files must have an `.exe` extension. These checks do not inspect executable contents or guarantee that the OS can load them; launch errors are reported by `run`. Build options such as `--profile` or `--features`, and `--no-run`, are rejected in prebuilt mode. Without explicit input or an extracted archive, `run` still forwards to `cargo test`, including `--no-fail-fast`.
+
+### Continuing after a failing binary
+
+Prebuilt runs are sequential and **fail fast by default**. Add `--no-fail-fast` to run every selected binary even when an earlier binary fails, crashes or cannot be launched:
+
+```sh
+cargo test-r run --binaries-metadata binaries.json --no-fail-fast -- --retry-failed 2
+cargo test-r run --selection selection.json --no-fail-fast
+cargo test-r run --target-dir archive-target --no-fail-fast
+```
+
+This applies equally to metadata, saved selections and extracted archives. Binary-id order, package working directories and harness arguments are unchanged. Passing binaries are not rerun, and per-test retries inside each binary are unaffected. Each binary inherits stdout and stderr and writes its ordinary reports; cargo-test-r also reports each failing binary's id and status on stderr, so distinct failures remain distinguishable.
+
+The final exit code is the **first failure in selection order**, not the last or largest code:
+
+| Binary outcome | Exit code |
+| --- | --- |
+| All binaries passed | 0 |
+| Nonzero exit | The binary's exit code |
+| Killed by a signal (Unix) | 128 + signal number |
+| Launch failure after validation (for example, an invalid executable image) | 1 |
+
+With default fail-fast, the remaining binaries are not run. With `--no-fail-fast`, later binaries still run but cannot turn the final result into success. Artifact validation still happens for the entire selection before any binary starts; `--no-fail-fast` does not bypass invalid metadata or missing files. Invocation deadlines, cancellation handling and descendant cleanup are not implemented yet.
