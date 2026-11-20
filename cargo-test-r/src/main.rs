@@ -6,6 +6,7 @@ use selection::{Filters, Selection};
 
 mod run;
 mod selection;
+mod snapshot;
 
 #[derive(Parser, Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
@@ -14,7 +15,37 @@ enum Command {
     ReuseNextestArchive(ReuseNextestArchiveSubcommand),
     /// Select and validate prebuilt binaries, printing selection JSON without running Cargo or tests.
     List(SelectionArgs),
+    /// Copy a selection into an independently verified snapshot (Linux glibc).
+    Snapshot(SnapshotSubcommand),
+    /// Verify a snapshot without invoking the loader or tests.
+    Verify(VerifySubcommand),
     Run(RunSubcommand),
+}
+
+#[derive(Args, Debug, Clone)]
+struct SnapshotSubcommand {
+    #[arg(long)]
+    selection: Utf8PathBuf,
+    #[arg(long)]
+    out: Utf8PathBuf,
+}
+
+#[derive(Args, Debug, Clone)]
+struct VerifySubcommand {
+    #[arg(long)]
+    selection: Utf8PathBuf,
+    #[command(flatten)]
+    verification: VerificationArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+struct VerificationArgs {
+    /// Require the exact selection.json digest printed by snapshot.
+    #[arg(long)]
+    expect_digest: Option<String>,
+    /// Check recorded libraries exist, but allow their contents to change.
+    #[arg(long)]
+    skip_library_hashes: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -92,6 +123,8 @@ struct RunSubcommand {
     /// Run exactly the binaries in a selection file, without invoking Cargo.
     #[arg(long, value_name = "PATH", conflicts_with = "binaries_metadata")]
     selection: Option<Utf8PathBuf>,
+    #[command(flatten)]
+    verification: VerificationArgs,
     /// Compile, but don't run tests.
     #[arg(long)]
     no_run: bool,
@@ -217,6 +250,21 @@ fn try_main() -> anyhow::Result<i32> {
             Ok(0)
         }
         Command::Run(cmd) => run(cmd, &args[2..]),
+        Command::Snapshot(cmd) => {
+            let digest = snapshot::snapshot(&cmd.selection, &cmd.out)?;
+            println!("snapshot {} {digest}", cmd.out);
+            Ok(0)
+        }
+        Command::Verify(cmd) => {
+            let selection = Selection::read(&cmd.selection)?;
+            snapshot::verify(
+                &cmd.selection,
+                &selection,
+                cmd.verification.expect_digest.as_deref(),
+                cmd.verification.skip_library_hashes,
+            )?;
+            Ok(0)
+        }
     }
 }
 
@@ -252,6 +300,11 @@ fn reuse_nextest_archive(
 }
 
 fn run(cmd: RunSubcommand, cargo_args: &[String]) -> anyhow::Result<i32> {
+    if cmd.selection.is_none()
+        && (cmd.verification.expect_digest.is_some() || cmd.verification.skip_library_hashes)
+    {
+        bail!("--expect-digest and --skip-library-hashes require --selection");
+    }
     let selection = if let Some(path) = &cmd.selection {
         validate_supported_test_args(&cmd)?;
         if !cmd.selection_args.filters().is_empty() || cmd.selection_args.target_dir.is_some() {
@@ -259,7 +312,16 @@ fn run(cmd: RunSubcommand, cargo_args: &[String]) -> anyhow::Result<i32> {
                 "--selection runs exactly the saved selection; package/target filters and --target-dir cannot be combined with it"
             );
         }
-        Some(Selection::read(path)?)
+        let selection = Selection::read(path)?;
+        if snapshot::has_hashes(&selection) || cmd.verification.expect_digest.is_some() {
+            snapshot::verify(
+                path,
+                &selection,
+                cmd.verification.expect_digest.as_deref(),
+                cmd.verification.skip_library_hashes,
+            )?;
+        }
+        Some(selection)
     } else if !cmd.selection_args.binaries_metadata.is_empty() {
         validate_supported_test_args(&cmd)?;
         Some(cmd.selection_args.select()?)

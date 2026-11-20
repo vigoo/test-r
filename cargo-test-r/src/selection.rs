@@ -77,6 +77,18 @@ pub struct SelectedBinary {
     pub build_variant: String,
     pub executable: Utf8PathBuf,
     pub working_directory: Utf8PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<Vec<Dependency>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dependency {
+    pub path: Utf8PathBuf,
+    pub sha256: String,
 }
 
 impl Selection {
@@ -242,6 +254,9 @@ pub fn select(
                 build_variant: sha256(&variant)[..12].to_owned(),
                 executable: binary.binary_path.clone(),
                 working_directory: package_path,
+                sha256: None,
+                mode: None,
+                dependencies: None,
             };
             if !filters.matches(&selected) {
                 continue;

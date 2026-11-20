@@ -190,3 +190,40 @@ The final exit code is the **first failure in selection order**, not the last or
 | Launch failure after validation (for example, an invalid executable image) | 1 |
 
 With default fail-fast, the remaining binaries are not run. With `--no-fail-fast`, later binaries still run but cannot turn the final result into success. Artifact validation still happens for the entire selection before any binary starts; `--no-fail-fast` does not bypass invalid metadata or missing files. Invocation deadlines, cancellation handling and descendant cleanup are not implemented yet.
+
+### Freezing prebuilt binaries with snapshot
+
+On **Linux with glibc**, `snapshot` copies every binary in a saved selection into an independent directory that Cargo never writes:
+
+```sh
+cargo test-r snapshot --selection selection.json --out /ci/snap/4711
+# snapshot /ci/snap/4711 sha256:<digest>
+cargo test-r verify --selection /ci/snap/4711/selection.json --expect-digest sha256:<digest>
+cargo test-r run --selection /ci/snap/4711/selection.json --expect-digest sha256:<digest>
+```
+
+The output directory must not exist, and its parent must exist. Snapshot creation requires the original nextest metadata in `inputs`, unchanged (its recorded SHA-256 is checked), to identify mutable Cargo target directories and build-script `linked-paths`. Relative input metadata paths are resolved from the current directory, as with `list`. After publication, neither `verify` nor `run` needs that metadata or the original executables.
+
+Snapshot creation uses a private temporary sibling directory. Each new regular file under `bin/` has a sanitized, length-limited binary id plus the full SHA-256 of that id as its name, so colliding basenames and sanitized ids remain distinct. Copies are never hard links or symlinks. Source and copy hashes must agree; executable permissions are preserved. Files and directories are synced before an atomic rename publishes the complete snapshot, using no-overwrite semantics where supported (see the trust assumptions below); the parent directory is synced afterwards. An error cleans up the temporary directory instead of publishing a partial selection. Working directories remain the original package directories; snapshots do not copy resources or make tests hermetic.
+
+The selection format remains version 1. Ordinary `list` output is unchanged. Snapshot entries add these optional fields (omitted from ordinary selections):
+
+```json
+{
+  "sha256": "<64 lowercase hex digits of executable contents>",
+  "mode": 493,
+  "dependencies": [
+    { "path": "/lib/x86_64-linux-gnu/libc.so.6", "sha256": "<64 lowercase hex digits>" }
+  ]
+}
+```
+
+`mode` is the Unix permission/special bits (493 is decimal for octal 0755); on non-Unix hosts verification uses the platform's read-only flag (0 or 1). `dependencies` is empty for a static ELF executable. For dynamic executables, snapshot reads the ELF interpreter, `DT_NEEDED` and `RPATH`/`RUNPATH`, then invokes `<interpreter> --list` on the original and copied executables in the recorded working directory. It rejects missing libraries, paths inside target directories or `linked-paths` (including through symlinks), and changed resolution after relocation, including `$ORIGIN`. Admitted libraries and the interpreter are recorded with their loader paths and content hashes. Library contents are not bundled.
+
+`run --selection` automatically verifies the entire selection before starting any binary when any entry contains snapshot fields. Verification requires complete hashes, modes and dependencies on every entry, checks that executables resolve inside the snapshot's `bin/`, and rejects changed or missing files, permissions and libraries. It never executes the loader. `--expect-digest sha256:…` additionally checks the exact selection file bytes, detecting edits to metadata or recorded hashes. Keep that digest separately from the snapshot. Removing all snapshot fields makes an unpinned selection indistinguishable from an ordinary selection, so pin the digest when manifest tampering must be detected.
+
+Both `verify` and `run --selection` accept `--skip-library-hashes`: recorded libraries must still exist, but their contents may differ. Use this deliberately when a host's system libraries have been patched; it does not skip binary hashes, modes or the manifest digest. Verification itself is portable and compiles on all supported platforms, but snapshots are local execution inputs, not cross-platform archives. macOS, Windows and musl reject **snapshot creation** with a not-supported error until their loader contracts are implemented.
+
+**Trust assumptions:** only the CI user may write the snapshot directory (including during verification/execution). Loader inspection runs the system interpreter from **trusted, own build outputs**, not arbitrary downloaded executables. System libraries outside mutable build output are assumed stable for the snapshot's lifetime. Preserve the loader environment (for example `LD_LIBRARY_PATH`/`LD_PRELOAD`), working directories and host loader configuration between snapshot and execution: verification checks the recorded files without resolving libraries again. Hashes detect accidental changes; without a separately trusted digest they do not authenticate a maliciously rewritten manifest. Verification is not a sandbox and does not prevent a concurrent writer changing files after the check.
+
+Publication normally uses `renameat2(RENAME_NOREPLACE)` to reject even a concurrently created output directory. On filesystems that reject this flag with `EINVAL` (for example some NFS or FUSE mounts), snapshot falls back to checking that the output does not exist and then performing an ordinary atomic rename. This fallback has a weaker race guarantee: another process could create an empty output directory between the check and rename and have it replaced. Ensure no other process publishes to the same output path on those filesystems.
