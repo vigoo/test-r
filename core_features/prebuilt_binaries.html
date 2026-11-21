@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-3f294f0a.js";
+            window.path_to_searchindex_js = "../searchindex-eaec96cd.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e23b0b45.js"></script>
@@ -217,12 +217,22 @@ cargo test-r run --selection selection.json --no-fail-fast --deadline 30m -- --r
 </ul>
 <p>Binary ids follow nextest’s scheme: <code>my-crate</code> for library unit tests, <code>my-crate::integration</code> for an integration test, and <code>my-crate::bin/tool</code> for other targets. They come from the package id and target, never from file names.</p>
 <p>The same binary id listed twice with identical details is merged. Two different entries for one id, such as two executable paths or two build variants, are an error that shows both, rather than one being picked silently. A binary id is unique within a selection.</p>
+<p><code>--expect-count &lt;N&gt;</code> requires exactly N binaries after filtering and deduplication. An empty selection is always an error. For scripts that need one executable path rather than a selection file, <code>list --output executable-path</code> requires exactly one binary and prints its absolute path followed by a newline. It rejects paths containing line breaks; JSON output supports those paths.</p>
 <p>Test name filters and arguments after <code>--</code> are passed to every selected binary:</p>
 <pre><code class="language-sh">cargo test-r run --binaries-metadata binaries.json -p my-crate --test integration -- --retry-failed 2
 </code></pre>
 <p>Build options such as <code>--release</code>, <code>--features</code> or <code>--no-run</code> are rejected, because the binaries are already built.</p>
+<h3 id="checking-cargo-artifact-identities"><a class="header" href="#checking-cargo-artifact-identities">Checking Cargo artifact identities</a></h3>
+<p>When consuming Cargo messages, <code>--cargo-metadata &lt;FILE&gt;</code> checks each selected artifact against an existing <code>cargo metadata --no-deps --format-version 1</code> document. It does not invoke Cargo:</p>
+<pre><code class="language-sh">cargo metadata --no-deps --format-version 1 &gt; cargo-metadata.json
+cargo test --locked -p my-crate --lib --no-run --message-format json &gt; cargo-messages.jsonl
+cargo test-r list --cargo-messages cargo-messages.jsonl --cargo-metadata cargo-metadata.json \
+  -p my-crate --lib --expect-count 1 --output executable-path
+</code></pre>
+<p>This checks the package id and name, workspace membership, package source directory and manifest, and the target’s name, original kind list and source file. Paths are canonicalized. Each selected raw artifact is checked before duplicate entries are merged, so a duplicate with a different source file cannot be hidden by a valid entry. Unselected artifacts do not need to belong to the supplied workspace. Local workspace members may live outside the workspace-root directory, as Cargo permits. Both the build messages and metadata are trusted inputs; produce them for the intended workspace and build settings.</p>
+<p><code>--cargo-metadata</code> requires Cargo-message inputs only. It cannot be combined with nextest inputs, an extracted archive or a saved selection. Its path and digest are recorded as an input with kind <code>cargo-metadata</code>. Without this option, Cargo-message selection retains its existing behavior.</p>
 <h3 id="selection-files"><a class="header" href="#selection-files">Selection files</a></h3>
-<p><code>cargo test-r list</code> prints the chosen binaries as JSON on stdout and never runs anything. <code>cargo test-r run --selection &lt;FILE&gt;</code> later runs exactly those binaries, in <code>binary-id</code> order, without reading the inputs again:</p>
+<p><code>cargo test-r list</code> prints the chosen binaries as JSON on stdout without invoking Cargo or test binaries. <code>cargo test-r run --selection &lt;FILE&gt;</code> later runs those binaries, optionally narrowed by filters, in <code>binary-id</code> order without reading the inputs again:</p>
 <pre><code class="language-json">{
   "format": "cargo-test-r-selection",
   "version": 1,
@@ -242,11 +252,15 @@ cargo test-r run --selection selection.json --no-fail-fast --deadline 30m -- --r
 }
 </code></pre>
 <ul>
-<li><code>inputs</code> records which files the selection came from, with the SHA-256 of their contents. <code>kind</code> is <code>nextest-binaries</code> or <code>cargo-messages</code>; a missing <code>kind</code> means <code>nextest-binaries</code>. <code>run</code> ignores input kinds it doesn’t know, so selections from newer versions still run.</li>
+<li><code>inputs</code> records which files the selection came from, with the SHA-256 of their contents. <code>kind</code> is <code>nextest-binaries</code>, <code>cargo-messages</code> or <code>cargo-metadata</code>; a missing <code>kind</code> means <code>nextest-binaries</code>. <code>run</code> ignores input kinds it doesn’t know, so selections from newer versions still run.</li>
 <li><code>build-variant</code> is an opaque short hash of the build settings. Compare it only between selections made by the same cargo-test-r version from the same kind of input.</li>
 <li>Paths are absolute. Each binary runs in its package’s directory.</li>
 </ul>
-<p>Filters, <code>--target-dir</code> and other inputs cannot be combined with <code>--selection</code>; make a new selection instead. A selection does not freeze the executables: a rebuild can replace them. Use a <a href="#snapshots-freezing-binaries">snapshot</a> for that.</p>
+<p>Package, target and binary-id filters can narrow a saved selection without reading its inputs or rewriting its manifest. The complete saved selection is validated, and a snapshot is verified in full, <strong>before</strong> filtering. A missing or tampered unselected executable therefore still fails the run. <code>--expect-digest</code> always identifies the original file’s exact bytes, never a derived subset. <code>--expect-count</code> applies to the filtered set. <code>--target-dir</code> and other metadata inputs cannot be combined with <code>--selection</code>.</p>
+<pre><code class="language-sh">cargo test-r run --selection /ci/snap/run-1/selection.json --expect-digest sha256:&lt;digest&gt; \
+  -p my-crate --test integration --expect-count 1 -- --retry-failed 2
+</code></pre>
+<p>A selection does not freeze the executables: a rebuild can replace them. Use a <a href="#snapshots-freezing-binaries">snapshot</a> for that.</p>
 <h3 id="errors-before-anything-runs"><a class="header" href="#errors-before-anything-runs">Errors before anything runs</a></h3>
 <p>Every selected binary is checked before the first one starts. Unreadable input, an empty selection, a missing executable or working directory, and a file that is not executable (Unix permission bits; an <code>.exe</code> extension on Windows) all fail with exit code 1. <code>list</code> then prints nothing on stdout.</p>
 <h2 id="running-the-binaries"><a class="header" href="#running-the-binaries">Running the binaries</a></h2>
@@ -325,6 +339,14 @@ cargo test-r run --selection /ci/snap/run-1/selection.json --expect-digest sha25
 <li><strong>Leftover processes</strong>: in prebuilt runs, processes a binary leaves behind (such as a server that keeps a port open) are stopped after <strong>every</strong> binary, even when it passed. <code>--keep-leftovers</code> turns this off for suites that start a daemon on purpose; a deadline or cancellation still cleans up. Cleanup after a binary can itself cross the deadline: the run then exits 124 even though every binary passed.</li>
 <li>If cleanup fails, no further binaries start, and an otherwise passing run exits 1.</li>
 </ul>
+<h3 id="preparation-deadlines"><a class="header" href="#preparation-deadlines">Preparation deadlines</a></h3>
+<p><code>list</code>, <code>snapshot</code> and <code>verify</code> also accept <code>--deadline</code> and <code>--kill-grace</code>. Either option enables a contained worker supervised by the same process owner used for test binaries. Without either option, preparation runs directly in the caller’s process group. The deadline can interrupt blocking input reads, hashing and ELF loader inspection, rather than waiting for them to return. Supervised preparation cleans descendants after success and failure as well as cancellation and deadline expiry. Exit codes use the same signal/deadline precedence as supervised runs. The default kill grace is <code>10s</code> when a deadline is supplied alone.</p>
+<pre><code class="language-sh">cargo test-r list --binaries-metadata binaries.json --deadline 10m &gt; selection.json
+cargo test-r snapshot --selection selection.json --out /ci/snap/run-1 --deadline 10m --kill-grace 10s
+cargo test-r verify --selection /ci/snap/run-1/selection.json --deadline 10m
+</code></pre>
+<p>The preparation owner holds the snapshot’s staging directory until the worker and descendants have stopped. Cancellation before publication removes partial files; successful publication preserves the snapshot. If process cleanup fails, the staging directory is retained and its path is reported. The owner’s initial staging-directory creation and final filesystem cleanup remain synchronous; deadlines bound worker operations, not those owner operations. Grace and process drain can extend past the budget. SIGKILL of the Unix owner prevents it from cleaning up. Keep an outer CI timeout with headroom, and keep preparation and workload-group budgets separate.</p>
+<p>These options do not change <code>run</code>’s loading behavior: its budget includes selection loading and snapshot verification, but expiry is acted on once that synchronous preparation returns. Use a supervised <code>verify</code> command or an outer task deadline when that phase also needs interruption.</p>
 <h3 id="platform-notes"><a class="header" href="#platform-notes">Platform notes</a></h3>
 <ul>
 <li><strong>Linux:</strong> each binary runs in its own process group, and cargo-test-r adopts orphaned descendants, so processes that start a new session are still found and stopped. This needs <code>/proc</code> with child lists (<code>CONFIG_PROC_CHILDREN</code>); without them every supervised run fails before starting. It does not reach processes in other PID namespaces or ones started through a service manager such as systemd or Docker.</li>
@@ -361,7 +383,7 @@ cargo test-r run --selection /ci/snap/run-1/selection.json --expect-digest sha25
 <tr><th>Event</th><th>Other fields</th></tr>
 </thead>
 <tbody>
-<tr><td><code>invocation-started</code></td><td><code>pid</code>, <code>selection-sha256</code>, <code>no-fail-fast</code>, <code>deadline-ms</code> (null without a deadline), <code>kill-grace-ms</code>, <code>keep-leftovers</code></td></tr>
+<tr><td><code>invocation-started</code></td><td><code>pid</code>, <code>selection-sha256</code>, <code>binary-ids</code>, <code>no-fail-fast</code>, <code>deadline-ms</code> (null without a deadline), <code>kill-grace-ms</code>, <code>keep-leftovers</code></td></tr>
 <tr><td><code>binary-started</code></td><td><code>binary-id</code>, <code>package-id</code>, <code>attempt</code>, child <code>pid</code>, <code>cwd</code>, <code>args</code></td></tr>
 <tr><td><code>binary-launch-failed</code></td><td><code>binary-id</code>, <code>package-id</code>, <code>attempt</code>, <code>error</code> (instead of a start and finish)</td></tr>
 <tr><td><code>binary-finished</code></td><td><code>binary-id</code>, <code>attempt</code>, <code>outcome</code>, <code>exit-code</code>, <code>signal</code>, <code>duration-ms</code>, <code>leftovers-killed</code>, <code>reports</code></td></tr>
@@ -372,7 +394,7 @@ cargo test-r run --selection /ci/snap/run-1/selection.json --expect-digest sha25
 </table>
 </div>
 <ul>
-<li><code>selection-sha256</code> identifies what ran: the SHA-256 of the selection file’s bytes, or of the resolved selection as compact JSON for other inputs.</li>
+<li><code>selection-sha256</code> identifies the original selection file’s bytes, or the resolved selection as compact JSON for other inputs. <code>binary-ids</code> lists the admitted binaries in execution order after filtering. Completion counts cover that subset; binaries excluded by filters are not counted as <code>not-run</code>.</li>
 <li>Binary <code>outcome</code> is <code>passed</code>, <code>failed</code>, <code>crashed</code>, <code>timed-out</code> or <code>cancelled</code>. <code>exit-code</code> is set for <code>passed</code> and <code>failed</code>, <code>signal</code> for <code>crashed</code>; otherwise they are null. The invocation <code>outcome</code> is <code>passed</code>, <code>failed</code>, <code>timed-out</code> or <code>cancelled</code>, and matches the <a href="#exit-code">exit code</a>.</li>
 <li><code>attempt</code> is always 1: cargo-test-r does not rerun binaries. <code>leftovers-killed</code> is currently always null.</li>
 <li>Each of <code>deadline-expired</code> and <code>cancel-requested</code> is written at most once, in the order they happened. Both appear when a signal arrives after the deadline expired; cancellation then decides the outcome. <code>at-elapsed-ms</code> is when the stop happened (for the deadline, the deadline itself). The record can be written later, for example after the grace period, so its <code>elapsed-ms</code> can be larger.</li>
