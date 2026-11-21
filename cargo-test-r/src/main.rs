@@ -1,10 +1,11 @@
 use anyhow::{anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
-use clap::{Args, Parser};
+use clap::{Args, Parser, ValueEnum};
 use humansize::{BINARY, format_size};
 use selection::{Filters, Selection};
 
 mod events;
+mod preparation;
 mod run;
 mod selection;
 mod snapshot;
@@ -16,7 +17,7 @@ enum Command {
     /// Unpack a cargo-nextest archive for later list/run commands.
     ReuseNextestArchive(ReuseNextestArchiveSubcommand),
     /// Select and validate prebuilt binaries, printing selection JSON without running Cargo or tests.
-    List(SelectionArgs),
+    List(ListSubcommand),
     /// Copy a selection into an independently verified snapshot (Linux glibc).
     Snapshot(SnapshotSubcommand),
     /// Verify a snapshot without invoking the loader or tests.
@@ -25,11 +26,44 @@ enum Command {
 }
 
 #[derive(Args, Debug, Clone)]
+struct ListSubcommand {
+    #[command(flatten)]
+    selection_args: SelectionArgs,
+    #[command(flatten)]
+    preparation: PreparationArgs,
+    /// Print selection JSON, or the path of exactly one selected executable.
+    #[arg(long, value_enum, default_value = "json")]
+    output: ListOutput,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ListOutput {
+    Json,
+    ExecutablePath,
+}
+
+#[derive(Args, Debug, Clone)]
+struct PreparationArgs {
+    /// Whole preparation budget, including reads, hashing and loader inspection.
+    #[arg(long, value_parser = supervise::parse_duration)]
+    deadline: Option<std::time::Duration>,
+    /// Enable preparation supervision; time between TERM and KILL on Unix (default 10s).
+    #[arg(long, value_parser = supervise::parse_duration)]
+    kill_grace: Option<std::time::Duration>,
+    #[arg(long, hide = true)]
+    preparation_worker: bool,
+    #[arg(long, hide = true, requires = "preparation_worker")]
+    staging_directory: Option<Utf8PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
 struct SnapshotSubcommand {
     #[arg(long)]
     selection: Utf8PathBuf,
     #[arg(long)]
     out: Utf8PathBuf,
+    #[command(flatten)]
+    preparation: PreparationArgs,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -38,6 +72,8 @@ struct VerifySubcommand {
     selection: Utf8PathBuf,
     #[command(flatten)]
     verification: VerificationArgs,
+    #[command(flatten)]
+    preparation: PreparationArgs,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -68,6 +104,12 @@ struct SelectionArgs {
     /// Read Cargo JSON messages from an existing build (repeatable).
     #[arg(long, value_name = "PATH")]
     cargo_messages: Vec<Utf8PathBuf>,
+    /// Validate Cargo artifacts against existing cargo metadata JSON before merging.
+    #[arg(long, value_name = "PATH")]
+    cargo_metadata: Option<Utf8PathBuf>,
+    /// Require exactly this many binaries after filtering and deduplication.
+    #[arg(long, value_name = "N")]
+    expect_count: Option<usize>,
     /// Select Cargo package names (globs supported).
     #[arg(short, long)]
     package: Vec<String>,
@@ -126,21 +168,47 @@ impl SelectionArgs {
     }
 
     fn select(&self) -> anyhow::Result<Selection> {
+        if self.cargo_metadata.is_some()
+            && (self.cargo_messages.is_empty() || !self.binaries_metadata.is_empty())
+        {
+            bail!("--cargo-metadata requires only --cargo-messages inputs");
+        }
         if self.explicit() {
-            return selection::select(
+            let selection = selection::select(
                 &self.binaries_metadata,
                 &self.cargo_messages,
                 None,
                 &self.filters(),
-            );
+                self.cargo_metadata.as_deref(),
+            )?;
+            self.check_count(&selection)?;
+            return Ok(selection);
         }
         let (archive, workspace) = self.archive()?;
-        selection::select(
+        let selection = selection::select(
             &[archive.join(ARCHIVE_METADATA)],
             &[],
             Some((&archive, &workspace)),
             &self.filters(),
-        )
+            None,
+        )?;
+        self.check_count(&selection)?;
+        Ok(selection)
+    }
+
+    fn check_count(&self, selection: &Selection) -> anyhow::Result<()> {
+        if selection.binaries.is_empty() {
+            bail!("No test binaries match the selection");
+        }
+        if let Some(expected) = self.expect_count
+            && selection.binaries.len() != expected
+        {
+            bail!(
+                "Expected exactly {expected} test binaries, selected {}",
+                selection.binaries.len()
+            );
+        }
+        Ok(())
     }
 }
 
@@ -150,7 +218,7 @@ const ARCHIVE_METADATA: &str = "target/nextest/binaries-metadata.json";
 struct RunSubcommand {
     #[command(flatten)]
     selection_args: SelectionArgs,
-    /// Run exactly the binaries in a selection file, without invoking Cargo.
+    /// Run binaries from a selection file, verifying the whole file before filtering.
     #[arg(long, value_name = "PATH", conflicts_with_all = ["binaries_metadata", "cargo_messages"])]
     selection: Option<Utf8PathBuf>,
     #[command(flatten)]
@@ -287,17 +355,59 @@ fn try_main(started: std::time::Instant) -> anyhow::Result<i32> {
         args.remove(1);
     }
     let command = Command::parse_from(&args);
+    let preparation = match &command {
+        Command::List(cmd) => Some((&cmd.preparation, None)),
+        Command::Snapshot(cmd) => Some((&cmd.preparation, Some(cmd.out.as_path()))),
+        Command::Verify(cmd) => Some((&cmd.preparation, None)),
+        _ => None,
+    };
+    if let Some((options, out)) = preparation {
+        if !options.preparation_worker
+            && (options.deadline.is_some() || options.kill_grace.is_some())
+        {
+            return preparation::run(
+                &args[1..],
+                started,
+                options.deadline,
+                options
+                    .kill_grace
+                    .unwrap_or(std::time::Duration::from_secs(10)),
+                out,
+            );
+        }
+        if options.staging_directory.is_some() && out.is_none() {
+            bail!("--staging-directory applies only to snapshot preparation");
+        }
+    }
     match command {
         Command::ReuseNextestArchive(cmd) => reuse_nextest_archive(&workspace_root()?, cmd),
         Command::List(cmd) => {
-            let selection = cmd.select()?;
-            serde_json::to_writer_pretty(std::io::stdout().lock(), &selection)?;
-            println!();
+            let selection = cmd.selection_args.select()?;
+            match cmd.output {
+                ListOutput::Json => {
+                    serde_json::to_writer_pretty(std::io::stdout().lock(), &selection)?;
+                    println!();
+                }
+                ListOutput::ExecutablePath => {
+                    if selection.binaries.len() != 1 {
+                        bail!("--output executable-path requires exactly one test binary");
+                    }
+                    let executable = &selection.binaries[0].executable;
+                    if executable.as_str().contains(['\r', '\n']) {
+                        bail!("Executable path contains a line break; use JSON output");
+                    }
+                    println!("{executable}");
+                }
+            }
             Ok(0)
         }
         Command::Run(cmd) => run(cmd, &args[2..], started),
         Command::Snapshot(cmd) => {
-            let digest = snapshot::snapshot(&cmd.selection, &cmd.out)?;
+            let digest = snapshot::snapshot(
+                &cmd.selection,
+                &cmd.out,
+                cmd.preparation.staging_directory.as_deref(),
+            )?;
             println!("snapshot {} {digest}", cmd.out);
             Ok(0)
         }
@@ -362,13 +472,12 @@ impl RunSubcommand {
         let verification = &self.verification;
         if let Some(path) = &self.selection {
             validate_supported_test_args(self)?;
-            if !self.selection_args.filters().is_empty() || self.selection_args.target_dir.is_some()
+            if self.selection_args.target_dir.is_some()
+                || self.selection_args.cargo_metadata.is_some()
             {
-                bail!(
-                    "--selection runs exactly the saved selection; package/target filters and --target-dir cannot be combined with it"
-                );
+                bail!("--target-dir and --cargo-metadata cannot be combined with --selection");
             }
-            let (selection, digest) = Selection::read(path)?;
+            let (mut selection, digest) = Selection::read(path)?;
             if snapshot::requires_verification(&selection)
                 || verification.expect_digest.is_some()
                 || verification.skip_library_hashes
@@ -381,6 +490,13 @@ impl RunSubcommand {
                     verification.skip_library_hashes,
                 )?;
             }
+            // The digest identifies the original manifest, not a rewritten subset.
+            // Verify every snapshot entry before admitting only the requested binaries.
+            let filters = self.selection_args.filters();
+            if !filters.is_empty() {
+                selection.binaries.retain(|binary| filters.matches(binary));
+            }
+            self.selection_args.check_count(&selection)?;
             return Ok(RunInput::Prebuilt { selection, digest });
         }
         if verification.expect_digest.is_some() || verification.skip_library_hashes {
@@ -399,6 +515,11 @@ impl RunSubcommand {
         }
         if !self.selection_args.binary_id.is_empty() {
             bail!("--binary-id requires prebuilt metadata or an extracted archive");
+        }
+        if self.selection_args.cargo_metadata.is_some()
+            || self.selection_args.expect_count.is_some()
+        {
+            bail!("--cargo-metadata and --expect-count require prebuilt input");
         }
         Ok(RunInput::Cargo)
     }
@@ -423,7 +544,7 @@ fn run(
                 supervise::Supervisor::new(started, options.deadline, options.kill_grace)?;
             let mut events =
                 events::Events::new(cmd.events.as_deref(), cmd.invocation_id, started)?;
-            events.started(&digest, &options);
+            events.started(&digest, &selection, &options);
             let mut args = cmd.testname;
             args.extend(cmd.test_args);
             let result = run::run(&selection, &args, &options, &mut supervisor, &mut events);

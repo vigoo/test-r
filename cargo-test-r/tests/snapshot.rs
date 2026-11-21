@@ -194,6 +194,51 @@ mod linux {
     }
 
     #[test]
+    fn filtered_run_verifies_unselected_snapshot_bytes_and_keeps_the_pinned_manifest() {
+        let f = Fixture::new();
+        let first = f.compile(
+            "first",
+            "#include <stdio.h>\nint main(void) { puts(\"first\"); return 0; }",
+            &[],
+        );
+        let second = f.compile("second", "int main(void) { return 7; }", &[]);
+        f.select(&[("first", &first), ("second", &second)], &[]);
+        success(f.snapshot());
+        let original = fs::read(f.manifest()).unwrap();
+        let digest = format!("sha256:{}", hash(&original));
+        let run = || {
+            command("run", &f.manifest())
+                .args([
+                    "--expect-digest",
+                    &digest,
+                    "--binary-id",
+                    "first",
+                    "--expect-count",
+                    "1",
+                ])
+                .output()
+                .unwrap()
+        };
+        assert_eq!(success(run()).stdout, b"first\n");
+        assert_eq!(fs::read(f.manifest()).unwrap(), original);
+        let document = f.document();
+        let unselected = document["binaries"][1]["executable"].as_str().unwrap();
+        fs::write(unselected, "tampered unselected executable").unwrap();
+        let output = run();
+        assert!(
+            output.stdout.is_empty(),
+            "no binary may start before full verification"
+        );
+        failure(output, "sha256 mismatch");
+        fs::write(
+            f.manifest(),
+            format!("{} ", String::from_utf8(original).unwrap()),
+        )
+        .unwrap();
+        failure(run(), "digest mismatch");
+    }
+
+    #[test]
     fn static_and_dynamic_independent_copies_survive_source_replacement() {
         let f = Fixture::new();
         let static_binary = f.compile(

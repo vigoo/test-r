@@ -1,6 +1,6 @@
 //! Version 1 invocation evidence, independent of harness stdout/stderr.
 use crate::run::{BinaryOutcome, Options, RunResult, StopReason};
-use crate::selection::SelectedBinary;
+use crate::selection::{SelectedBinary, Selection};
 use anyhow::Context;
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
@@ -83,13 +83,14 @@ impl Events {
         }
     }
 
-    /// `selection_sha256` identifies the binaries: the saved selection's bytes,
-    /// or the resolved selection's compact JSON for metadata and archive input.
-    pub fn started(&mut self, selection_sha256: &str, options: &Options) {
+    /// The digest identifies the original manifest, or the resolved metadata
+    /// selection. Binary ids identify the subset admitted after verification.
+    pub fn started(&mut self, selection_sha256: &str, selection: &Selection, options: &Options) {
         self.record(
             "invocation-started",
             json!({
                 "pid": std::process::id(), "selection-sha256": selection_sha256,
+                "binary-ids": selection.binaries.iter().map(|binary| &binary.binary_id).collect::<Vec<_>>(),
                 "no-fail-fast": options.no_fail_fast,
                 "deadline-ms": options.deadline.map(|d| d.as_millis() as u64),
                 "kill-grace-ms": options.kill_grace.as_millis() as u64,

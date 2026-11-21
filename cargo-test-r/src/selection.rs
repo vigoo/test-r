@@ -30,7 +30,7 @@ impl Filters {
             && self.binary_id.is_empty()
     }
 
-    fn matches(&self, binary: &SelectedBinary) -> bool {
+    pub fn matches(&self, binary: &SelectedBinary) -> bool {
         let targets = self.lib || self.bins || self.tests || !self.test.is_empty();
         (self.package.is_empty()
             || self
@@ -89,6 +89,7 @@ pub struct SelectionInput {
 pub enum InputKind {
     NextestBinaries,
     CargoMessages,
+    CargoMetadata,
     #[serde(untagged)]
     Other(String),
 }
@@ -225,14 +226,38 @@ pub fn sha256(bytes: &[u8]) -> String {
 }
 
 /// Read metadata directly, or relocate an extracted archive into the current workspace.
+/// Supplied Cargo metadata validates each selected raw artifact before duplicate merging.
 pub fn select(
     paths: &[Utf8PathBuf],
     cargo_messages: &[Utf8PathBuf],
     archive: Option<(&Utf8Path, &Utf8Path)>,
     filters: &Filters,
+    cargo_metadata: Option<&Utf8Path>,
 ) -> anyhow::Result<Selection> {
     let mut inputs = Vec::new();
     let mut binaries = Vec::new();
+    let authority = if let Some(path) = cargo_metadata {
+        if cargo_messages.is_empty() || !paths.is_empty() || archive.is_some() {
+            bail!("Cargo metadata requires exclusively Cargo-message inputs");
+        }
+        let raw =
+            std::fs::read(path).with_context(|| format!("Failed to read Cargo metadata {path}"))?;
+        let authority: CargoMetadata = serde_json::from_slice(&raw)
+            .with_context(|| format!("Invalid Cargo metadata {path}"))?;
+        if authority.version != 1 {
+            bail!("Unsupported Cargo metadata version in {path}");
+        }
+        canonical(&authority.workspace_root)
+            .with_context(|| format!("Invalid workspace_root in Cargo metadata {path}"))?;
+        inputs.push(SelectionInput {
+            path: path.to_owned(),
+            sha256: sha256(&raw),
+            kind: InputKind::CargoMetadata,
+        });
+        Some((authority, path))
+    } else {
+        None
+    };
     for path in paths {
         let raw = std::fs::read(path)
             .with_context(|| format!("Failed to read binaries metadata {path}"))?;
@@ -326,7 +351,12 @@ pub fn select(
     for path in cargo_messages {
         let raw =
             std::fs::read(path).with_context(|| format!("Failed to read Cargo messages {path}"))?;
-        binaries.extend(read_cargo_messages(&raw, path, filters)?);
+        binaries.extend(read_cargo_messages(
+            &raw,
+            path,
+            filters,
+            authority.as_ref(),
+        )?);
         inputs.push(SelectionInput {
             path: path.clone(),
             sha256: sha256(&raw),
@@ -360,12 +390,126 @@ struct CargoArtifact {
 struct CargoTarget {
     kind: Vec<String>,
     name: String,
+    // Source identity is interpreted only when metadata validation is requested.
+    #[serde(default)]
+    src_path: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct CargoMetadata {
+    version: u32,
+    workspace_root: Utf8PathBuf,
+    workspace_members: Vec<String>,
+    packages: Vec<CargoPackage>,
+}
+
+#[derive(Deserialize)]
+struct CargoPackage {
+    id: String,
+    name: String,
+    manifest_path: Utf8PathBuf,
+    targets: Vec<CargoTarget>,
+}
+
+fn canonical(path: &Utf8Path) -> anyhow::Result<Utf8PathBuf> {
+    if !path.is_absolute() {
+        bail!("Expected absolute identity path, got {path}");
+    }
+    path.canonicalize_utf8()
+        .with_context(|| format!("Cannot resolve identity path {path}"))
+}
+
+impl CargoMetadata {
+    fn validate_artifact(&self, artifact: &CargoArtifact, name: &str) -> anyhow::Result<()> {
+        let packages: Vec<_> = self
+            .packages
+            .iter()
+            .filter(|p| p.id == artifact.package_id)
+            .collect();
+        let [package] = packages.as_slice() else {
+            bail!(
+                "Expected exactly one Cargo metadata package for {}",
+                artifact.package_id
+            );
+        };
+        if !self.workspace_members.contains(&package.id) {
+            bail!(
+                "Package {} is not a member of the Cargo metadata workspace",
+                package.id
+            );
+        }
+        if package.name != name {
+            bail!(
+                "Package name {name} does not match Cargo metadata name {}",
+                package.name
+            );
+        }
+        let manifest = canonical(&package.manifest_path)?;
+        let directory = canonical(
+            package
+                .manifest_path
+                .parent()
+                .context("Manifest has no directory")?,
+        )?;
+        let (_, source) = package_identity(&artifact.package_id)?;
+        if canonical(&source)? != directory {
+            bail!(
+                "Package source directory does not match Cargo metadata manifest for {}",
+                package.id
+            );
+        }
+        if canonical(&artifact.manifest_path)? != manifest {
+            bail!(
+                "Artifact manifest does not match Cargo metadata for {}",
+                package.id
+            );
+        }
+        if canonical(
+            artifact
+                .manifest_path
+                .parent()
+                .context("Artifact manifest has no directory")?,
+        )? != directory
+        {
+            bail!(
+                "Artifact manifest directory does not match Cargo metadata for {}",
+                package.id
+            );
+        }
+        let source = artifact
+            .target
+            .src_path
+            .as_str()
+            .map(Utf8Path::new)
+            .context("Missing artifact target src_path")?;
+        let source = canonical(source)?;
+        for target in &package.targets {
+            if target.name == artifact.target.name && target.kind == artifact.target.kind {
+                let expected = target
+                    .src_path
+                    .as_str()
+                    .map(Utf8Path::new)
+                    .context("Missing Cargo metadata target src_path")?;
+                if canonical(expected)? == source {
+                    return Ok(());
+                }
+            }
+        }
+        bail!(
+            "Artifact target name/kind/src_path does not match Cargo metadata for {}: {} {:?} at {}",
+            package.id,
+            artifact.target.name,
+            artifact.target.kind,
+            source
+        )
+    }
 }
 
 fn read_cargo_messages(
     raw: &[u8],
     path: &Utf8Path,
     filters: &Filters,
+    authority: Option<&(CargoMetadata, &Utf8Path)>,
 ) -> anyhow::Result<Vec<SelectedBinary>> {
     let text = std::str::from_utf8(raw).with_context(|| format!("Invalid UTF-8 in {path}"))?;
     let mut binaries = Vec::new();
@@ -380,7 +524,7 @@ fn read_cargo_messages(
         if !is_test {
             continue;
         }
-        let Some(executable) = artifact.executable else {
+        let Some(executable) = artifact.executable.as_ref() else {
             continue;
         };
         let package_name = package_name(&artifact.package_id).with_context(context)?;
@@ -429,18 +573,23 @@ fn read_cargo_messages(
         ))?;
         let binary = SelectedBinary {
             binary_id,
-            package_id: artifact.package_id,
+            package_id: artifact.package_id.clone(),
             package_name,
             kind: kind.to_owned(),
-            name: artifact.target.name,
+            name: artifact.target.name.clone(),
             build_variant: sha256(&variant)[..12].to_owned(),
-            executable,
+            executable: executable.clone(),
             working_directory,
             sha256: None,
             mode: None,
             dependencies: None,
         };
         if filters.matches(&binary) {
+            if let Some((metadata, metadata_path)) = authority {
+                metadata.validate_artifact(&artifact, &binary.package_name).with_context(|| {
+                    format!("Invalid artifact identity at {path}:{} against Cargo metadata {metadata_path}", line + 1)
+                })?;
+            }
             binaries.push(binary);
         }
     }
