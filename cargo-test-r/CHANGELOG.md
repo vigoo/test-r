@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.13](https://github.com/vigoo/test-r/compare/cargo-test-r-v2.2.12...cargo-test-r-v2.2.13) - 2026-11-21
+
+### Other
+
+- Add verified prebuilt subsets and preparation deadlines ([#226](https://github.com/vigoo/test-r/pull/226))
+
 ## [2.2.12](https://github.com/vigoo/test-r/compare/cargo-test-r-v2.2.11...cargo-test-r-v2.2.12) - 2026-11-20
 
 ### Other
