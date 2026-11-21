@@ -283,3 +283,38 @@ With `--events`, each binary also gets `TEST_R_REPORT_INDEX`, the path of a priv
 - Lines cargo-test-r doesn't understand are skipped.
 
 test-r removes the variable at startup, so nested test-r processes don't write into the outer index. The listed paths are the actual files, after test-r adds its unique suffix. Concurrent runs use separate indexes and logs. Reports are never deleted.
+
+## Supervising a command
+
+`exec` supervises one command without selecting tests, invoking Cargo, parsing output or scheduling work. It also works outside a Cargo workspace:
+
+```sh
+cargo-test-r exec --deadline 60m --kill-grace 10s -- cargo make integration-tests
+```
+
+Arguments after `--` are passed literally. The command inherits stdin, stdout, stderr, the environment and the working directory. A caller that needs to remove credentials or delay launch until progress is published must provide that boundary itself.
+
+The deadline covers startup and command execution. A zero deadline launches nothing. After the direct command exits, the supervisor drains descendants before returning, but a deadline crossed only during that cleanup does not replace the command's exit status. Cancellation during cleanup still takes precedence. This differs from `run`, whose deadline covers the whole test invocation. An outer command deadline and an inner test invocation deadline can be used together.
+
+Exit codes are the command's code, 127 for a launch failure, 124 for a deadline, or 128 plus the signal number for cancellation or command death on Unix. Cleanup failure changes success to 1 but preserves an existing failure. Deadline expiry and launch failure also print diagnostics to stderr. Standard streams remain open until cleanup completes.
+
+The [platform cleanup limits](#deadlines-cancellation-and-cleanup) also apply to `exec`: Linux adopts orphaned descendants, including those that changed sessions; macOS only contains process groups; Windows uses a Job Object. On Unix the command has its own process group, so terminal input has the same restrictions as prebuilt runs. Killing the Linux supervisor itself with SIGKILL prevents its cleanup. The command supervisor does not control processes created by an external service manager or container daemon.
+
+## Inspecting event evidence
+
+`inspect-events` reads a saved event stream without running tests or opening any indexed report:
+
+```sh
+cargo-test-r inspect-events --events target/events.jsonl \
+  --invocation-id ci-run-1-shard-3 --report-format ctrf
+```
+
+The JSON result has `v` (currently 1), `invocation_id` (null until a valid start), `complete`, `outcome` (null until a valid finish), `reports` (objects with `path` and nullable `format`) and `issues` (strings). A report without a string format retains its path with `format: null`. `--invocation-id` requires an exact identity match. By default, `complete` describes stream validity, not report coverage or workload success. `--report-format` also requires report coverage for every selected binary; it does not filter the returned report identities.
+
+Inspection validates v1 envelope ordering, contiguous sequence numbers, timestamps, monotonic elapsed time, admitted binary identities, binary lifecycle transitions and completion counters. The start must declare `binary-ids`, and the finish must contain all binary counts. Records are admitted atomically: a malformed record contributes neither reports nor state. Only newline-terminated records count. Valid prefix reports survive a later malformed or truncated record, missing finish, or read failure.
+
+Binary execution must follow the declared order, without overlap. A recorded deadline or cancellation permanently stops admission, but the active binary may still finish and contribute reports. A stop naming the next admitted binary before its start records a pre-spawn timeout or cancellation; that slot is not counted as skipped and has no reports. Later invocation-level cancellation can change the final verdict without changing that slot's recorded outcome. Final status uses the runner's verdict: cancellation wins over the deadline, which wins over the first binary failure in selection order. Version 1 does not identify cleanup or event-output failures separately, so an otherwise passing invocation may also finish with `failed`, exit 1. Such a runner failure cannot replace a binary failure code or a stop reason.
+
+Unreadable and incomplete streams produce JSON with `complete: false` and explicit issues; the inspection command still exits zero when it can produce that result. Command-line and output errors remain CLI failures. With `--report-format`, launch failure, skipped binaries, unknown report identity (`reports=null`), no opened report (`reports=[]`), and reports without the requested format remain distinct coverage issues. Without that option, these states do not make a valid, finished stream incomplete. `outcome` describes the valid finish record, not an inferred workload verdict; it can be `passed` while requested report evidence is incomplete.
+
+Report paths are opaque identities, not authorization to open files. The consumer must independently confine artifact paths and validate report existence and contents. Harness retries retain their actual report identities and do not change binary `attempt`, which remains 1. Inspection never changes the workload's exit status.
