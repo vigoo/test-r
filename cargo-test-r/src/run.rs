@@ -29,7 +29,7 @@ impl From<StopReason> for BinaryOutcome {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BinaryOutcome {
     Passed,
     Failed {

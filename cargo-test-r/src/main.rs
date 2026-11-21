@@ -5,6 +5,8 @@ use humansize::{BINARY, format_size};
 use selection::{Filters, Selection};
 
 mod events;
+mod exec;
+mod inspect_events;
 mod preparation;
 mod run;
 mod selection;
@@ -22,7 +24,35 @@ enum Command {
     Snapshot(SnapshotSubcommand),
     /// Verify a snapshot without invoking the loader or tests.
     Verify(VerifySubcommand),
+    /// Supervise a command and clean its descendants without selecting tests.
+    Exec(ExecSubcommand),
+    /// Inspect runner events without executing binaries or opening reports.
+    InspectEvents(InspectEventsSubcommand),
     Run(RunSubcommand),
+}
+
+#[derive(Args, Debug, Clone)]
+struct ExecSubcommand {
+    /// Command budget, including startup but excluding cleanup after command exit.
+    #[arg(long, value_parser = supervise::parse_duration)]
+    deadline: Option<std::time::Duration>,
+    /// Time between TERM and KILL during descendant cleanup.
+    #[arg(long, default_value = "10s", value_parser = supervise::parse_duration)]
+    kill_grace: std::time::Duration,
+    #[arg(last = true, required = true)]
+    command: Vec<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct InspectEventsSubcommand {
+    #[arg(long)]
+    events: std::path::PathBuf,
+    /// Reject records belonging to another invocation.
+    #[arg(long)]
+    invocation_id: Option<String>,
+    /// Mark binary coverage incomplete when no report of this format was indexed.
+    #[arg(long)]
+    report_format: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -381,6 +411,17 @@ fn try_main(started: std::time::Instant) -> anyhow::Result<i32> {
     }
     match command {
         Command::ReuseNextestArchive(cmd) => reuse_nextest_archive(&workspace_root()?, cmd),
+        Command::Exec(cmd) => exec::run(&cmd.command, started, cmd.deadline, cmd.kill_grace),
+        Command::InspectEvents(cmd) => {
+            let evidence = inspect_events::inspect(
+                &cmd.events,
+                cmd.invocation_id.as_deref(),
+                cmd.report_format.as_deref(),
+            )?;
+            serde_json::to_writer_pretty(std::io::stdout().lock(), &evidence)?;
+            println!();
+            Ok(0)
+        }
         Command::List(cmd) => {
             let selection = cmd.selection_args.select()?;
             match cmd.output {

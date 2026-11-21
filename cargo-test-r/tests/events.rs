@@ -88,6 +88,15 @@ impl Suite {
         ]);
         command
     }
+    fn inspection(&self, log: &str) -> Value {
+        common::stdout_json(
+            cargo_test_r()
+                .args(["inspect-events", "--events"])
+                .arg(self.path().join(log))
+                .output()
+                .unwrap(),
+        )
+    }
     fn records(&self, log: &str) -> Vec<Value> {
         let raw = std::fs::read_to_string(self.path().join(log)).unwrap();
         assert!(raw.ends_with('\n'));
@@ -225,6 +234,10 @@ fn outcomes_order_identity_and_not_run_counts() {
             usize::from(names.len() == 2 && records.len() == 4)
         );
         assert_eq!(last["failed"], usize::from(code == 7));
+        assert_eq!(
+            suite.inspection("events.jsonl")["outcome"],
+            if code == 0 { "passed" } else { "failed" }
+        );
     }
 }
 
@@ -271,12 +284,14 @@ fn launch_failure_and_crash_are_distinct() {
     assert!(!records[1]["error"].as_str().unwrap().is_empty());
     assert_eq!(records.last().unwrap()["launch-failed"], 1);
     assert_eq!(records.last().unwrap()["passed"], 1);
+    assert_eq!(suite.inspection("events.jsonl")["outcome"], "failed");
     suite.command(&["crash"]);
     let output = suite.run("crash.jsonl").output().unwrap();
     assert_eq!(output.status.code(), Some(128 + libc::SIGABRT));
     let records = suite.records("crash.jsonl");
     assert_eq!(records[2]["signal"], libc::SIGABRT);
     assert!(records[2]["exit-code"].is_null());
+    assert_eq!(suite.inspection("crash.jsonl")["outcome"], "failed");
 }
 
 #[cfg(unix)]
@@ -372,6 +387,7 @@ fn signal_during_cleanup_is_recorded_with_the_deadline() {
             "{binary}: {cancel}"
         );
         assert_eq!(records.last().unwrap()["outcome"], "cancelled", "{binary}");
+        assert_eq!(suite.inspection("events.jsonl")["outcome"], "cancelled");
     }
 }
 
@@ -393,6 +409,7 @@ fn cancellation_and_abrupt_death_do_not_manufacture_completion() {
         let records = suite.records("events.jsonl");
         if signal == libc::SIGKILL {
             assert!(records.iter().all(|r| r["event"] != "invocation-finished"));
+            assert_eq!(suite.inspection("events.jsonl")["outcome"], Value::Null);
             unsafe {
                 libc::kill(-(binary_pid as i32), libc::SIGKILL);
             }
@@ -406,6 +423,7 @@ fn cancellation_and_abrupt_death_do_not_manufacture_completion() {
             assert_eq!(records.last().unwrap()["outcome"], "cancelled");
             assert_eq!(records.last().unwrap()["exit-code"], 128 + signal);
             assert_eq!(records.last().unwrap()["not-run"], 1);
+            assert_eq!(suite.inspection("events.jsonl")["outcome"], "cancelled");
         }
     }
 }
@@ -438,6 +456,7 @@ fn deadline_records_stop_before_finish() {
     assert_eq!(records[3]["outcome"], "timed-out");
     assert_eq!(records[4]["not-run"], 1);
     assert_eq!(records[4]["exit-code"], 124);
+    assert_eq!(suite.inspection("events.jsonl")["outcome"], "timed-out");
 }
 
 #[cfg(unix)]
