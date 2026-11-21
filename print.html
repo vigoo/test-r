@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-eaec96cd.js";
+            window.path_to_searchindex_js = "searchindex-17d5d466.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e23b0b45.js"></script>
@@ -677,6 +677,24 @@ cargo test-r verify --selection /ci/snap/run-1/selection.json --deadline 10m
 <li>Lines cargo-test-r doesn’t understand are skipped.</li>
 </ul>
 <p>test-r removes the variable at startup, so nested test-r processes don’t write into the outer index. The listed paths are the actual files, after test-r adds its unique suffix. Concurrent runs use separate indexes and logs. Reports are never deleted.</p>
+<h2 id="supervising-a-command"><a class="header" href="#supervising-a-command">Supervising a command</a></h2>
+<p><code>exec</code> supervises one command without selecting tests, invoking Cargo, parsing output or scheduling work. It also works outside a Cargo workspace:</p>
+<pre><code class="language-sh">cargo-test-r exec --deadline 60m --kill-grace 10s -- cargo make integration-tests
+</code></pre>
+<p>Arguments after <code>--</code> are passed literally. The command inherits stdin, stdout, stderr, the environment and the working directory. A caller that needs to remove credentials or delay launch until progress is published must provide that boundary itself.</p>
+<p>The deadline covers startup and command execution. A zero deadline launches nothing. After the direct command exits, the supervisor drains descendants before returning, but a deadline crossed only during that cleanup does not replace the command’s exit status. Cancellation during cleanup still takes precedence. This differs from <code>run</code>, whose deadline covers the whole test invocation. An outer command deadline and an inner test invocation deadline can be used together.</p>
+<p>Exit codes are the command’s code, 127 for a launch failure, 124 for a deadline, or 128 plus the signal number for cancellation or command death on Unix. Cleanup failure changes success to 1 but preserves an existing failure. Deadline expiry and launch failure also print diagnostics to stderr. Standard streams remain open until cleanup completes.</p>
+<p>The <a href="#deadlines-cancellation-and-cleanup">platform cleanup limits</a> also apply to <code>exec</code>: Linux adopts orphaned descendants, including those that changed sessions; macOS only contains process groups; Windows uses a Job Object. On Unix the command has its own process group, so terminal input has the same restrictions as prebuilt runs. Killing the Linux supervisor itself with SIGKILL prevents its cleanup. The command supervisor does not control processes created by an external service manager or container daemon.</p>
+<h2 id="inspecting-event-evidence"><a class="header" href="#inspecting-event-evidence">Inspecting event evidence</a></h2>
+<p><code>inspect-events</code> reads a saved event stream without running tests or opening any indexed report:</p>
+<pre><code class="language-sh">cargo-test-r inspect-events --events target/events.jsonl \
+  --invocation-id ci-run-1-shard-3 --report-format ctrf
+</code></pre>
+<p>The JSON result has <code>v</code> (currently 1), <code>invocation_id</code> (null until a valid start), <code>complete</code>, <code>outcome</code> (null until a valid finish), <code>reports</code> (objects with <code>path</code> and nullable <code>format</code>) and <code>issues</code> (strings). A report without a string format retains its path with <code>format: null</code>. <code>--invocation-id</code> requires an exact identity match. By default, <code>complete</code> describes stream validity, not report coverage or workload success. <code>--report-format</code> also requires report coverage for every selected binary; it does not filter the returned report identities.</p>
+<p>Inspection validates v1 envelope ordering, contiguous sequence numbers, timestamps, monotonic elapsed time, admitted binary identities, binary lifecycle transitions and completion counters. The start must declare <code>binary-ids</code>, and the finish must contain all binary counts. Records are admitted atomically: a malformed record contributes neither reports nor state. Only newline-terminated records count. Valid prefix reports survive a later malformed or truncated record, missing finish, or read failure.</p>
+<p>Binary execution must follow the declared order, without overlap. A recorded deadline or cancellation permanently stops admission, but the active binary may still finish and contribute reports. A stop naming the next admitted binary before its start records a pre-spawn timeout or cancellation; that slot is not counted as skipped and has no reports. Later invocation-level cancellation can change the final verdict without changing that slot’s recorded outcome. Final status uses the runner’s verdict: cancellation wins over the deadline, which wins over the first binary failure in selection order. Version 1 does not identify cleanup or event-output failures separately, so an otherwise passing invocation may also finish with <code>failed</code>, exit 1. Such a runner failure cannot replace a binary failure code or a stop reason.</p>
+<p>Unreadable and incomplete streams produce JSON with <code>complete: false</code> and explicit issues; the inspection command still exits zero when it can produce that result. Command-line and output errors remain CLI failures. With <code>--report-format</code>, launch failure, skipped binaries, unknown report identity (<code>reports=null</code>), no opened report (<code>reports=[]</code>), and reports without the requested format remain distinct coverage issues. Without that option, these states do not make a valid, finished stream incomplete. <code>outcome</code> describes the valid finish record, not an inferred workload verdict; it can be <code>passed</code> while requested report evidence is incomplete.</p>
+<p>Report paths are opaque identities, not authorization to open files. The consumer must independently confine artifact paths and validate report existence and contents. Harness retries retain their actual report identities and do not change binary <code>attempt</code>, which remains 1. Inspection never changes the workload’s exit status.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="test-output-1"><a class="header" href="#test-output-1">Test output</a></h1>
 <p>The default setting of <code>test-r</code> is to use the <strong>pretty</strong> format and capture test outputs.</p>
