@@ -50,7 +50,7 @@ struct InspectEventsSubcommand {
     /// Reject records belonging to another invocation.
     #[arg(long)]
     invocation_id: Option<String>,
-    /// Mark binary coverage incomplete when no report of this format was indexed.
+    /// Require every selected binary to index a report of this format.
     #[arg(long)]
     report_format: Option<String>,
 }

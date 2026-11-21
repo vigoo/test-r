@@ -37,10 +37,17 @@ fn write(path: &Path, records: &[Value]) {
 }
 
 fn inspect(path: &Path, expected: Option<&str>) -> Value {
+    inspect_with_format(path, expected, None)
+}
+
+fn inspect_with_format(path: &Path, expected: Option<&str>, format: Option<&str>) -> Value {
     let mut cmd = cargo_test_r();
     cmd.arg("inspect-events").arg("--events").arg(path);
     if let Some(id) = expected {
         cmd.args(["--invocation-id", id]);
+    }
+    if let Some(format) = format {
+        cmd.args(["--report-format", format]);
     }
     stdout_json(cmd.output().unwrap())
 }
@@ -116,7 +123,7 @@ fn malformed_records_preserve_only_the_transactional_prefix() {
     }
     let mut events = records();
     events[2]["reports"] = json!([
-        {"path":"/must-not-leak", "format":"ctrf"}, {"path":"/bad", "format":17}
+        {"path":"/must-not-leak", "format":"ctrf"}, {"path":17, "format":"ctrf"}
     ]);
     write(&path, &events);
     let result = inspect(&path, None);
@@ -299,8 +306,11 @@ fn stops_are_sticky_across_binary_completion_and_block_every_admission_path() {
             write(&path, &sequence(events.clone()));
             let result = inspect(&path, None);
             assert_eq!(result["outcome"], outcome, "{result}");
-            assert_eq!(result["issues"].as_array().unwrap().len(), 1, "{result}");
-            issue(&result, "1 selected binaries did not run");
+            assert_eq!(result["complete"], true, "{result}");
+            issue(
+                &inspect_with_format(&path, None, Some("ctrf")),
+                "1 selected binaries did not run",
+            );
             for admission in ["binary-started", "binary-launch-failed"] {
                 let mut invalid = events.clone();
                 invalid.insert(4, json!({"event":admission, "binary-id":"b", "attempt":1, "error":"launch failure"}));
@@ -391,7 +401,8 @@ fn report_coverage_and_skipped_or_unlaunchable_binaries_are_distinct() {
         let mut events = records();
         events[2]["reports"] = reports;
         write(&path, &events);
-        let result = inspect(&path, None);
+        assert_eq!(inspect(&path, None)["complete"], true);
+        let result = inspect_with_format(&path, None, Some("ctrf"));
         issue(&result, message);
         assert_eq!(result["outcome"], "passed");
     }
@@ -401,7 +412,11 @@ fn report_coverage_and_skipped_or_unlaunchable_binaries_are_distinct() {
     events[3]["outcome"] = json!("failed");
     events[3]["exit-code"] = json!(1);
     write(&path, &events);
-    issue(&inspect(&path, None), "1 selected binaries did not run");
+    assert_eq!(inspect(&path, None)["complete"], true);
+    issue(
+        &inspect_with_format(&path, None, Some("ctrf")),
+        "1 selected binaries did not run",
+    );
     let mut events = records();
     events.remove(2);
     events[1]["event"] = json!("binary-launch-failed");
@@ -412,7 +427,8 @@ fn report_coverage_and_skipped_or_unlaunchable_binaries_are_distinct() {
     events[2]["passed"] = json!(0);
     events[2]["launch-failed"] = json!(1);
     write(&path, &events);
-    let result = inspect(&path, None);
+    assert_eq!(inspect(&path, None)["complete"], true);
+    let result = inspect_with_format(&path, None, Some("ctrf"));
     issue(&result, "failed to launch");
     assert_eq!(result["outcome"], "failed");
     assert_eq!(result["reports"], json!([]));
@@ -459,6 +475,34 @@ fn requested_format_is_coverage_per_binary_not_a_report_filter() {
             {"path":"/a.xml", "format":"junit"}, {"path":"/b.json", "format":"ctrf"}
         ])
     );
+}
+
+#[test]
+fn unknown_report_formats_preserve_paths_but_do_not_satisfy_requested_coverage() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events");
+    for report in [
+        json!({"path":"/opaque"}),
+        json!({"path":"/opaque", "format":null}),
+        json!({"path":"/opaque", "format":17}),
+    ] {
+        let mut events = records();
+        events[2]["reports"] = json!([report]);
+        write(&path, &events);
+        let result = inspect(&path, None);
+        assert_eq!(result["complete"], true, "{result}");
+        assert_eq!(
+            result["reports"],
+            json!([{"path":"/opaque", "format":null}])
+        );
+        let result = inspect_with_format(&path, None, Some("ctrf"));
+        issue(&result, "No ctrf report identified for binary a");
+        assert_eq!(result["outcome"], "passed");
+        assert_eq!(
+            result["reports"],
+            json!([{"path":"/opaque", "format":null}])
+        );
+    }
 }
 
 #[test]

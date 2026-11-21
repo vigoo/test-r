@@ -440,6 +440,13 @@ fn report_index_lines_without_a_string_path_are_skipped() {
         records[2]["reports"],
         json!([{"path": "/a", "format": "ctrf"}, {"path": "/b", "extra": 1}])
     );
+    let inspection = suite.inspection("events.jsonl");
+    assert_eq!(inspection["complete"], true, "{inspection}");
+    assert_eq!(inspection["outcome"], "passed");
+    assert_eq!(
+        inspection["reports"],
+        json!([{"path":"/a", "format":"ctrf"}, {"path":"/b", "format":null}])
+    );
 }
 
 #[test]

@@ -21,7 +21,7 @@ pub struct Inspection {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Report {
     pub path: String,
-    pub format: String,
+    pub format: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -170,9 +170,11 @@ impl State {
                         self.outcomes.push(BinaryOutcome::LaunchFailed {
                             error: string(value, "error")?.to_owned(),
                         });
-                        issues.push(format!(
-                            "Binary {binary} failed to launch; report coverage is partial"
-                        ));
+                        if report_format.is_some() {
+                            issues.push(format!(
+                                "Binary {binary} failed to launch; report coverage is partial"
+                            ));
+                        }
                     }
                     _ => {
                         ensure!(self.phase.running(), "binary finish without start");
@@ -231,13 +233,13 @@ impl State {
                             _ => bail!("invalid binary outcome"),
                         };
                         let entries = value.get("reports").context("missing reports")?;
-                        if entries.is_null() {
+                        if entries.is_null() && report_format.is_some() {
                             issues.push(format!(
                                 "Report identity unknown for binary {binary}: reports=null"
                             ));
-                        } else {
+                        } else if !entries.is_null() {
                             let entries = entries.as_array().context("invalid reports array")?;
-                            if entries.is_empty() {
+                            if entries.is_empty() && report_format.is_some() {
                                 issues.push(format!(
                                     "No report opened by binary {binary}: reports=[]"
                                 ));
@@ -245,12 +247,14 @@ impl State {
                             for entry in entries {
                                 reports.push(Report {
                                     path: string(entry, "path")?.to_owned(),
-                                    format: string(entry, "format")?.to_owned(),
+                                    format: entry["format"].as_str().map(str::to_owned),
                                 });
                             }
                             if let Some(format) = report_format
                                 && !reports.is_empty()
-                                && !reports.iter().any(|report| report.format == format)
+                                && !reports
+                                    .iter()
+                                    .any(|report| report.format.as_deref() == Some(format))
                             {
                                 issues.push(format!(
                                     "No {format} report identified for binary {binary}"
@@ -365,7 +369,7 @@ impl State {
                         "passing invocation contradicts binary coverage"
                     );
                 }
-                if not_run > 0 {
+                if not_run > 0 && report_format.is_some() {
                     issues.push(format!(
                         "{not_run} selected binaries did not run; report coverage is partial"
                     ));
