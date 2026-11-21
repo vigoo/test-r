@@ -126,13 +126,21 @@ pub fn verify(
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn snapshot(_path: &Utf8Path, _out: &Utf8Path) -> anyhow::Result<String> {
+pub fn snapshot(
+    _path: &Utf8Path,
+    _out: &Utf8Path,
+    _staging_directory: Option<&Utf8Path>,
+) -> anyhow::Result<String> {
     bail!("snapshot is not supported on this platform (requires Linux glibc)")
 }
 
 #[cfg(target_os = "linux")]
-pub fn snapshot(path: &Utf8Path, out: &Utf8Path) -> anyhow::Result<String> {
-    linux::snapshot(path, out)
+pub fn snapshot(
+    path: &Utf8Path,
+    out: &Utf8Path,
+    staging_directory: Option<&Utf8Path>,
+) -> anyhow::Result<String> {
+    linux::snapshot(path, out, staging_directory)
 }
 
 #[cfg(target_os = "linux")]
@@ -155,6 +163,9 @@ mod linux {
         for input in &selection.inputs {
             match input.kind {
                 InputKind::NextestBinaries => {}
+                InputKind::CargoMetadata => bail!(
+                    "snapshot does not support Cargo metadata inputs; use nextest binaries metadata instead"
+                ),
                 InputKind::CargoMessages => bail!(
                     "snapshot does not support Cargo-message inputs: {} lacks complete mutable target/linked-paths metadata; use nextest binaries metadata instead",
                     input.path
@@ -344,7 +355,11 @@ mod linux {
         Ok(dependencies.into_values().collect())
     }
 
-    pub fn snapshot(path: &Utf8Path, out: &Utf8Path) -> anyhow::Result<String> {
+    pub fn snapshot(
+        path: &Utf8Path,
+        out: &Utf8Path,
+        staging_directory: Option<&Utf8Path>,
+    ) -> anyhow::Result<String> {
         if cfg!(target_env = "musl") {
             bail!("snapshot is not supported on musl");
         }
@@ -360,14 +375,36 @@ mod linux {
         let parent = parent.canonicalize_utf8()?;
         let out = parent.join(out.file_name().context("Snapshot output needs a name")?);
         let roots = mutable_roots(&selection)?;
-        let temp = tempfile::Builder::new()
-            .prefix(&format!(
-                ".{}.tmp-{}-",
-                out.file_name().unwrap(),
-                std::process::id()
-            ))
-            .tempdir_in(&parent)?;
-        let staging = Utf8Path::from_path(temp.path()).context("Non-UTF-8 staging directory")?;
+        let temp = if staging_directory.is_none() {
+            Some(
+                tempfile::Builder::new()
+                    .prefix(&format!(
+                        ".{}.tmp-{}-",
+                        out.file_name().unwrap(),
+                        std::process::id()
+                    ))
+                    .tempdir_in(&parent)?,
+            )
+        } else {
+            None
+        };
+        let staging = staging_directory
+            .or_else(|| {
+                temp.as_ref()
+                    .and_then(|temp| Utf8Path::from_path(temp.path()))
+            })
+            .context("Non-UTF-8 staging directory")?;
+        // Keep the same depth as the published snapshot so relative loader
+        // paths have the same meaning during inspection and after publication.
+        if staging
+            .parent()
+            .context("Staging needs a parent directory")?
+            .canonicalize_utf8()?
+            != parent
+            || fs::read_dir(staging)?.next().is_some()
+        {
+            bail!("Snapshot staging must be an empty sibling of the output");
+        }
         fs::create_dir(staging.join("bin"))?;
         for binary in &mut selection.binaries {
             let id_hash: String = Sha256::digest(binary.binary_id.as_bytes())
@@ -461,7 +498,9 @@ mod linux {
             fs::rename(staging, &out).context("Cannot publish snapshot")?;
         }
         // The staging path no longer belongs to us after either rename succeeds.
-        let _ = temp.keep();
+        if let Some(temp) = temp {
+            let _ = temp.keep();
+        }
         if let Err(error) = parent_directory.sync_all() {
             fs::remove_dir_all(&out)
                 .context("Cannot roll back snapshot after parent fsync failure")?;

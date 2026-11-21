@@ -318,10 +318,10 @@ fn saved_selection_runs_exactly_it_in_order_with_arguments_and_fail_fast() {
         w.command("run")
             .arg("--selection")
             .arg(&path)
-            .args(["--lib"])
+            .args(["--binary-id", "absent"])
             .output()
             .unwrap(),
-        "runs exactly",
+        "No test binaries match",
     );
     let fail = w.dir.path().join(exe("fail"));
     std::fs::copy(&w.fixture, &fail).unwrap();
@@ -357,6 +357,102 @@ fn saved_selection_runs_exactly_it_in_order_with_arguments_and_fail_fast() {
             .count(),
         6
     );
+}
+
+#[test]
+fn saved_selection_filters_and_count_assertions_do_not_read_inputs_or_rewrite_manifest() {
+    let w = Workspace::new();
+    let selected = success(w.list(&[]));
+    let path = w.dir.path().join("selection.json");
+    let original = selected.to_string();
+    std::fs::write(&path, &original).unwrap();
+    std::fs::remove_file(&w.metadata).unwrap();
+    for flags in [
+        vec!["-p", "alpha", "--test", "integ*"],
+        vec!["--exclude", "decoy", "--bins"],
+        vec!["--binary-id", "alpha", "--lib"],
+    ] {
+        let result = w
+            .command("run")
+            .arg("--selection")
+            .arg(&path)
+            .args(flags)
+            .args(["--expect-count", "1"])
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+    }
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    assert_eq!(
+        std::fs::read_to_string(w.dir.path().join("trace"))
+            .unwrap()
+            .lines()
+            .count(),
+        3
+    );
+    failure(
+        w.command("run")
+            .arg("--selection")
+            .arg(&path)
+            .args(["--tests", "--expect-count", "1"])
+            .output()
+            .unwrap(),
+        "Expected exactly 1 test binaries, selected 4",
+    );
+    for flag in ["--target-dir", "--cargo-metadata"] {
+        failure(
+            w.command("run")
+                .arg("--selection")
+                .arg(&path)
+                .args([flag, "unused"])
+                .output()
+                .unwrap(),
+            "cannot be combined",
+        );
+    }
+}
+
+#[test]
+fn executable_path_output_is_exact_unambiguous_and_does_not_execute() {
+    let w = Workspace::new();
+    let result = w.list(&[
+        "--binary-id",
+        "alpha",
+        "--expect-count",
+        "1",
+        "--output",
+        "executable-path",
+    ]);
+    assert!(result.status.success(), "{result:?}");
+    let terminated = w.list(&[
+        "--binary-id",
+        "alpha",
+        "--expect-count",
+        "1",
+        "--output",
+        "executable-path",
+        "--",
+    ]);
+    assert!(terminated.status.success(), "{terminated:?}");
+    assert_eq!(terminated.stdout, result.stdout);
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        format!(
+            "{}\n",
+            w.document["rust-binaries"]["alpha"]["binary-path"]
+                .as_str()
+                .unwrap()
+        )
+    );
+    failure(
+        w.list(&["--output", "executable-path"]),
+        "requires exactly one",
+    );
+    failure(
+        w.list(&["--lib", "--expect-count", "2"]),
+        "Expected exactly 2 test binaries, selected 1",
+    );
+    assert!(!w.dir.path().join("trace").exists());
 }
 
 #[test]

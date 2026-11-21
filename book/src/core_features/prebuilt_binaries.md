@@ -47,6 +47,8 @@ Binary ids follow nextest's scheme: `my-crate` for library unit tests, `my-crate
 
 The same binary id listed twice with identical details is merged. Two different entries for one id, such as two executable paths or two build variants, are an error that shows both, rather than one being picked silently. A binary id is unique within a selection.
 
+`--expect-count <N>` requires exactly N binaries after filtering and deduplication. An empty selection is always an error. For scripts that need one executable path rather than a selection file, `list --output executable-path` requires exactly one binary and prints its absolute path followed by a newline. It rejects paths containing line breaks; JSON output supports those paths.
+
 Test name filters and arguments after `--` are passed to every selected binary:
 
 ```sh
@@ -55,9 +57,24 @@ cargo test-r run --binaries-metadata binaries.json -p my-crate --test integratio
 
 Build options such as `--release`, `--features` or `--no-run` are rejected, because the binaries are already built.
 
+### Checking Cargo artifact identities
+
+When consuming Cargo messages, `--cargo-metadata <FILE>` checks each selected artifact against an existing `cargo metadata --no-deps --format-version 1` document. It does not invoke Cargo:
+
+```sh
+cargo metadata --no-deps --format-version 1 > cargo-metadata.json
+cargo test --locked -p my-crate --lib --no-run --message-format json > cargo-messages.jsonl
+cargo test-r list --cargo-messages cargo-messages.jsonl --cargo-metadata cargo-metadata.json \
+  -p my-crate --lib --expect-count 1 --output executable-path
+```
+
+This checks the package id and name, workspace membership, package source directory and manifest, and the target's name, original kind list and source file. Paths are canonicalized. Each selected raw artifact is checked before duplicate entries are merged, so a duplicate with a different source file cannot be hidden by a valid entry. Unselected artifacts do not need to belong to the supplied workspace. Local workspace members may live outside the workspace-root directory, as Cargo permits. Both the build messages and metadata are trusted inputs; produce them for the intended workspace and build settings.
+
+`--cargo-metadata` requires Cargo-message inputs only. It cannot be combined with nextest inputs, an extracted archive or a saved selection. Its path and digest are recorded as an input with kind `cargo-metadata`. Without this option, Cargo-message selection retains its existing behavior.
+
 ### Selection files
 
-`cargo test-r list` prints the chosen binaries as JSON on stdout and never runs anything. `cargo test-r run --selection <FILE>` later runs exactly those binaries, in `binary-id` order, without reading the inputs again:
+`cargo test-r list` prints the chosen binaries as JSON on stdout without invoking Cargo or test binaries. `cargo test-r run --selection <FILE>` later runs those binaries, optionally narrowed by filters, in `binary-id` order without reading the inputs again:
 
 ```json
 {
@@ -79,11 +96,18 @@ Build options such as `--release`, `--features` or `--no-run` are rejected, beca
 }
 ```
 
-- `inputs` records which files the selection came from, with the SHA-256 of their contents. `kind` is `nextest-binaries` or `cargo-messages`; a missing `kind` means `nextest-binaries`. `run` ignores input kinds it doesn't know, so selections from newer versions still run.
+- `inputs` records which files the selection came from, with the SHA-256 of their contents. `kind` is `nextest-binaries`, `cargo-messages` or `cargo-metadata`; a missing `kind` means `nextest-binaries`. `run` ignores input kinds it doesn't know, so selections from newer versions still run.
 - `build-variant` is an opaque short hash of the build settings. Compare it only between selections made by the same cargo-test-r version from the same kind of input.
 - Paths are absolute. Each binary runs in its package's directory.
 
-Filters, `--target-dir` and other inputs cannot be combined with `--selection`; make a new selection instead. A selection does not freeze the executables: a rebuild can replace them. Use a [snapshot](#snapshots-freezing-binaries) for that.
+Package, target and binary-id filters can narrow a saved selection without reading its inputs or rewriting its manifest. The complete saved selection is validated, and a snapshot is verified in full, **before** filtering. A missing or tampered unselected executable therefore still fails the run. `--expect-digest` always identifies the original file's exact bytes, never a derived subset. `--expect-count` applies to the filtered set. `--target-dir` and other metadata inputs cannot be combined with `--selection`.
+
+```sh
+cargo test-r run --selection /ci/snap/run-1/selection.json --expect-digest sha256:<digest> \
+  -p my-crate --test integration --expect-count 1 -- --retry-failed 2
+```
+
+A selection does not freeze the executables: a rebuild can replace them. Use a [snapshot](#snapshots-freezing-binaries) for that.
 
 ### Errors before anything runs
 
@@ -182,6 +206,20 @@ cargo test-r run --selection selection.json --deadline 30m --kill-grace 10s
 - **Leftover processes**: in prebuilt runs, processes a binary leaves behind (such as a server that keeps a port open) are stopped after **every** binary, even when it passed. `--keep-leftovers` turns this off for suites that start a daemon on purpose; a deadline or cancellation still cleans up. Cleanup after a binary can itself cross the deadline: the run then exits 124 even though every binary passed.
 - If cleanup fails, no further binaries start, and an otherwise passing run exits 1.
 
+### Preparation deadlines
+
+`list`, `snapshot` and `verify` also accept `--deadline` and `--kill-grace`. Either option enables a contained worker supervised by the same process owner used for test binaries. Without either option, preparation runs directly in the caller's process group. The deadline can interrupt blocking input reads, hashing and ELF loader inspection, rather than waiting for them to return. Supervised preparation cleans descendants after success and failure as well as cancellation and deadline expiry. Exit codes use the same signal/deadline precedence as supervised runs. The default kill grace is `10s` when a deadline is supplied alone.
+
+```sh
+cargo test-r list --binaries-metadata binaries.json --deadline 10m > selection.json
+cargo test-r snapshot --selection selection.json --out /ci/snap/run-1 --deadline 10m --kill-grace 10s
+cargo test-r verify --selection /ci/snap/run-1/selection.json --deadline 10m
+```
+
+The preparation owner holds the snapshot's staging directory until the worker and descendants have stopped. Cancellation before publication removes partial files; successful publication preserves the snapshot. If process cleanup fails, the staging directory is retained and its path is reported. The owner's initial staging-directory creation and final filesystem cleanup remain synchronous; deadlines bound worker operations, not those owner operations. Grace and process drain can extend past the budget. SIGKILL of the Unix owner prevents it from cleaning up. Keep an outer CI timeout with headroom, and keep preparation and workload-group budgets separate.
+
+These options do not change `run`'s loading behavior: its budget includes selection loading and snapshot verification, but expiry is acted on once that synchronous preparation returns. Use a supervised `verify` command or an outer task deadline when that phase also needs interruption.
+
 ### Platform notes
 
 - **Linux:** each binary runs in its own process group, and cargo-test-r adopts orphaned descendants, so processes that start a new session are still found and stopped. This needs `/proc` with child lists (`CONFIG_PROC_CHILDREN`); without them every supervised run fails before starting. It does not reach processes in other PID namespaces or ones started through a service manager such as systemd or Docker.
@@ -215,7 +253,7 @@ Every record has these fields:
 
 | Event | Other fields |
 | --- | --- |
-| `invocation-started` | `pid`, `selection-sha256`, `no-fail-fast`, `deadline-ms` (null without a deadline), `kill-grace-ms`, `keep-leftovers` |
+| `invocation-started` | `pid`, `selection-sha256`, `binary-ids`, `no-fail-fast`, `deadline-ms` (null without a deadline), `kill-grace-ms`, `keep-leftovers` |
 | `binary-started` | `binary-id`, `package-id`, `attempt`, child `pid`, `cwd`, `args` |
 | `binary-launch-failed` | `binary-id`, `package-id`, `attempt`, `error` (instead of a start and finish) |
 | `binary-finished` | `binary-id`, `attempt`, `outcome`, `exit-code`, `signal`, `duration-ms`, `leftovers-killed`, `reports` |
@@ -223,7 +261,7 @@ Every record has these fields:
 | `cancel-requested` | `binary-id` (null between binaries), `signal`, `at-elapsed-ms` |
 | `invocation-finished` | `outcome`, `exit-code`, and counts of binaries: `passed`, `failed`, `crashed`, `launch-failed`, `timed-out`, `cancelled`, `not-run` |
 
-- `selection-sha256` identifies what ran: the SHA-256 of the selection file's bytes, or of the resolved selection as compact JSON for other inputs.
+- `selection-sha256` identifies the original selection file's bytes, or the resolved selection as compact JSON for other inputs. `binary-ids` lists the admitted binaries in execution order after filtering. Completion counts cover that subset; binaries excluded by filters are not counted as `not-run`.
 - Binary `outcome` is `passed`, `failed`, `crashed`, `timed-out` or `cancelled`. `exit-code` is set for `passed` and `failed`, `signal` for `crashed`; otherwise they are null. The invocation `outcome` is `passed`, `failed`, `timed-out` or `cancelled`, and matches the [exit code](#exit-code).
 - `attempt` is always 1: cargo-test-r does not rerun binaries. `leftovers-killed` is currently always null.
 - Each of `deadline-expired` and `cancel-requested` is written at most once, in the order they happened. Both appear when a signal arrives after the deadline expired; cancellation then decides the outcome. `at-elapsed-ms` is when the stop happened (for the deadline, the deadline itself). The record can be written later, for example after the grace period, so its `elapsed-ms` can be larger.

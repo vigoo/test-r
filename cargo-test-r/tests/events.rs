@@ -112,6 +112,32 @@ impl Suite {
 }
 
 #[test]
+fn filtered_selection_events_identify_the_parent_manifest_and_admitted_subset() {
+    let suite = Suite::new();
+    let mut command = suite.command(&["fail", "ok", "index"]);
+    let manifest = suite.path().join("selection.json");
+    let original = std::fs::read(&manifest).unwrap();
+    let output = command
+        .args(["--binary-id", "pkg::1", "--expect-count", "1"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let records = suite.records("events.jsonl");
+    assert_eq!(
+        records[0]["selection-sha256"],
+        common::sha256_hex(&original)
+    );
+    assert_eq!(records[0]["binary-ids"], json!(["pkg::1"]));
+    assert_eq!(records[1]["binary-id"], "pkg::1");
+    assert_eq!(records.last().unwrap()["passed"], 1);
+    assert_eq!(records.last().unwrap()["not-run"], 0);
+    assert_eq!(std::fs::read(manifest).unwrap(), original);
+    assert!(suite.path().join("ran-ok").exists());
+    assert!(!suite.path().join("ran-fail").exists());
+    assert!(!suite.path().join("ran-index").exists());
+}
+
+#[test]
 fn outcomes_order_identity_and_not_run_counts() {
     for (names, flags, code, events) in [
         (
