@@ -32,6 +32,7 @@ enum Phase {
     Stopped {
         running: bool,
     },
+    StoppedBeforeSpawn(StopReason),
     Finished(String),
 }
 
@@ -299,12 +300,32 @@ impl State {
                     integer(value, "at-elapsed-ms")? <= elapsed,
                     "stop time exceeds elapsed time"
                 );
+                let mut before_spawn = match self.phase {
+                    Phase::StoppedBeforeSpawn(reason) => Some(reason),
+                    _ => None,
+                };
                 if let Some(binary) = value.get("binary-id").filter(|v| !v.is_null()) {
                     let binary = binary.as_str().context("invalid stop binary id")?;
+                    if (matches!(self.phase, Phase::Ready) || before_spawn.is_some())
+                        && self.admitted.get(self.outcomes.len()).map(String::as_str)
+                            == Some(binary)
+                    {
+                        if before_spawn.is_none() && report_format.is_some() {
+                            issues.push(format!(
+                                "Binary {binary} stopped before spawn; report coverage is partial"
+                            ));
+                        }
+                        if before_spawn.is_none() || matches!(reason, StopReason::Signal(_)) {
+                            before_spawn = Some(reason);
+                        }
+                    }
                     ensure!(
                         self.admitted
                             .iter()
-                            .take(self.outcomes.len() + usize::from(self.phase.running()))
+                            .take(
+                                self.outcomes.len()
+                                    + usize::from(self.phase.running() || before_spawn.is_some())
+                            )
                             .any(|id| id == binary),
                         "stop for unknown binary"
                     );
@@ -316,8 +337,12 @@ impl State {
                     reason,
                     Duration::from_millis(integer(value, "at-elapsed-ms")?),
                 ));
-                self.phase = Phase::Stopped {
-                    running: self.phase.running(),
+                self.phase = if let Some(reason) = before_spawn {
+                    Phase::StoppedBeforeSpawn(reason)
+                } else {
+                    Phase::Stopped {
+                        running: self.phase.running(),
+                    }
                 };
             }
             "invocation-finished" => {
@@ -327,13 +352,16 @@ impl State {
                 );
                 let outcome = string(value, "outcome")?;
                 let code = exit_code(value)?;
-                let not_run = self.admitted.len() - self.outcomes.len();
                 let mut result = RunResult {
                     outcomes: self.outcomes.clone(),
                     cleanup_failed: false,
                     stop_reason: self.stop_reason,
                     stops: self.stops.clone(),
                 };
+                if let Phase::StoppedBeforeSpawn(reason) = self.phase {
+                    result.outcomes.push(reason.into());
+                }
+                let not_run = self.admitted.len() - result.outcomes.len();
                 result
                     .outcomes
                     .extend((0..not_run).map(|_| BinaryOutcome::NotRun));

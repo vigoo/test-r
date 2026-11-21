@@ -325,6 +325,93 @@ fn stops_are_sticky_across_binary_completion_and_block_every_admission_path() {
 }
 
 #[test]
+fn pre_spawn_stops_count_the_stopped_slot_without_reopening_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events");
+    for (stops, outcome, code) in [
+        (vec![("deadline-expired", Value::Null)], "timed-out", 124),
+        (vec![("cancel-requested", json!(15))], "cancelled", 143),
+        (
+            vec![
+                ("deadline-expired", Value::Null),
+                ("cancel-requested", json!(2)),
+            ],
+            "cancelled",
+            130,
+        ),
+    ] {
+        for tail in [false, true] {
+            let mut events = vec![
+                json!({"event":"invocation-started", "binary-ids":if tail { vec!["a", "b"] } else { vec!["a"] }}),
+            ];
+            for (event, signal) in &stops {
+                events.push(
+                    json!({"event":event, "signal":signal, "binary-id":"a", "at-elapsed-ms":1}),
+                );
+            }
+            let mut finish = records().pop().unwrap();
+            finish["outcome"] = json!(outcome);
+            finish["exit-code"] = json!(code);
+            finish["passed"] = json!(0);
+            finish[outcome] = json!(1);
+            finish["not-run"] = json!(usize::from(tail));
+            events.push(finish);
+            write(&path, &sequence(events.clone()));
+            let result = inspect(&path, None);
+            assert_eq!(result["complete"], true, "{result}");
+            assert_eq!(result["outcome"], outcome);
+            let result = inspect_with_format(&path, None, Some("ctrf"));
+            issue(&result, "Binary a stopped before spawn");
+            assert_eq!(result["outcome"], outcome);
+            assert_eq!(result["reports"], json!([]));
+            assert_eq!(
+                result["issues"].as_array().unwrap().len(),
+                if tail { 2 } else { 1 }
+            );
+
+            for admission in ["binary-started", "binary-launch-failed", "binary-finished"] {
+                let mut invalid = events.clone();
+                let mut event =
+                    records()[if admission == "binary-finished" { 2 } else { 1 }].clone();
+                event["event"] = json!(admission);
+                event["error"] = json!("must not launch");
+                invalid.insert(invalid.len() - 1, event);
+                write(&path, &sequence(invalid));
+                let result = inspect(&path, None);
+                issue(&result, "Malformed runner event");
+                assert_eq!(result["outcome"], Value::Null);
+            }
+            for stop_id in [Value::Null, json!("b"), json!("unknown")] {
+                let mut invalid = events.clone();
+                invalid[1]["binary-id"] = stop_id;
+                write(&path, &sequence(invalid));
+                issue(&inspect(&path, None), "Malformed runner event");
+            }
+            let mut invalid = events.clone();
+            let finish = invalid.last_mut().unwrap();
+            finish[outcome] = json!(0);
+            finish["not-run"] = json!(1 + usize::from(tail));
+            write(&path, &sequence(invalid));
+            issue(&inspect(&path, None), "incorrect");
+
+            if stops.len() == 2 {
+                // Cancellation observed only at invocation finish cannot change
+                // the binary's already returned pre-spawn timeout outcome.
+                let mut later_signal = events.clone();
+                later_signal[2]["binary-id"] = Value::Null;
+                let finish = later_signal.last_mut().unwrap();
+                finish["cancelled"] = json!(0);
+                finish["timed-out"] = json!(1);
+                write(&path, &sequence(later_signal));
+                let result = inspect(&path, None);
+                assert_eq!(result["complete"], true, "{result}");
+                assert_eq!(result["outcome"], "cancelled");
+            }
+        }
+    }
+}
+
+#[test]
 fn cancellation_overrides_deadline_and_binary_failure_without_reopening_admission() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("events");
