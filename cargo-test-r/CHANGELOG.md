@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.14](https://github.com/vigoo/test-r/compare/cargo-test-r-v2.2.13...cargo-test-r-v2.2.14) - 2026-11-21
+
+### Other
+
+- Add command supervision and event evidence inspection ([#228](https://github.com/vigoo/test-r/pull/228))
+
 ## [2.2.13](https://github.com/vigoo/test-r/compare/cargo-test-r-v2.2.12...cargo-test-r-v2.2.13) - 2026-11-21
 
 ### Other
